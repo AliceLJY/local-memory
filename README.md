@@ -65,7 +65,7 @@ bun run src/cli.ts reset --yes
 
 ### MCP Server
 
-Add to your Claude Code MCP config (`~/.claude/mcp_settings.json`):
+Add to your Claude Code settings (`~/.claude/settings.json`):
 
 ```json
 {
@@ -185,7 +185,7 @@ bun run src/cli.ts search "关键词"       # 搜索
 
 ### MCP 集成
 
-配置到 Claude Code 的 `mcp_settings.json`，对话时可直接搜索历史记忆，不用手动跑 CLI。
+配置到 Claude Code 的 `settings.json`，对话时可直接搜索历史记忆，不用手动跑 CLI。
 
 ### 公众号
 
