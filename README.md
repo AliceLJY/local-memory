@@ -152,12 +152,11 @@ Part of the [AI小木屋](https://github.com/AliceLJY) toolkit:
 | [content-alchemy](https://github.com/AliceLJY/content-alchemy) | 5-stage content writing pipeline |
 | [content-publisher](https://github.com/AliceLJY/content-publisher) | Image generation, layout formatting, WeChat publishing |
 | [openclaw-worker](https://github.com/AliceLJY/openclaw-worker) | Task API + Docker compose for OpenClaw |
-| [openclaw-content-alchemy](https://github.com/AliceLJY/openclaw-content-alchemy) | Bot-native content pipeline |
-| [openclaw-cli-pipeline](https://github.com/AliceLJY/openclaw-cli-pipeline) | Multi-turn CC orchestration CLI |
 | [openclaw-cli-bridge](https://github.com/AliceLJY/openclaw-cli-bridge) | Three-way bridge: /cc /codex /gemini |
 | [digital-clone-skill](https://github.com/AliceLJY/digital-clone-skill) | Build digital clones from corpus data |
 | [cc-shell](https://github.com/AliceLJY/cc-shell) | Lightweight Claude Code chat UI |
-| [telegram-ai-bridge](https://github.com/AliceLJY/telegram-ai-bridge) | Telegram AI bridge (currently unused) |
+| [telegram-ai-bridge](https://github.com/AliceLJY/telegram-ai-bridge) | Telegram AI bridge (tri-backend: Claude + Codex + Gemini) |
+| [telegram-cli-bridge](https://github.com/AliceLJY/telegram-cli-bridge) | Telegram CLI bridge (Gemini CLI path) |
 
 ## Credits
 
