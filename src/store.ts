@@ -359,9 +359,16 @@ export class MemoryStore {
     let query = this.table!.vectorSearch(vector).limit(fetchLimit);
 
     // Apply scope filter if provided
+    // Support both exact match ("cc:abc123") and prefix match ("cc")
     if (scopeFilter && scopeFilter.length > 0) {
       const scopeConditions = scopeFilter
-        .map(scope => `scope = '${escapeSqlLiteral(scope)}'`)
+        .map(scope => {
+          const safe = escapeSqlLiteral(scope);
+          // If scope contains ":", treat as exact match; otherwise prefix match
+          return scope.includes(":")
+            ? `scope = '${safe}'`
+            : `scope LIKE '${safe}%'`;
+        })
         .join(" OR ");
       query = query.where(`(${scopeConditions}) OR scope IS NULL`); // NULL for backward compatibility
     }
@@ -377,9 +384,12 @@ export class MemoryStore {
 
       const rowScope = (row.scope as string | undefined) ?? "global";
 
-      // Double-check scope filter in application layer
-      if (scopeFilter && scopeFilter.length > 0 && !scopeFilter.includes(rowScope)) {
-        continue;
+      // Double-check scope filter in application layer (prefix-aware)
+      if (scopeFilter && scopeFilter.length > 0) {
+        const matches = scopeFilter.some(s =>
+          s.includes(":") ? rowScope === s : rowScope.startsWith(s)
+        );
+        if (!matches) continue;
       }
 
       mapped.push({
@@ -415,10 +425,15 @@ export class MemoryStore {
       // Use FTS query type explicitly
       let searchQuery = this.table!.search(query, "fts").limit(safeLimit);
 
-      // Apply scope filter if provided
+      // Apply scope filter if provided (prefix-aware, same as vectorSearch)
       if (scopeFilter && scopeFilter.length > 0) {
         const scopeConditions = scopeFilter
-          .map(scope => `scope = '${escapeSqlLiteral(scope)}'`)
+          .map(scope => {
+            const safe = escapeSqlLiteral(scope);
+            return scope.includes(":")
+              ? `scope = '${safe}'`
+              : `scope LIKE '${safe}%'`;
+          })
           .join(" OR ");
         searchQuery = searchQuery.where(`(${scopeConditions}) OR scope IS NULL`);
       }
@@ -429,9 +444,12 @@ export class MemoryStore {
       for (const row of results) {
         const rowScope = (row.scope as string | undefined) ?? "global";
 
-        // Double-check scope filter in application layer
-        if (scopeFilter && scopeFilter.length > 0 && !scopeFilter.includes(rowScope)) {
-          continue;
+        // Double-check scope filter in application layer (prefix-aware)
+        if (scopeFilter && scopeFilter.length > 0) {
+          const matches = scopeFilter.some(s =>
+            s.includes(":") ? rowScope === s : rowScope.startsWith(s)
+          );
+          if (!matches) continue;
         }
 
         // LanceDB FTS _score is raw BM25 (unbounded). Normalize with sigmoid.
@@ -511,7 +529,12 @@ export class MemoryStore {
 
     if (scopeFilter && scopeFilter.length > 0) {
       const scopeConditions = scopeFilter
-        .map(scope => `scope = '${escapeSqlLiteral(scope)}'`)
+        .map(scope => {
+          const safe = escapeSqlLiteral(scope);
+          return scope.includes(":")
+            ? `scope = '${safe}'`
+            : `scope LIKE '${safe}%'`;
+        })
         .join(" OR ");
       conditions.push(`((${scopeConditions}) OR scope IS NULL)`);
     }
@@ -555,7 +578,12 @@ export class MemoryStore {
 
     if (scopeFilter && scopeFilter.length > 0) {
       const scopeConditions = scopeFilter
-        .map(scope => `scope = '${escapeSqlLiteral(scope)}'`)
+        .map(scope => {
+          const safe = escapeSqlLiteral(scope);
+          return scope.includes(":")
+            ? `scope = '${safe}'`
+            : `scope LIKE '${safe}%'`;
+        })
         .join(" OR ");
       query = query.where(`((${scopeConditions}) OR scope IS NULL)`);
     }
@@ -647,7 +675,12 @@ export class MemoryStore {
 
     if (scopeFilter.length > 0) {
       const scopeConditions = scopeFilter
-        .map(scope => `scope = '${escapeSqlLiteral(scope)}'`)
+        .map(scope => {
+          const safe = escapeSqlLiteral(scope);
+          return scope.includes(":")
+            ? `scope = '${safe}'`
+            : `scope LIKE '${safe}%'`;
+        })
         .join(" OR ");
       conditions.push(`(${scopeConditions})`);
     }

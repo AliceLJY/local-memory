@@ -8,7 +8,7 @@ import { resolve } from "node:path";
 const TRACKER_PATH = resolve(import.meta.dir, "../data/ingested-files.json");
 
 interface TrackerData {
-  files: Record<string, { ingestedAt: string; size: number; chunks: number }>;
+  files: Record<string, { ingestedAt: string; size: number; chunks: number; mtimeMs?: number }>;
 }
 
 function load(): TrackerData {
@@ -26,20 +26,23 @@ function save(data: TrackerData): void {
   writeFileSync(TRACKER_PATH, JSON.stringify(data, null, 2));
 }
 
-export function isProcessed(filePath: string, fileSize: number): boolean {
+export function isProcessed(filePath: string, fileSize: number, mtimeMs?: number): boolean {
   const data = load();
   const entry = data.files[filePath];
   if (!entry) return false;
-  // Re-process if file size changed (file was modified)
-  return entry.size === fileSize;
+  // Re-process if file size or mtime changed
+  if (entry.size !== fileSize) return false;
+  if (mtimeMs !== undefined && entry.mtimeMs !== undefined && entry.mtimeMs !== mtimeMs) return false;
+  return true;
 }
 
-export function markProcessed(filePath: string, fileSize: number, chunks: number): void {
+export function markProcessed(filePath: string, fileSize: number, chunks: number, mtimeMs?: number): void {
   const data = load();
   data.files[filePath] = {
     ingestedAt: new Date().toISOString(),
     size: fileSize,
     chunks,
+    ...(mtimeMs !== undefined ? { mtimeMs } : {}),
   };
   save(data);
 }

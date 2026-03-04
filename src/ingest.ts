@@ -337,7 +337,7 @@ export async function ingestCodexSessions(
         continue;
       }
 
-      if (isProcessed(filePath, stat.size)) {
+      if (isProcessed(filePath, stat.size, stat.mtimeMs)) {
         result.chunksSkipped++;
         continue;
       }
@@ -345,7 +345,7 @@ export async function ingestCodexSessions(
       const turns = parseCodexSession(filePath);
       if (turns.length === 0) {
         result.chunksSkipped++;
-        markProcessed(filePath, stat.size, 0);
+        markProcessed(filePath, stat.size, 0, stat.mtimeMs);
         continue;
       }
 
@@ -394,7 +394,7 @@ export async function ingestCodexSessions(
         }
       }
 
-      markProcessed(filePath, stat.size, fileChunks);
+      markProcessed(filePath, stat.size, fileChunks, stat.mtimeMs);
       result.filesProcessed++;
 
       if ((fi + 1) % 10 === 0 || fi + 1 === total) {
@@ -502,7 +502,7 @@ export async function ingestGeminiSessions(
         continue;
       }
 
-      if (isProcessed(filePath, stat.size)) {
+      if (isProcessed(filePath, stat.size, stat.mtimeMs)) {
         result.chunksSkipped++;
         continue;
       }
@@ -510,7 +510,7 @@ export async function ingestGeminiSessions(
       const turns = parseGeminiSession(filePath);
       if (turns.length === 0) {
         result.chunksSkipped++;
-        markProcessed(filePath, stat.size, 0);
+        markProcessed(filePath, stat.size, 0, stat.mtimeMs);
         continue;
       }
 
@@ -559,7 +559,7 @@ export async function ingestGeminiSessions(
         }
       }
 
-      markProcessed(filePath, stat.size, fileChunks);
+      markProcessed(filePath, stat.size, fileChunks, stat.mtimeMs);
       result.filesProcessed++;
 
       if ((fi + 1) % 10 === 0 || fi + 1 === total) {
@@ -674,7 +674,7 @@ export async function ingestCCTranscripts(
       }
 
       // Skip already processed files (incremental mode)
-      if (isProcessed(filePath, stat.size)) {
+      if (isProcessed(filePath, stat.size, stat.mtimeMs)) {
         result.chunksSkipped++;
         continue;
       }
@@ -682,7 +682,7 @@ export async function ingestCCTranscripts(
       const turns = parseCCTranscript(filePath);
       if (turns.length === 0) {
         result.chunksSkipped++;
-        markProcessed(filePath, stat.size, 0);
+        markProcessed(filePath, stat.size, 0, stat.mtimeMs);
         continue;
       }
 
@@ -733,7 +733,7 @@ export async function ingestCCTranscripts(
         }
       }
 
-      markProcessed(filePath, stat.size, fileChunks);
+      markProcessed(filePath, stat.size, fileChunks, stat.mtimeMs);
       result.filesProcessed++;
 
       // Progress
@@ -778,7 +778,7 @@ export async function ingestMarkdownFiles(
 
     try {
       const stat = statSync(filePath);
-      if (isProcessed(filePath, stat.size)) {
+      if (isProcessed(filePath, stat.size, stat.mtimeMs)) {
         result.chunksSkipped++;
         continue;
       }
@@ -786,7 +786,7 @@ export async function ingestMarkdownFiles(
       const sections = parseMarkdown(filePath);
       if (sections.length === 0) {
         result.chunksSkipped++;
-        markProcessed(filePath, stat.size, 0);
+        markProcessed(filePath, stat.size, 0, stat.mtimeMs);
         continue;
       }
 
@@ -833,7 +833,7 @@ export async function ingestMarkdownFiles(
         }
       }
 
-      markProcessed(filePath, stat.size, fileChunks);
+      markProcessed(filePath, stat.size, fileChunks, stat.mtimeMs);
       result.filesProcessed++;
 
       if (options.verbose) {

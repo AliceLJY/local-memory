@@ -179,7 +179,7 @@ program
   .command("search <query>")
   .description("搜索记忆（混合向量+关键词）")
   .option("-n, --limit <n>", "返回结果数", "5")
-  .option("-s, --scope <scope>", "限定来源（cc/codex/memory）")
+  .option("-s, --scope <scope>", "限定来源（cc/codex/gemini/memory）")
   .option("--json", "JSON 格式输出")
   .action(async (query: string, options) => {
     const config = loadConfig();
