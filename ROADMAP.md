@@ -1,36 +1,36 @@
 # RecallNest Roadmap
 
-RecallNest is moving from a local transcript search tool into a reusable memory workbench for AI conversations.
+RecallNest is moving from a local transcript search tool into an MCP-native memory layer with a human-facing workbench.
 
 ## Direction
 
 | Track | Goal |
 |------|------|
-| Structured Memory | Move from raw chunks to reusable memory objects |
-| Product UI | Turn the workbench into a clearer, faster daily surface |
+| Retrieval Quality | Raise hit quality with eval, failure review, and cleaner memory assets |
+| MCP + UI First | Make agents and humans operate the same memory layer from different surfaces |
 | Workflow Integration | Make RecallNest useful for writing, debugging, and research loops |
 
 ## Near-Term Priorities
 
-## 1. Structured Memory Layer
+## 1. Retrieval Quality
 
-Goal: upgrade pinned and distilled results from passive files into first-class memory assets.
-
-Planned work:
-- promote session and topic summaries into retrievable objects
-- support richer asset metadata and tags
-- unify transcript chunks, pinned assets, and distilled notes under one recall model
-- make assets easier to browse, filter, and export
-
-## 2. Web Workbench Polish
-
-Goal: make the local UI good enough for daily use and external demos.
+Goal: improve recall quality with measured iteration instead of intuition.
 
 Planned work:
-- add richer result cards and cleaner evidence views
-- improve Pins and Exports browsing at larger scale
-- support better navigation between search, assets, and exports
-- add clearer artifact actions and empty states
+- expand eval cases from real daily queries
+- maintain a failure notebook for misses, weak hits, and noisy hits
+- tune retrieval profiles with explicit before/after reports
+- keep brief and pin lifecycle clean so assets do not pollute recall
+
+## 2. MCP + UI First Product
+
+Goal: make RecallNest easiest to use through an agent or the local workbench, not by memorizing CLI commands.
+
+Planned work:
+- keep MCP tools as the primary integration contract
+- add UI operations for cleanup, inspection, and regeneration flows
+- reduce CLI-only workflows unless they support MCP and UI directly
+- make demo and onboarding flows obvious in one screen
 
 ## 3. Writing Workflow
 
@@ -48,3 +48,4 @@ Planned work:
 - MCP-native interfaces
 - transcript evidence before abstraction
 - reusable memory over one-off search hits
+- measured retrieval changes over "feels better"

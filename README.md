@@ -7,6 +7,16 @@ RecallNest turns Claude Code, Codex, Gemini, and markdown notes into a local-fir
 
 ![RecallNest workbench](./assets/recallnest-workbench.png)
 
+## Why RecallNest
+
+| Problem | Why existing transcript search is not enough | RecallNest answer |
+|------|------|------|
+| Too many chats | Raw archives are searchable but not reusable | Turn transcripts into recallable memory assets |
+| Agent memory is opaque | You do not know why a hit surfaced | Show score, source, scope, retrieval path, and evidence |
+| Good context disappears | One useful hit is lost in the next session | Pin and brief write useful context back into recall |
+| CLI-only demos do not spread | People do not see the value fast enough | Pair MCP-native tools with a local workbench UI |
+| Retrieval tuning is guesswork | "Feels better" is not a reliable benchmark | Track eval baselines and failure cases over time |
+
 ## At A Glance
 
 | Problem | RecallNest answer |
@@ -160,13 +170,15 @@ Config lookup order:
 The next build phase is tracked in [ROADMAP.md](./ROADMAP.md).
 Retrieval quality changes should be tracked with [EVAL.md](./EVAL.md).
 Common operator actions live in [OPERATIONS.md](./OPERATIONS.md).
+Observed misses and weak hits should be logged in [FAILURES.md](./FAILURES.md).
+The short demo flow for screenshots and social posts lives in [DEMO.md](./DEMO.md).
 
 Current focus:
 
 | Track | Goal |
 |------|------|
-| Structured Memory | Move from raw chunks to reusable memory objects |
-| Product UI | Make the workbench cleaner, faster, and easier to demo |
+| Retrieval Quality | Improve hit quality with evals, failure review, and asset hygiene |
+| MCP + UI Product | Keep RecallNest easy to operate through agents and the workbench |
 | Writing Workflow | Turn recall into reusable briefs and article inputs |
 
 ## Eval
