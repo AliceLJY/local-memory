@@ -33,6 +33,10 @@ function buildAssetText(asset: MemoryAsset): string {
     : buildPinnedAssetText(asset);
 }
 
+function assetImportance(asset: MemoryAsset): number {
+  return asset.type === "memory-brief" ? 0.72 : 0.96;
+}
+
 export async function indexAsset(
   store: MemoryStore,
   embedder: Embedder,
@@ -67,7 +71,7 @@ export async function indexAsset(
     scope: asset.type === "memory-brief"
       ? `asset:brief:${asset.id.slice(0, 8)}`
       : `asset:${asset.id.slice(0, 8)}`,
-    importance: 1.0,
+    importance: assetImportance(asset),
     metadata: JSON.stringify(metadata),
   });
 }
