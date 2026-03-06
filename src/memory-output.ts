@@ -15,6 +15,32 @@ interface RenderContext {
   profile: RetrievalProfileName;
 }
 
+export interface DistilledSourceSummary {
+  source: string;
+  hits: number;
+  newest: string;
+  files: string[];
+}
+
+export interface DistilledEvidence {
+  memoryId: string;
+  source: string;
+  scope: string;
+  date: string;
+  retrievalPath: string;
+  snippet: string;
+}
+
+export interface DistilledSummary {
+  query: string;
+  profile: RetrievalProfileName;
+  hits: number;
+  sources: DistilledSourceSummary[];
+  takeaways: string[];
+  evidence: DistilledEvidence[];
+  reusableCandidates: string[];
+}
+
 function parseMetadata(entry: MemoryEntry): MemoryMetadata {
   try {
     return JSON.parse(entry.metadata || "{}") as MemoryMetadata;
@@ -92,6 +118,25 @@ function pickBestSnippet(query: string, text: string): string {
   }
 
   return cleanSnippet(bestSentence);
+}
+
+function normalizeRecallText(result: RetrievalResult): string {
+  const source = getSourceLabel(result);
+  if (source !== "asset") return result.entry.text;
+
+  return result.entry.text
+    .replace(/^\[(Pinned Asset|Memory Brief)\]\s*/i, "")
+    .replace(/\bSummary:\s*/gi, "")
+    .replace(/\bSnippet:\s*/gi, "")
+    .replace(/\bOriginal Scope:.*$/gim, "")
+    .replace(/\bTags:.*$/gim, "")
+    .replace(/\bSources:\s*/gi, "")
+    .replace(/\bReusable:\s*/gi, "")
+    .replace(/\bTakeaways:\s*/gi, "")
+    .replace(/\bProfile:\s*/gi, "")
+    .replace(/\bQuery:\s*/gi, "")
+    .replace(/\n{2,}/g, "\n")
+    .trim();
 }
 
 function ageDays(timestamp: number): number | null {
@@ -206,15 +251,25 @@ export function formatExplainResults(
   return lines.join("\n").trimEnd();
 }
 
-export function distillResults(
+export function summarizeResults(
   results: RetrievalResult[],
   context: RenderContext,
-): string {
-  if (results.length === 0) return "No results found.";
+): DistilledSummary {
+  if (results.length === 0) {
+    return {
+      query: context.query,
+      profile: context.profile,
+      hits: 0,
+      sources: [],
+      takeaways: [],
+      evidence: [],
+      reusableCandidates: [],
+    };
+  }
 
   const sourceMap = new Map<string, { hits: number; newest: number; files: Set<string> }>();
   const topTakeaways: string[] = [];
-  const evidence: string[] = [];
+  const evidence: DistilledEvidence[] = [];
   const reusable: string[] = [];
   const seenTakeaways = new Set<string>();
   const seenReusable = new Set<string>();
@@ -230,7 +285,7 @@ export function distillResults(
   }
 
   for (const result of results) {
-    const takeaway = `${getSourceLabel(result)}: ${pickBestSnippet(context.query, result.entry.text)}`;
+    const takeaway = `${getSourceLabel(result)}: ${pickBestSnippet(context.query, normalizeRecallText(result))}`;
     if (!seenTakeaways.has(takeaway)) {
       topTakeaways.push(takeaway);
       seenTakeaways.add(takeaway);
@@ -239,13 +294,18 @@ export function distillResults(
   }
 
   for (const result of results.slice(0, 5)) {
-    evidence.push(
-      `${getSourceLabel(result)} | ${getDateLabel(result.entry.timestamp)} | ${getRetrievalPath(result)} | ${pickBestSnippet(context.query, result.entry.text)}`,
-    );
+    evidence.push({
+      memoryId: result.entry.id,
+      source: getSourceLabel(result),
+      scope: result.entry.scope,
+      date: getDateLabel(result.entry.timestamp),
+      retrievalPath: getRetrievalPath(result),
+      snippet: pickBestSnippet(context.query, normalizeRecallText(result)),
+    });
   }
 
   for (const result of results) {
-    const candidate = pickBestSnippet(context.query, result.entry.text);
+    const candidate = pickBestSnippet(context.query, normalizeRecallText(result));
     if (candidate.length < 20) continue;
     if (seenReusable.has(candidate)) continue;
     reusable.push(candidate);
@@ -253,34 +313,62 @@ export function distillResults(
     if (reusable.length >= 3) break;
   }
 
+  const sources = Array.from(sourceMap.entries())
+    .sort((a, b) => b[1].hits - a[1].hits)
+    .map(([source, stats]) => ({
+      source,
+      hits: stats.hits,
+      newest: getDateLabel(stats.newest),
+      files: Array.from(stats.files).slice(0, 3),
+    }));
+
+  return {
+    query: context.query,
+    profile: context.profile,
+    hits: results.length,
+    sources,
+    takeaways: topTakeaways,
+    evidence,
+    reusableCandidates: reusable,
+  };
+}
+
+export function distillResults(
+  results: RetrievalResult[],
+  context: RenderContext,
+): string {
+  const summary = summarizeResults(results, context);
+  if (summary.hits === 0) return "No results found.";
+
   const lines = [
     `Query   : ${context.query}`,
     `Profile : ${context.profile}`,
-    `Hits    : ${results.length}`,
+    `Hits    : ${summary.hits}`,
     "",
     "Source Map",
     "Source     Hits  Newest      Files",
     "---------- ----- ----------  ------------------------------",
   ];
 
-  const sortedSources = Array.from(sourceMap.entries()).sort((a, b) => b[1].hits - a[1].hits);
-  for (const [source, stats] of sortedSources) {
+  for (const item of summary.sources) {
     lines.push(
-      `${source.padEnd(10)} ${String(stats.hits).padEnd(5)} ${getDateLabel(stats.newest).padEnd(10)}  ${Array.from(stats.files).slice(0, 3).join(", ") || "-"}`,
+      `${item.source.padEnd(10)} ${String(item.hits).padEnd(5)} ${item.newest.padEnd(10)}  ${item.files.join(", ") || "-"}`,
     );
   }
 
   lines.push("", "Core Takeaways");
-  topTakeaways.forEach((item, index) => lines.push(`${index + 1}. ${item}`));
+  summary.takeaways.forEach((item, index) => lines.push(`${index + 1}. ${item}`));
 
   lines.push("", "Evidence");
-  evidence.forEach((item, index) => lines.push(`${index + 1}. ${item}`));
+  summary.evidence.forEach((item, index) => {
+    lines.push(`${index + 1}. ${item.source} | ${item.date} | ${item.retrievalPath} | ${item.snippet}`);
+  });
 
   lines.push("", "Reusable Memory Candidates");
-  if (reusable.length === 0) {
+  if (summary.reusableCandidates.length === 0) {
     lines.push("1. No strong reusable memory candidate yet. Expand the query or use a broader profile.");
   } else {
-    reusable.forEach((item, index) => lines.push(`${index + 1}. ${item}`));
+    summary.reusableCandidates.forEach((item, index) => lines.push(`${index + 1}. ${item}`));
   }
 
   return lines.join("\n");

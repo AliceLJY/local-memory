@@ -8,9 +8,9 @@ import { MemoryStore, validateStoragePath } from "./store.js";
 import { createEmbedder, type EmbeddingConfig } from "./embedder.js";
 import { createRetriever, type RetrievalConfig, DEFAULT_RETRIEVAL_CONFIG, type RetrievalResult } from "./retriever.js";
 import { applyRetrievalProfile } from "./retrieval-profiles.js";
-import { distillResults, formatExplainResults, formatSearchResults } from "./memory-output.js";
-import { buildPinAsset, listExportArtifacts, listPinAssets, pinSummaryLine, savePinAsset, writeExportArtifact } from "./memory-assets.js";
-import { indexPinnedAsset } from "./asset-sync.js";
+import { distillResults, formatExplainResults, formatSearchResults, summarizeResults } from "./memory-output.js";
+import { assetSummaryLine, buildBriefAsset, buildPinAsset, listExportArtifacts, listMemoryAssets, saveBriefAsset, savePinAsset, writeExportArtifact } from "./memory-assets.js";
+import { indexAsset, indexPinnedAsset } from "./asset-sync.js";
 
 interface LocalMemoryConfig {
   dbPath: string;
@@ -225,27 +225,29 @@ const server = Bun.serve({
     }
 
     if (request.method === "GET" && url.pathname === "/api/pins") {
-      const rows = listPinAssets(Number(url.searchParams.get("limit") || 10));
+      const rows = listMemoryAssets(Number(url.searchParams.get("limit") || 10));
       const output = rows.length === 0
-        ? "No pinned assets yet."
+        ? "No assets yet."
         : [
-            "Pin ID    Title  Scope  Date",
-            "--------  -----  -----  ----------",
-            ...rows.map(row => pinSummaryLine(row)),
+            "Asset ID  Kind   Title  Scope / Sources  Date",
+            "--------  -----  -----  ---------------  ----------",
+            ...rows.map(row => assetSummaryLine(row)),
           ].join("\n");
       return Response.json({
         output,
         items: rows.map((row) => ({
           id: row.id,
           shortId: row.id.slice(0, 8),
+          type: row.type,
           title: row.title,
           summary: row.summary,
-          scope: row.source.scope,
+          scope: row.type === "pinned-memory" ? row.source.scope : row.sources.map((item) => item.source).join(", "),
           createdAt: row.createdAt,
           date: row.createdAt.slice(0, 10),
           tags: row.tags,
           path: row.path,
-          sourceMemoryId: row.source.memoryId,
+          sourceMemoryId: row.type === "pinned-memory" ? row.source.memoryId : undefined,
+          hits: row.type === "memory-brief" ? row.hits : undefined,
         })),
       });
     }
@@ -299,6 +301,29 @@ const server = Bun.serve({
         output: `Pinned ${asset.id.slice(0, 8)}\nMemory: ${entry.id.slice(0, 8)} (${entry.scope})\nPath: ${path}`,
         assetId: asset.id,
         memoryId: entry.id,
+        path,
+      });
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/brief") {
+      const body = await readJson(request);
+      const { retriever, profile, store, embedder } = getComponents(body.profile || "writing");
+      const query = String(body.query || "");
+      const results = await retriever.retrieve({
+        query,
+        limit: Number(body.limit || 8),
+        scopeFilter: body.scope ? [String(body.scope)] : undefined,
+      });
+      if (results.length === 0) {
+        return textResponse(`No results found for: ${query}`, { status: 404 });
+      }
+      const summary = summarizeResults(results, { query, profile: profile.name });
+      const asset = buildBriefAsset(summary, { title: body.title ? String(body.title) : undefined });
+      const path = saveBriefAsset(asset);
+      await indexAsset(store, embedder, asset);
+      return Response.json({
+        output: `Created brief ${asset.id.slice(0, 8)}\nTitle: ${asset.title}\nHits: ${asset.hits}\nPath: ${path}`,
+        assetId: asset.id,
         path,
       });
     }

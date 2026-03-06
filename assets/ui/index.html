@@ -45,7 +45,7 @@
 
           <div class="view-switch" id="viewSwitch">
             <button class="view-tab is-active" data-view="search">Search</button>
-            <button class="view-tab" data-view="pins">Pins</button>
+            <button class="view-tab" data-view="pins">Assets</button>
             <button class="view-tab" data-view="exports">Exports</button>
           </div>
 
@@ -88,6 +88,7 @@
             <button data-mode="search" class="action-button primary">Search</button>
             <button data-mode="explain" class="action-button">Explain</button>
             <button data-mode="distill" class="action-button">Distill</button>
+            <button id="briefButton" class="action-button">Brief</button>
             <button id="exportButton" class="action-button accent">Export</button>
           </div>
 
@@ -97,7 +98,7 @@
         <section class="result-panel card">
           <div class="section-head">
             <h2 id="resultTitle">Result Surface</h2>
-            <button id="reloadPinsButton" class="ghost-button">Load Pins</button>
+            <button id="reloadPinsButton" class="ghost-button">Load Assets</button>
           </div>
           <div id="viewToolbar" class="view-toolbar is-hidden">
             <input id="viewFilterInput" type="text" placeholder="Filter current view..." />
@@ -135,10 +136,10 @@
           <pre id="statsOutput" class="mini-output is-collapsed">Loading stats...</pre>
 
           <div class="section-head compact">
-            <h3>Pinned Assets</h3>
+            <h3>Memory Assets</h3>
             <button id="togglePinsButton" class="ghost-button">Expand</button>
           </div>
-          <pre id="pinsOutput" class="mini-output is-collapsed">No pins loaded yet.</pre>
+          <pre id="pinsOutput" class="mini-output is-collapsed">No assets loaded yet.</pre>
         </section>
       </main>
     </div>

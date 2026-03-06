@@ -15,6 +15,8 @@
     "mcp": "bun run src/mcp-server.ts",
     "explain": "bun run src/cli.ts explain",
     "distill": "bun run src/cli.ts distill",
+    "brief": "bun run src/cli.ts brief",
+    "assets": "bun run src/cli.ts assets",
     "profiles": "bun run src/cli.ts profiles",
     "ui": "bun run src/ui-server.ts"
   },

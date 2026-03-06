@@ -159,7 +159,7 @@ function filterPins(items) {
   const needle = currentViewFilter.trim().toLowerCase();
   if (!needle) return items;
   return items.filter((item) =>
-    [item.title, item.summary, item.scope, ...(item.tags || [])]
+    [item.title, item.summary, item.scope, item.type, item.hits, ...(item.tags || [])]
       .filter(Boolean)
       .join(' ')
       .toLowerCase()
@@ -294,7 +294,7 @@ function renderSearchCards(items, mode) {
 
 function renderPinsView(items) {
   if (!items || items.length === 0) {
-    resultCards.innerHTML = '<div class="empty-state">No pinned assets yet.</div>';
+    resultCards.innerHTML = '<div class="empty-state">No memory assets yet.</div>';
     return;
   }
 
@@ -305,7 +305,9 @@ function renderPinsView(items) {
       </div>
       <div class="list-card-meta">
         <span>${escapeHtml(item.shortId)}</span>
+        <span>${escapeHtml(item.type === 'memory-brief' ? 'brief' : 'pin')}</span>
         <span>${escapeHtml(item.scope)}</span>
+        ${item.hits ? `<span>${escapeHtml(String(item.hits))} hits</span>` : ''}
         <span>${escapeHtml(item.date)}</span>
       </div>
       <p class="result-snippet">${escapeHtml(item.summary || '')}</p>
@@ -350,8 +352,8 @@ function renderExportsView(items) {
 function renderMainSurface() {
   if (currentView === 'pins') {
     const filtered = filterPins(lastPins);
-    resultTitle.textContent = 'Pinned Assets';
-    resultMeta.textContent = `Pinned assets: ${filtered.length}${currentViewFilter ? ` / ${lastPins.length} total` : ''}`;
+    resultTitle.textContent = 'Memory Assets';
+    resultMeta.textContent = `Assets: ${filtered.length}${currentViewFilter ? ` / ${lastPins.length} total` : ''}`;
     renderPinsView(filtered);
     return;
   }
@@ -460,6 +462,33 @@ async function pinMemory() {
   }
 }
 
+async function createBrief() {
+  const payload = currentPayload();
+  if (!payload.query) {
+    statusLine.textContent = 'Enter a query first.';
+    return;
+  }
+  statusLine.textContent = 'Creating brief...';
+  try {
+    const data = await api('/api/brief', {
+      ...payload,
+      title: pinTitle.value.trim() || undefined,
+    });
+    lastArtifact = {
+      label: `Brief ${data.assetId.slice(0, 8)}`,
+      path: data.path,
+    };
+    resultOutput.textContent = data.output;
+    renderArtifactBar();
+    await loadPins();
+    await loadStats();
+    statusLine.textContent = 'Brief created.';
+  } catch (error) {
+    resultOutput.textContent = String(error.message || error);
+    statusLine.textContent = 'Brief failed.';
+  }
+}
+
 async function exportMemory() {
   const payload = currentPayload();
   if (!payload.query) {
@@ -511,6 +540,7 @@ document.getElementById('reloadPinsButton').addEventListener('click', async () =
   renderMainSurface();
 });
 document.getElementById('statsButton').addEventListener('click', loadStats);
+document.getElementById('briefButton').addEventListener('click', createBrief);
 document.getElementById('exportButton').addEventListener('click', exportMemory);
 toggleStatsButton.addEventListener('click', () => {
   statsExpanded = !statsExpanded;

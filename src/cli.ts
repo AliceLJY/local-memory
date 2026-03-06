@@ -18,9 +18,9 @@ import { MemoryStore, validateStoragePath } from "./store.js";
 import { createEmbedder, type EmbeddingConfig } from "./embedder.js";
 import { createRetriever, type RetrievalConfig, DEFAULT_RETRIEVAL_CONFIG, type RetrievalResult } from "./retriever.js";
 import { applyRetrievalProfile, listRetrievalProfiles } from "./retrieval-profiles.js";
-import { distillResults, formatExplainResults, formatSearchResults } from "./memory-output.js";
-import { buildPinAsset, listPinAssets, pinSummaryLine, savePinAsset, writeExportArtifact } from "./memory-assets.js";
-import { indexPinnedAsset } from "./asset-sync.js";
+import { distillResults, formatExplainResults, formatSearchResults, summarizeResults } from "./memory-output.js";
+import { assetSummaryLine, buildBriefAsset, buildPinAsset, listMemoryAssets, listPinAssets, pinSummaryLine, saveBriefAsset, savePinAsset, writeExportArtifact } from "./memory-assets.js";
+import { indexAsset, indexPinnedAsset } from "./asset-sync.js";
 import {
   ingestCCTranscripts,
   ingestCodexSessions,
@@ -321,6 +321,37 @@ program
   });
 
 program
+  .command("brief <query>")
+  .description("把一组召回结果沉淀成 structured memory brief")
+  .option("-n, --limit <n>", "返回结果数", "8")
+  .option("-s, --scope <scope>", "限定来源（cc/codex/gemini/memory）")
+  .option("-p, --profile <profile>", "检索画像：default / writing / debug / fact-check", "writing")
+  .option("-t, --title <title>", "自定义 brief 标题")
+  .action(async (query: string, options) => {
+    const config = loadConfig();
+    const { retriever, profile, store, embedder } = createComponents(config, options.profile);
+    const limit = parseInt(options.limit || "8") || 8;
+    const scopeFilter = options.scope ? [options.scope] : undefined;
+    const results = await retriever.retrieve({ query, limit, scopeFilter });
+    if (results.length === 0) {
+      console.log("No results found.");
+      return;
+    }
+
+    const summary = summarizeResults(results, { query, profile: profile.name });
+    const asset = buildBriefAsset(summary, { title: options.title });
+    const path = saveBriefAsset(asset);
+    await indexAsset(store, embedder, asset);
+
+    console.log([
+      `Brief    : ${asset.id.slice(0, 8)}`,
+      `Title    : ${asset.title}`,
+      `Hits     : ${asset.hits}`,
+      `Path     : ${path}`,
+    ].join("\n"));
+  });
+
+program
   .command("pins")
   .description("列出最近的 pinned assets")
   .option("-n, --limit <n>", "返回结果数", "10")
@@ -335,6 +366,24 @@ program
     console.log("--------  -----  -----  ----------");
     for (const row of rows) {
       console.log(pinSummaryLine(row));
+    }
+  });
+
+program
+  .command("assets")
+  .description("列出最近的 structured memory assets")
+  .option("-n, --limit <n>", "返回结果数", "12")
+  .action((options) => {
+    const limit = parseInt(options.limit || "12") || 12;
+    const rows = listMemoryAssets(limit);
+    if (rows.length === 0) {
+      console.log("No assets yet.");
+      return;
+    }
+    console.log("Asset ID  Kind   Title  Scope / Sources  Date");
+    console.log("--------  -----  -----  ---------------  ----------");
+    for (const row of rows) {
+      console.log(assetSummaryLine(row));
     }
   });
 

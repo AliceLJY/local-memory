@@ -5,6 +5,7 @@ import { basename, extname, join, resolve } from "node:path";
 import type { MemoryEntry } from "./store.js";
 import type { RetrievalResult } from "./retriever.js";
 import type { RetrievalProfileName } from "./retrieval-profiles.js";
+import type { DistilledSummary } from "./memory-output.js";
 
 export interface PinAsset {
   id: string;
@@ -29,6 +30,26 @@ export interface PinAsset {
   snippet: string;
 }
 
+export interface BriefAsset {
+  id: string;
+  type: "memory-brief";
+  createdAt: string;
+  updatedAt: string;
+  title: string;
+  summary: string;
+  tags: string[];
+  query: string;
+  profile: RetrievalProfileName;
+  hits: number;
+  sources: DistilledSummary["sources"];
+  takeaways: string[];
+  evidence: DistilledSummary["evidence"];
+  reusableCandidates: string[];
+}
+
+export type MemoryAsset = PinAsset | BriefAsset;
+export type MemoryAssetRecord = MemoryAsset & { path: string };
+
 export interface ExportArtifact {
   id: string;
   type: "memory-export";
@@ -46,6 +67,7 @@ export interface ExportArtifactRecord extends ExportArtifact {
 
 const DATA_DIR = resolve(import.meta.dir, "../data");
 const PINS_DIR = join(DATA_DIR, "pins");
+const ASSETS_DIR = join(DATA_DIR, "assets");
 const EXPORTS_DIR = join(DATA_DIR, "exports");
 
 function ensureDir(dir: string): string {
@@ -87,6 +109,10 @@ function retrievalPath(result: RetrievalResult): string {
 
 export function getPinsDir(): string {
   return ensureDir(PINS_DIR);
+}
+
+export function getAssetsDir(): string {
+  return ensureDir(ASSETS_DIR);
 }
 
 export function getExportsDir(): string {
@@ -132,6 +158,39 @@ export function savePinAsset(asset: PinAsset): string {
   return path;
 }
 
+export function buildBriefAsset(
+  summary: DistilledSummary,
+  options: { title?: string } = {},
+): BriefAsset {
+  const now = new Date().toISOString();
+  const takeaways = summary.takeaways.slice(0, 4);
+  const fallbackSummary = takeaways.map((item) => item.replace(/^[^:]+:\s*/, "")).join(" ").trim();
+
+  return {
+    id: randomUUID(),
+    type: "memory-brief",
+    createdAt: now,
+    updatedAt: now,
+    title: options.title || `${summary.query} brief`,
+    summary: cleanSnippet(fallbackSummary || `Brief for ${summary.query}`, 260),
+    tags: tagify(`${summary.query} ${takeaways.join(" ")} ${summary.sources.map((item) => item.source).join(" ")}`),
+    query: summary.query,
+    profile: summary.profile,
+    hits: summary.hits,
+    sources: summary.sources,
+    takeaways,
+    evidence: summary.evidence.slice(0, 6),
+    reusableCandidates: summary.reusableCandidates.slice(0, 4),
+  };
+}
+
+export function saveBriefAsset(asset: BriefAsset): string {
+  const dir = getAssetsDir();
+  const path = join(dir, `${asset.id}.json`);
+  writeFileSync(path, JSON.stringify(asset, null, 2) + "\n");
+  return path;
+}
+
 export function listPinAssets(limit = 20): Array<PinAsset & { path: string }> {
   const dir = getPinsDir();
   const files = readdirSync(dir)
@@ -150,6 +209,38 @@ export function listPinAssets(limit = 20): Array<PinAsset & { path: string }> {
     }
   }
   return items;
+}
+
+function listJsonRecords<T extends MemoryAsset>(dir: string, limit = 20): Array<T & { path: string }> {
+  ensureDir(dir);
+  const files = readdirSync(dir)
+    .filter(name => name.endsWith(".json"))
+    .map(name => join(dir, name))
+    .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)
+    .slice(0, limit);
+
+  const items: Array<T & { path: string }> = [];
+  for (const path of files) {
+    try {
+      const parsed = JSON.parse(readFileSync(path, "utf-8")) as T;
+      items.push({ ...parsed, path });
+    } catch {
+      // Skip corrupt records.
+    }
+  }
+  return items;
+}
+
+export function listBriefAssets(limit = 20): Array<BriefAsset & { path: string }> {
+  return listJsonRecords<BriefAsset>(getAssetsDir(), limit);
+}
+
+export function listMemoryAssets(limit = 20): MemoryAssetRecord[] {
+  const pins = listPinAssets(limit);
+  const briefs = listBriefAssets(limit);
+  return [...pins, ...briefs]
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+    .slice(0, limit);
 }
 
 export function writeExportArtifact(params: {
@@ -256,8 +347,16 @@ export function readPinAsset(pinIdOrFile: string): (PinAsset & { path: string })
   return { ...parsed, path };
 }
 
+export function assetSummaryLine(asset: MemoryAsset): string {
+  const scope = asset.type === "pinned-memory"
+    ? asset.source.scope
+    : asset.sources.map((item) => item.source).join(", ").slice(0, 24) || "brief";
+  const kind = asset.type === "pinned-memory" ? "pin" : "brief";
+  return `${asset.id.slice(0, 8)}  ${kind.padEnd(5)}  ${asset.title}  [${scope}]  ${asset.createdAt.slice(0, 10)}`;
+}
+
 export function pinSummaryLine(asset: PinAsset): string {
-  return `${asset.id.slice(0, 8)}  ${asset.title}  [${asset.source.scope}]  ${asset.createdAt.slice(0, 10)}`;
+  return assetSummaryLine(asset);
 }
 
 function parseMarkdownExport(path: string): ExportArtifactRecord | null {

@@ -1,6 +1,6 @@
 import type { Embedder } from "./embedder.js";
 import type { MemoryStore } from "./store.js";
-import type { PinAsset } from "./memory-assets.js";
+import type { BriefAsset, MemoryAsset, PinAsset } from "./memory-assets.js";
 
 function buildPinnedAssetText(asset: PinAsset): string {
   const tags = asset.tags.join(", ");
@@ -13,26 +13,63 @@ function buildPinnedAssetText(asset: PinAsset): string {
   ].filter(Boolean).join("\n");
 }
 
-export async function indexPinnedAsset(
+function buildBriefAssetText(asset: BriefAsset): string {
+  const tags = asset.tags.join(", ");
+  return [
+    `[Memory Brief] ${asset.title}`,
+    `Query: ${asset.query}`,
+    `Profile: ${asset.profile}`,
+    `Summary: ${asset.summary}`,
+    asset.takeaways.length > 0 ? `Takeaways: ${asset.takeaways.join(" | ")}` : "",
+    asset.reusableCandidates.length > 0 ? `Reusable: ${asset.reusableCandidates.join(" | ")}` : "",
+    asset.sources.length > 0 ? `Sources: ${asset.sources.map((item) => `${item.source}(${item.hits})`).join(", ")}` : "",
+    tags ? `Tags: ${tags}` : "",
+  ].filter(Boolean).join("\n");
+}
+
+function buildAssetText(asset: MemoryAsset): string {
+  return asset.type === "memory-brief"
+    ? buildBriefAssetText(asset)
+    : buildPinnedAssetText(asset);
+}
+
+export async function indexAsset(
   store: MemoryStore,
   embedder: Embedder,
-  asset: PinAsset,
+  asset: MemoryAsset,
 ): Promise<void> {
-  const text = buildPinnedAssetText(asset);
+  const text = buildAssetText(asset);
   const vector = await embedder.embedPassage(text);
+  const metadata = asset.type === "memory-brief"
+    ? {
+        source: "asset",
+        assetId: asset.id,
+        assetType: asset.type,
+        title: asset.title,
+        query: asset.query,
+        profile: asset.profile,
+        tags: asset.tags,
+        sources: asset.sources.map((item) => item.source),
+      }
+    : {
+        source: "asset",
+        assetId: asset.id,
+        assetType: asset.type,
+        title: asset.title,
+        originalMemoryId: asset.source.memoryId,
+        originalScope: asset.source.scope,
+        tags: asset.tags,
+      };
   await store.store({
     text,
     vector,
     category: "decision",
-    scope: `asset:${asset.id.slice(0, 8)}`,
+    scope: asset.type === "memory-brief"
+      ? `asset:brief:${asset.id.slice(0, 8)}`
+      : `asset:${asset.id.slice(0, 8)}`,
     importance: 1.0,
-    metadata: JSON.stringify({
-      source: "asset",
-      assetId: asset.id,
-      title: asset.title,
-      originalMemoryId: asset.source.memoryId,
-      originalScope: asset.source.scope,
-      tags: asset.tags,
-    }),
+    metadata: JSON.stringify(metadata),
   });
 }
+
+export const indexPinnedAsset = indexAsset;

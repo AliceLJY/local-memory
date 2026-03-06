@@ -15,6 +15,7 @@ RecallNest turns Claude Code, Codex, Gemini, and markdown notes into a local-fir
 | Hits are opaque | Explain mode with source, file, path, and score trace |
 | Raw chunks are not reusable | Distill mode turns hits into a briefing |
 | Good memories disappear again | Pin turns them into reusable assets |
+| Distilled context is still ephemeral | Brief mode writes structured memory briefs back into recall |
 | Assets stay isolated | Pinned assets are re-indexed into `asset:*` recall scope |
 | CLI is hard to demo | Local web workbench at `http://localhost:4317` |
 
@@ -28,6 +29,7 @@ RecallNest turns Claude Code, Codex, Gemini, and markdown notes into a local-fir
 | Explain | Show why a memory matched |
 | Distill | Produce briefings and evidence bundles |
 | Assetize | Pin reusable memory into long-lived assets |
+| Structure | Save distilled result sets as `memory-brief` assets |
 | Recall Again | Feed pinned assets back into retrieval |
 | Interface | CLI + MCP + local web UI |
 
@@ -44,9 +46,9 @@ RecallNest turns Claude Code, Codex, Gemini, and markdown notes into a local-fir
 
 | Interface | Commands / tools |
 |------|------|
-| CLI | `search`, `explain`, `distill`, `pin`, `pins`, `export`, `profiles` |
-| MCP | `search_memory`, `explain_memory`, `distill_memory`, `pin_memory`, `list_pins`, `export_memory`, `memory_stats` |
-| UI | query console, source-grouped cards, one-click pin, pins/exports views, stats, pinned assets |
+| CLI | `search`, `explain`, `distill`, `brief`, `pin`, `pins`, `assets`, `export`, `profiles` |
+| MCP | `search_memory`, `explain_memory`, `distill_memory`, `brief_memory`, `pin_memory`, `list_assets`, `list_pins`, `export_memory`, `memory_stats` |
+| UI | query console, source-grouped cards, one-click pin, `Assets / Exports` views, stats, structured asset panel |
 
 ## Quick Start
 
@@ -77,6 +79,7 @@ bun run src/cli.ts explain "telegram bridge" --profile debug
 
 ```bash
 bun run src/cli.ts distill "OpenClaw 记忆系统" --profile writing
+bun run src/cli.ts brief "OpenClaw 记忆系统" --profile writing
 bun run src/cli.ts export "OpenClaw 记忆系统" --profile writing --format md
 ```
 
@@ -85,6 +88,12 @@ bun run src/cli.ts export "OpenClaw 记忆系统" --profile writing --format md
 ```bash
 bun run src/cli.ts pin a2597723 --query "telegram bridge"
 bun run src/cli.ts search "telegram bridge" --scope asset --profile debug
+```
+
+### 4. Inspect structured assets
+
+```bash
+bun run src/cli.ts assets
 ```
 
 ## UI Workbench
@@ -107,11 +116,11 @@ Current UI surfaces:
 |------|------|
 | Query Console | search / explain / distill / export |
 | Result Surface | structured cards with memory ID, score, scope, retrieval path |
-| View Switch | `Search / Pins / Exports` |
-| Recall Actions | click-to-pin or paste short ID |
+| View Switch | `Search / Assets / Exports` |
+| Recall Actions | click-to-pin, create brief, or paste short ID |
 | Trace Output | raw explain/distill trace |
 | Stats Panel | index stats |
-| Pins Panel | recent pinned assets |
+| Assets Panel | recent structured assets |
 
 ## Configuration
 

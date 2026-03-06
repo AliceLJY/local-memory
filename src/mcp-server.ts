@@ -18,9 +18,9 @@ import { MemoryStore, validateStoragePath } from "./store.js";
 import { createEmbedder, type EmbeddingConfig } from "./embedder.js";
 import { createRetriever, type RetrievalConfig, DEFAULT_RETRIEVAL_CONFIG, type RetrievalResult } from "./retriever.js";
 import { applyRetrievalProfile } from "./retrieval-profiles.js";
-import { distillResults, formatExplainResults, formatSearchResults } from "./memory-output.js";
-import { buildPinAsset, listPinAssets, savePinAsset, writeExportArtifact } from "./memory-assets.js";
-import { indexPinnedAsset } from "./asset-sync.js";
+import { distillResults, formatExplainResults, formatSearchResults, summarizeResults } from "./memory-output.js";
+import { assetSummaryLine, buildBriefAsset, buildPinAsset, listMemoryAssets, listPinAssets, saveBriefAsset, savePinAsset, writeExportArtifact } from "./memory-assets.js";
+import { indexAsset, indexPinnedAsset } from "./asset-sync.js";
 
 // ============================================================================
 // Config (same as cli.ts)
@@ -244,6 +244,37 @@ server.tool(
 );
 
 server.tool(
+  "brief_memory",
+  "Create a structured memory brief from retrieved results and feed it back into recall.",
+  {
+    query: z.string().describe("Topic or task to turn into a memory brief"),
+    limit: z.number().min(1).max(20).default(8).describe("Max results to distill into the brief"),
+    scope: z.string().optional().describe("Filter by source: cc, codex, gemini, memory"),
+    profile: z.enum(["default", "writing", "debug", "fact-check"]).optional().describe("Retrieval profile"),
+    title: z.string().optional().describe("Optional brief title"),
+  },
+  async ({ query, limit, scope, profile: profileName, title }) => {
+    const { retriever, profile, store, embedder } = getComponents(profileName || "writing");
+    const scopeFilter = scope ? [scope] : undefined;
+    const results = await retriever.retrieve({ query, limit, scopeFilter });
+    if (results.length === 0) {
+      return { content: [{ type: "text" as const, text: `No results found for: ${query}` }] };
+    }
+    const summary = summarizeResults(results, { query, profile: profile.name });
+    const asset = buildBriefAsset(summary, { title });
+    const path = saveBriefAsset(asset);
+    await indexAsset(store, embedder, asset);
+
+    return {
+      content: [{
+        type: "text" as const,
+        text: `Created brief ${asset.id.slice(0, 8)}\nTitle: ${asset.title}\nHits: ${asset.hits}\nPath: ${path}`,
+      }],
+    };
+  }
+);
+
+server.tool(
   "pin_memory",
   "Promote one retrieved memory into a pinned asset for later reuse.",
   {
@@ -308,6 +339,26 @@ server.tool(
         text: `Exported ${artifact.id.slice(0, 8)}\nFormat: ${artifact.format}\nPath: ${artifact.outputPath}`,
       }],
     };
+  }
+);
+
+server.tool(
+  "list_assets",
+  "List recent structured memory assets, including pinned memories and distilled briefs.",
+  {
+    limit: z.number().min(1).max(50).default(12).describe("Max assets to list"),
+  },
+  async ({ limit }) => {
+    const rows = listMemoryAssets(limit);
+    if (rows.length === 0) {
+      return { content: [{ type: "text" as const, text: "No assets yet." }] };
+    }
+    const lines = [
+      "Asset ID  Kind   Title  Scope / Sources  Date",
+      "--------  -----  -----  ---------------  ----------",
+      ...rows.map(row => assetSummaryLine(row)),
+    ];
+    return { content: [{ type: "text" as const, text: lines.join("\n") }] };
   }
 );
 
