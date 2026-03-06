@@ -376,6 +376,17 @@ textarea { resize: vertical; min-height: 120px; }
   color: var(--ink);
 }
 
+.detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.evidence-chip {
+  max-width: 100%;
+}
+
 .result-card-header {
   justify-content: space-between;
 }
