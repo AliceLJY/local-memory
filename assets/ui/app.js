@@ -17,6 +17,7 @@ const pinsOutput = document.getElementById('pinsOutput');
 const statsOutput = document.getElementById('statsOutput');
 const toggleStatsButton = document.getElementById('toggleStatsButton');
 const togglePinsButton = document.getElementById('togglePinsButton');
+const toggleTraceButton = document.getElementById('toggleTraceButton');
 const viewTabs = Array.from(document.querySelectorAll('.view-tab'));
 
 let currentView = 'search';
@@ -27,6 +28,7 @@ let fullStatsText = 'Loading stats...';
 let fullPinsText = 'Loading pins...';
 let statsExpanded = false;
 let pinsExpanded = false;
+let traceExpanded = false;
 let lastPins = [];
 let lastExports = [];
 let currentViewFilter = '';
@@ -78,6 +80,32 @@ function renderPinsPanel() {
   pinsOutput.textContent = pinsExpanded ? fullPinsText : collapsedBlockText(fullPinsText, 8);
   pinsOutput.classList.toggle('is-collapsed', !pinsExpanded);
   togglePinsButton.textContent = pinsExpanded ? 'Collapse' : 'Expand';
+}
+
+function renderTrace() {
+  resultOutput.classList.toggle('is-collapsed', !traceExpanded);
+  toggleTraceButton.textContent = traceExpanded ? 'Collapse' : 'Expand';
+}
+
+function cardSnippet(item) {
+  const title = item?.metadata?.title;
+  if (item?.source === 'asset' && title) {
+    return title;
+  }
+
+  const text = String(item?.text || '').replace(/\s+/g, ' ').trim();
+  if (!text) return '-';
+
+  if (item?.source === 'asset') {
+    const assetText = text
+      .replace(/^\[Pinned Asset\]\s*/i, '')
+      .replace(/Original Scope:.*$/i, '')
+      .replace(/Snippet:.*$/i, '')
+      .trim();
+    return assetText || text;
+  }
+
+  return text;
 }
 
 function renderArtifactBar() {
@@ -234,7 +262,7 @@ function renderSearchCards(items, mode) {
               <span>${escapeHtml(item.date)}</span>
             </div>
           </div>
-          <p class="result-snippet">${escapeHtml(item.text.slice(0, 260))}${item.text.length > 260 ? '...' : ''}</p>
+          <p class="result-snippet">${escapeHtml(cardSnippet(item).slice(0, 220))}${cardSnippet(item).length > 220 ? '...' : ''}</p>
           <div class="result-card-meta">
             <span>${escapeHtml(item.scope)}</span>
             <span>${escapeHtml(item.retrievalPath)}</span>
@@ -492,6 +520,10 @@ togglePinsButton.addEventListener('click', () => {
   pinsExpanded = !pinsExpanded;
   renderPinsPanel();
 });
+toggleTraceButton.addEventListener('click', () => {
+  traceExpanded = !traceExpanded;
+  renderTrace();
+});
 viewFilterInput.addEventListener('input', () => {
   currentViewFilter = viewFilterInput.value;
   if (currentView === 'pins' || currentView === 'exports') {
@@ -505,6 +537,7 @@ setActiveView('search');
 renderArtifactBar();
 renderStats();
 renderPinsPanel();
+renderTrace();
 renderMainSurface();
 loadPins();
 loadExports();
