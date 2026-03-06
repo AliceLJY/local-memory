@@ -1,5 +1,5 @@
 #!/bin/bash
-# local-memory CLI shortcut
+# RecallNest CLI shortcut
 # Usage:
 #   lm search "keywords"     — search memory
 #   lm ingest                — ingest all sources

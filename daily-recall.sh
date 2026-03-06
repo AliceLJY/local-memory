@@ -1,12 +1,12 @@
 #!/bin/bash
 # daily-recall.sh — 每日历史对话反思生成器
 # 用 lm search 搜索近期有深度的对话片段，喂给 Claude 生成 200 字反思
-# 输出存到 ~/local-memory/daily-reflections/YYYY-MM-DD.md
+# 输出存到项目目录下的 daily-reflections/YYYY-MM-DD.md
 
 set -euo pipefail
 
 # ── 路径配置 ──────────────────────────────────────────────────
-SCRIPT_DIR="$HOME/local-memory"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 LM="$SCRIPT_DIR/lm"
 REFLECTION_DIR="$SCRIPT_DIR/daily-reflections"
 LOG_DIR="$SCRIPT_DIR/logs"

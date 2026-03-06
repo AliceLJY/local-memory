@@ -48,8 +48,8 @@ RecallNest turns Claude Code, Codex, Gemini, and markdown notes into a local-fir
 ## Quick Start
 
 ```bash
-git clone https://github.com/AliceLJY/local-memory.git
-cd local-memory
+git clone https://github.com/AliceLJY/recallnest.git
+cd recallnest
 npm install
 cp .env.example .env
 
@@ -140,7 +140,8 @@ Config lookup order:
 | Public name | `RecallNest` |
 | CLI | `recallnest` |
 | MCP server name | `recallnest` |
-| Repo directory | still `local-memory` for backward compatibility |
+| GitHub repo | `AliceLJY/recallnest` |
+| Local directory | any path works |
 
 ## Architecture
 

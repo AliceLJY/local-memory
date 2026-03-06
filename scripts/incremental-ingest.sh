@@ -1,17 +1,19 @@
 #!/bin/bash
-# local-memory 增量更新脚本 — LaunchAgent 调用
+# RecallNest 增量更新脚本 — LaunchAgent 调用
 # 只处理新增/修改的文件，已处理的自动跳过
 # 超时保护：最多运行 2 小时，超时自动 kill
 
+SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+
 # Load API key from .env (CLI also reads .env, this is for LaunchAgent)
-if [ -f "$HOME/local-memory/.env" ]; then
+if [ -f "$SCRIPT_DIR/.env" ]; then
   set -a
-  source "$HOME/local-memory/.env"
+  source "$SCRIPT_DIR/.env"
   set +a
 fi
 export PATH="$HOME/.bun/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 
-LOG_DIR="$HOME/local-memory/logs"
+LOG_DIR="$SCRIPT_DIR/logs"
 mkdir -p "$LOG_DIR"
 LOG_FILE="$LOG_DIR/ingest-$(date +%Y-%m-%d).log"
 
@@ -20,7 +22,7 @@ TIMEOUT=7200
 
 echo "=== $(date '+%Y-%m-%d %H:%M:%S') 增量更新开始 ===" >> "$LOG_FILE"
 
-cd "$HOME/local-memory" || exit 1
+cd "$SCRIPT_DIR" || exit 1
 
 # 用 timeout 命令限制运行时间（macOS 需要 gtimeout 或用 perl 替代）
 if command -v gtimeout &>/dev/null; then
