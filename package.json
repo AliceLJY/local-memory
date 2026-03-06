@@ -1,16 +1,22 @@
 {
-  "name": "local-memory",
-  "version": "1.0.0",
-  "description": "Search your AI conversations locally — hybrid vector + keyword retrieval over Claude Code, Codex, Gemini CLI transcripts",
+  "name": "recallnest",
+  "version": "1.1.0",
+  "description": "RecallNest \u2014 MCP-native, local-first memory search and distillation for AI conversations",
   "type": "module",
   "bin": {
+    "recallnest": "src/cli.ts",
+    "memlayer": "src/cli.ts",
     "local-memory": "src/cli.ts"
   },
   "scripts": {
     "search": "bun run src/cli.ts search",
     "ingest": "bun run src/cli.ts ingest",
     "stats": "bun run src/cli.ts stats",
-    "mcp": "bun run src/mcp-server.ts"
+    "mcp": "bun run src/mcp-server.ts",
+    "explain": "bun run src/cli.ts explain",
+    "distill": "bun run src/cli.ts distill",
+    "profiles": "bun run src/cli.ts profiles",
+    "ui": "bun run src/ui-server.ts"
   },
   "dependencies": {
     "@lancedb/lancedb": "^0.26.0",

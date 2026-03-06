@@ -24,6 +24,11 @@
       "path": "auto",
       "glob": "*.md",
       "description": "Claude Code memory files"
+    },
+    "gemini": {
+      "path": "~/.gemini/tmp",
+      "glob": "session-*.json",
+      "description": "Gemini CLI sessions"
     }
   },
   "retrieval": {
@@ -32,6 +37,6 @@
     "bm25Weight": 0.3,
     "recencyHalfLifeDays": 30,
     "timeDecayHalfLifeDays": 120,
-    "hardMinScore": 0.30
+    "hardMinScore": 0.3
   }
 }

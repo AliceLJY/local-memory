@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * local-memory MCP Server
+ * RecallNest MCP Server
  *
  * Exposes conversation memory search as MCP tools,
  * so any MCP-compatible AI client (Claude Code, etc.)
@@ -16,7 +16,11 @@ import { homedir } from "node:os";
 
 import { MemoryStore, validateStoragePath } from "./store.js";
 import { createEmbedder, type EmbeddingConfig } from "./embedder.js";
-import { createRetriever, type RetrievalConfig, DEFAULT_RETRIEVAL_CONFIG } from "./retriever.js";
+import { createRetriever, type RetrievalConfig, DEFAULT_RETRIEVAL_CONFIG, type RetrievalResult } from "./retriever.js";
+import { applyRetrievalProfile } from "./retrieval-profiles.js";
+import { distillResults, formatExplainResults, formatSearchResults } from "./memory-output.js";
+import { buildPinAsset, listPinAssets, savePinAsset, writeExportArtifact } from "./memory-assets.js";
+import { indexPinnedAsset } from "./asset-sync.js";
 
 // ============================================================================
 // Config (same as cli.ts)
@@ -48,7 +52,10 @@ function findConfigPath(): string {
     : resolve(".");
   const localConfig = resolve(scriptDir, "../config.json");
   if (existsSync(localConfig)) return localConfig;
-  // 3. ~/.config/local-memory/config.json
+  // 3. ~/.config/recallnest/config.json (preferred)
+  const brandedConfig = join(homedir(), ".config", "recallnest", "config.json");
+  if (existsSync(brandedConfig)) return brandedConfig;
+  // 4. ~/.config/local-memory/config.json (backward compatibility)
   const homeConfig = join(homedir(), ".config", "local-memory", "config.json");
   if (existsSync(homeConfig)) return homeConfig;
 
@@ -80,7 +87,7 @@ function expandHome(p: string): string {
 // Initialize components
 // ============================================================================
 
-function createComponents(config: LocalMemoryConfig) {
+function createComponents(config: LocalMemoryConfig, profileName?: string) {
   const configDir = typeof import.meta.dir === "string"
     ? resolve(import.meta.dir, "..")
     : resolve(".");
@@ -104,13 +111,38 @@ function createComponents(config: LocalMemoryConfig) {
     vectorDim: embedder.dimensions,
   });
 
-  const retrieverConfig = {
+  const baseRetrievalConfig = {
     ...DEFAULT_RETRIEVAL_CONFIG,
     ...(config.retrieval || {}),
   };
+  const { profile, config: retrieverConfig } = applyRetrievalProfile(baseRetrievalConfig, profileName);
   const retriever = createRetriever(store, embedder, retrieverConfig);
 
-  return { store, embedder, retriever };
+  return { store, embedder, retriever, profile };
+}
+
+const componentCache = new Map<string, ReturnType<typeof createComponents>>();
+
+function getComponents(profileName?: string) {
+  const key = profileName || "default";
+  const cached = componentCache.get(key);
+  if (cached) return cached;
+  const created = createComponents(config, profileName);
+  componentCache.set(key, created);
+  return created;
+}
+
+function entryToRetrievalResult(entry: Awaited<ReturnType<MemoryStore["get"]>>): RetrievalResult {
+  if (!entry) {
+    throw new Error("Memory entry not found.");
+  }
+  return {
+    entry,
+    score: entry.importance || 0.7,
+    sources: {
+      fused: { score: entry.importance || 0.7 },
+    },
+  };
 }
 
 // ============================================================================
@@ -136,11 +168,11 @@ if (existsSync(envPath)) {
 }
 
 const config = loadConfig();
-const { store, retriever } = createComponents(config);
+const { store } = createComponents(config);
 
 const server = new McpServer({
-  name: "local-memory",
-  version: "1.0.0",
+  name: "recallnest",
+  version: "1.1.0",
 });
 
 // --- search_memory tool ---
@@ -151,35 +183,151 @@ server.tool(
     query: z.string().describe("Search query — natural language or keywords"),
     limit: z.number().min(1).max(20).default(5).describe("Max results to return"),
     scope: z.string().optional().describe("Filter by source: cc, codex, gemini, memory"),
+    profile: z.enum(["default", "writing", "debug", "fact-check"]).optional().describe("Retrieval profile"),
   },
-  async ({ query, limit, scope }) => {
+  async ({ query, limit, scope, profile: profileName }) => {
+    const { retriever, profile } = getComponents(profileName);
     const scopeFilter = scope ? [scope] : undefined;
     const results = await retriever.retrieve({ query, limit, scopeFilter });
 
-    if (results.length === 0) {
-      return { content: [{ type: "text" as const, text: "No results found." }] };
+    return {
+      content: [{
+        type: "text" as const,
+        text: formatSearchResults(results, { query, profile: profile.name }),
+      }],
+    };
+  }
+);
+
+server.tool(
+  "explain_memory",
+  "Explain why the indexed memories matched: retrieval path, freshness, file/session, and matched terms.",
+  {
+    query: z.string().describe("Search query — natural language or keywords"),
+    limit: z.number().min(1).max(20).default(5).describe("Max results to analyze"),
+    scope: z.string().optional().describe("Filter by source: cc, codex, gemini, memory"),
+    profile: z.enum(["default", "writing", "debug", "fact-check"]).optional().describe("Retrieval profile"),
+  },
+  async ({ query, limit, scope, profile: profileName }) => {
+    const { retriever, profile } = getComponents(profileName);
+    const scopeFilter = scope ? [scope] : undefined;
+    const results = await retriever.retrieve({ query, limit, scopeFilter });
+    return {
+      content: [{
+        type: "text" as const,
+        text: formatExplainResults(results, { query, profile: profile.name }),
+      }],
+    };
+  }
+);
+
+server.tool(
+  "distill_memory",
+  "Distill retrieved memories into a compact briefing with source map, takeaways, and reusable evidence.",
+  {
+    query: z.string().describe("Topic or task to distill"),
+    limit: z.number().min(1).max(20).default(8).describe("Max results to distill"),
+    scope: z.string().optional().describe("Filter by source: cc, codex, gemini, memory"),
+    profile: z.enum(["default", "writing", "debug", "fact-check"]).optional().describe("Retrieval profile"),
+  },
+  async ({ query, limit, scope, profile: profileName }) => {
+    const { retriever, profile } = getComponents(profileName || "writing");
+    const scopeFilter = scope ? [scope] : undefined;
+    const results = await retriever.retrieve({ query, limit, scopeFilter });
+    return {
+      content: [{
+        type: "text" as const,
+        text: distillResults(results, { query, profile: profile.name }),
+      }],
+    };
+  }
+);
+
+server.tool(
+  "pin_memory",
+  "Promote one retrieved memory into a pinned asset for later reuse.",
+  {
+    memory_id: z.string().describe("Memory ID or unique prefix from search/explain output"),
+    title: z.string().optional().describe("Optional pinned title"),
+    summary: z.string().optional().describe("Optional pinned summary"),
+    query: z.string().optional().describe("Optional query that led to this pin"),
+    profile: z.enum(["default", "writing", "debug", "fact-check"]).optional().describe("Retrieval profile"),
+  },
+  async ({ memory_id, title, summary, query, profile: profileName }) => {
+    const { store, embedder } = getComponents(profileName);
+    const entry = await store.get(memory_id);
+    if (!entry) {
+      return { content: [{ type: "text" as const, text: `Memory not found: ${memory_id}` }] };
     }
 
-    const formatted = results.map((r, i) => {
-      let meta: any = {};
-      try { meta = JSON.parse(r.entry.metadata || "{}"); } catch {}
+    await store.update(entry.id, { importance: Math.max(entry.importance || 0.7, 0.95) });
+    const asset = buildPinAsset(entryToRetrievalResult(entry), {
+      title,
+      summary,
+      query,
+      profile: profileName || "default",
+    });
+    const path = savePinAsset(asset);
+    await indexPinnedAsset(store, embedder, asset);
 
-      const score = (r.score * 100).toFixed(0);
-      const date = new Date(r.entry.timestamp).toISOString().split("T")[0];
-      const sourceLabel = meta.source || r.entry.scope || "?";
-      const file = meta.file || "";
+    return {
+      content: [{
+        type: "text" as const,
+        text: `Pinned ${asset.id.slice(0, 8)} from memory ${entry.id.slice(0, 8)}\nTitle: ${asset.title}\nPath: ${path}`,
+      }],
+    };
+  }
+);
 
-      const sources: string[] = [];
-      if (r.sources.vector) sources.push("vector");
-      if (r.sources.bm25) sources.push("bm25");
-      if (r.sources.reranked) sources.push("reranked");
-
-      return `${i + 1}. [${score}%] [${sourceLabel}] ${date}\n${r.entry.text}\n   file: ${file} | retrieval: ${sources.join("+")}`;
+server.tool(
+  "export_memory",
+  "Export a distilled memory briefing to a markdown or json artifact on disk.",
+  {
+    query: z.string().describe("Topic or task to export"),
+    limit: z.number().min(1).max(20).default(8).describe("Max results to export"),
+    scope: z.string().optional().describe("Filter by source: cc, codex, gemini, memory"),
+    profile: z.enum(["default", "writing", "debug", "fact-check"]).optional().describe("Retrieval profile"),
+    format: z.enum(["md", "json"]).default("md").describe("Export format"),
+  },
+  async ({ query, limit, scope, profile: profileName, format }) => {
+    const { retriever, profile } = getComponents(profileName || "writing");
+    const scopeFilter = scope ? [scope] : undefined;
+    const results = await retriever.retrieve({ query, limit, scopeFilter });
+    const summary = distillResults(results, { query, profile: profile.name });
+    const artifact = writeExportArtifact({
+      query,
+      profile: profile.name,
+      results,
+      summary,
+      format,
     });
 
     return {
-      content: [{ type: "text" as const, text: formatted.join("\n\n---\n\n") }],
+      content: [{
+        type: "text" as const,
+        text: `Exported ${artifact.id.slice(0, 8)}\nFormat: ${artifact.format}\nPath: ${artifact.outputPath}`,
+      }],
     };
+  }
+);
+
+server.tool(
+  "list_pins",
+  "List recently pinned memory assets.",
+  {
+    limit: z.number().min(1).max(50).default(10).describe("Max pinned assets to list"),
+  },
+  async ({ limit }) => {
+    const rows = listPinAssets(limit);
+    if (rows.length === 0) {
+      return { content: [{ type: "text" as const, text: "No pinned assets yet." }] };
+    }
+    const lines = [
+      "Pin ID    Title  Scope  Date",
+      "--------  -----  -----  ----------",
+      ...rows.map(row => `${row.id.slice(0, 8)}  ${row.title}  [${row.source.scope}]  ${row.createdAt.slice(0, 10)}`),
+    ];
+    return { content: [{ type: "text" as const, text: lines.join("\n") }] };
   }
 );
 

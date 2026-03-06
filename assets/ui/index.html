@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>RecallNest</title>
+    <link rel="stylesheet" href="/ui/styles.css" />
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">RecallNest</p>
+          <h1>AI transcript memory workbench.</h1>
+          <p class="subtitle">Search, explain, distill, pin.</p>
+        </div>
+        <div class="hero-badge">
+          <span>MCP-native</span>
+          <span>Hybrid Retrieval</span>
+          <span>Asset Recall</span>
+        </div>
+      </header>
+
+      <section class="brand-strip">
+        <div class="brand-card">
+          <strong>Search</strong>
+          <span>ranked hits + IDs</span>
+        </div>
+        <div class="brand-card">
+          <strong>Distill</strong>
+          <span>briefings + evidence</span>
+        </div>
+        <div class="brand-card">
+          <strong>Pin</strong>
+          <span>feed assets back into recall</span>
+        </div>
+      </section>
+
+      <main class="workspace">
+        <section class="control-panel card">
+          <div class="section-head">
+            <h2>Query Console</h2>
+            <button id="statsButton" class="ghost-button">Refresh Stats</button>
+          </div>
+
+          <div class="view-switch" id="viewSwitch">
+            <button class="view-tab is-active" data-view="search">Search</button>
+            <button class="view-tab" data-view="pins">Pins</button>
+            <button class="view-tab" data-view="exports">Exports</button>
+          </div>
+
+          <label class="field">
+            <span>Query</span>
+            <textarea id="queryInput" rows="4" placeholder="telegram bridge, OpenClaw memory, writing style..."></textarea>
+          </label>
+
+          <div class="grid two-up">
+            <label class="field">
+              <span>Profile</span>
+              <select id="profileInput">
+                <option value="default">default</option>
+                <option value="writing">writing</option>
+                <option value="debug">debug</option>
+                <option value="fact-check">fact-check</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Scope</span>
+              <input id="scopeInput" type="text" placeholder="cc / codex / gemini / memory / asset" />
+            </label>
+          </div>
+
+          <div class="grid two-up">
+            <label class="field">
+              <span>Limit</span>
+              <input id="limitInput" type="number" value="5" min="1" max="20" />
+            </label>
+            <label class="field">
+              <span>Export Format</span>
+              <select id="formatInput">
+                <option value="md">md</option>
+                <option value="json">json</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="action-row">
+            <button data-mode="search" class="action-button primary">Search</button>
+            <button data-mode="explain" class="action-button">Explain</button>
+            <button data-mode="distill" class="action-button">Distill</button>
+            <button id="exportButton" class="action-button accent">Export</button>
+          </div>
+
+          <p id="statusLine" class="status-line">Ready.</p>
+        </section>
+
+        <section class="result-panel card">
+          <div class="section-head">
+            <h2 id="resultTitle">Result Surface</h2>
+            <button id="reloadPinsButton" class="ghost-button">Load Pins</button>
+          </div>
+          <div id="viewToolbar" class="view-toolbar is-hidden">
+            <input id="viewFilterInput" type="text" placeholder="Filter current view..." />
+          </div>
+          <div id="resultMeta" class="result-meta">Run a query to populate structured cards.</div>
+          <div id="artifactBar" class="artifact-bar"></div>
+          <div id="resultCards" class="result-cards"></div>
+        </section>
+
+        <section class="side-panel card">
+          <div class="section-head">
+            <h2>Recall Actions</h2>
+          </div>
+
+          <label class="field">
+            <span>Memory ID</span>
+            <input id="pinMemoryId" type="text" placeholder="Click a result card or paste a short ID" />
+          </label>
+          <label class="field">
+            <span>Optional Title</span>
+            <input id="pinTitle" type="text" placeholder="Leave blank to auto-title" />
+          </label>
+          <button id="pinButton" class="action-button primary full-width">Pin Selected Memory</button>
+
+          <div class="section-head compact">
+            <h3>Trace Output</h3>
+          </div>
+          <pre id="resultOutput" class="mini-output tall">Run a search to see the raw trace.</pre>
+
+          <div class="section-head compact">
+            <h3>Index Stats</h3>
+            <button id="toggleStatsButton" class="ghost-button">Expand</button>
+          </div>
+          <pre id="statsOutput" class="mini-output is-collapsed">Loading stats...</pre>
+
+          <div class="section-head compact">
+            <h3>Pinned Assets</h3>
+            <button id="togglePinsButton" class="ghost-button">Expand</button>
+          </div>
+          <pre id="pinsOutput" class="mini-output is-collapsed">No pins loaded yet.</pre>
+        </section>
+      </main>
+    </div>
+
+    <script type="module" src="/ui/app.js"></script>
+  </body>
+</html>

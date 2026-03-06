@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * local-memory CLI — Local AI conversation memory search
+ * RecallNest CLI — MCP-native memory search and distillation
  *
  * Usage:
  *   lm search "query keywords"
@@ -16,7 +16,11 @@ import { homedir } from "node:os";
 
 import { MemoryStore, validateStoragePath } from "./store.js";
 import { createEmbedder, type EmbeddingConfig } from "./embedder.js";
-import { createRetriever, type RetrievalConfig, DEFAULT_RETRIEVAL_CONFIG } from "./retriever.js";
+import { createRetriever, type RetrievalConfig, DEFAULT_RETRIEVAL_CONFIG, type RetrievalResult } from "./retriever.js";
+import { applyRetrievalProfile, listRetrievalProfiles } from "./retrieval-profiles.js";
+import { distillResults, formatExplainResults, formatSearchResults } from "./memory-output.js";
+import { buildPinAsset, listPinAssets, pinSummaryLine, savePinAsset, writeExportArtifact } from "./memory-assets.js";
+import { indexPinnedAsset } from "./asset-sync.js";
 import {
   ingestCCTranscripts,
   ingestCodexSessions,
@@ -132,7 +136,7 @@ function resolveSourcePath(source: string, key: string): string {
 // Initialize
 // ============================================================================
 
-function createComponents(config: LocalMemoryConfig) {
+function createComponents(config: LocalMemoryConfig, profileName?: string) {
   const dbPath = resolve(import.meta.dir, "..", expandHome(config.dbPath));
   validateStoragePath(dbPath);
 
@@ -153,13 +157,14 @@ function createComponents(config: LocalMemoryConfig) {
     vectorDim: embedder.dimensions,
   });
 
-  const retrieverConfig = {
+  const baseRetrievalConfig = {
     ...DEFAULT_RETRIEVAL_CONFIG,
     ...(config.retrieval || {}),
   };
+  const { profile, config: retrieverConfig } = applyRetrievalProfile(baseRetrievalConfig, profileName);
   const retriever = createRetriever(store, embedder, retrieverConfig);
 
-  return { store, embedder, retriever };
+  return { store, embedder, retriever, profile };
 }
 
 // ============================================================================
@@ -169,88 +174,199 @@ function createComponents(config: LocalMemoryConfig) {
 const program = new Command();
 
 program
-  .name("local-memory")
-  .description("本地 AI 对话记忆搜索 — 基于 memory-lancedb-pro")
-  .version("1.0.0");
+  .name("recallnest")
+  .description("本地优先 AI 对话记忆搜索与蒸馏层")
+  .version("1.1.0");
+
+async function runRetrievalView(
+  view: "search" | "explain" | "distill",
+  query: string,
+  options: { limit?: string; scope?: string; json?: boolean; profile?: string; explain?: boolean },
+) {
+  const config = loadConfig();
+  const { retriever, profile } = createComponents(config, options.profile);
+
+  const limit = parseInt(options.limit || "5") || 5;
+  const scopeFilter = options.scope ? [options.scope] : undefined;
+  const results = await retriever.retrieve({ query, limit, scopeFilter });
+
+  if (view === "search" && options.json) {
+    console.log(
+      JSON.stringify(
+        {
+          query,
+          profile: profile.name,
+          results: results.map((r) => ({
+            score: r.score,
+            scope: r.entry.scope,
+            text: r.entry.text,
+            metadata: r.entry.metadata,
+            retrievalPath: Object.keys(r.sources).filter((key) => Boolean((r.sources as any)[key])),
+          })),
+        },
+        null,
+        2,
+      ),
+    );
+    return;
+  }
+
+  const context = { query, profile: profile.name };
+  const rendered = view === "explain"
+    ? formatExplainResults(results, context)
+    : view === "distill"
+      ? distillResults(results, context)
+      : formatSearchResults(results, context);
+
+  console.log(rendered);
+}
+
+function entryToRetrievalResult(entry: Awaited<ReturnType<MemoryStore["get"]>>): RetrievalResult {
+  if (!entry) {
+    throw new Error("Memory entry not found.");
+  }
+  return {
+    entry,
+    score: entry.importance || 0.7,
+    sources: {
+      fused: { score: entry.importance || 0.7 },
+    },
+  };
+}
 
 // ─── search ──────────────────────────────────────────────────────────────────
 
 program
   .command("search <query>")
-  .description("搜索记忆（混合向量+关键词）")
+  .description("搜索记忆（支持 profile / explain）")
   .option("-n, --limit <n>", "返回结果数", "5")
   .option("-s, --scope <scope>", "限定来源（cc/codex/gemini/memory）")
+  .option("-p, --profile <profile>", "检索画像：default / writing / debug / fact-check", "default")
+  .option("--explain", "显示命中原因与检索路径")
   .option("--json", "JSON 格式输出")
   .action(async (query: string, options) => {
+    await runRetrievalView(options.explain ? "explain" : "search", query, options);
+  });
+
+program
+  .command("explain <query>")
+  .description("解释为什么召回这些记忆")
+  .option("-n, --limit <n>", "返回结果数", "5")
+  .option("-s, --scope <scope>", "限定来源（cc/codex/gemini/memory）")
+  .option("-p, --profile <profile>", "检索画像：default / writing / debug / fact-check", "default")
+  .action(async (query: string, options) => {
+    await runRetrievalView("explain", query, options);
+  });
+
+program
+  .command("distill <query>")
+  .description("把命中结果蒸馏成可复用 briefing")
+  .option("-n, --limit <n>", "返回结果数", "8")
+  .option("-s, --scope <scope>", "限定来源（cc/codex/gemini/memory）")
+  .option("-p, --profile <profile>", "检索画像：default / writing / debug / fact-check", "writing")
+  .action(async (query: string, options) => {
+    await runRetrievalView("distill", query, options);
+  });
+
+program
+  .command("profiles")
+  .description("显示可用检索画像")
+  .action(() => {
+    const rows = [
+      "Profile     Label           What It Optimizes",
+      "----------- --------------  -----------------------------------------------",
+    ];
+    for (const profile of listRetrievalProfiles()) {
+      rows.push(
+        `${profile.name.padEnd(11)} ${profile.label.padEnd(14)} ${profile.description}`,
+      );
+    }
+    console.log(rows.join("\n"));
+  });
+
+program
+  .command("pin <memoryId>")
+  .description("把一条命中记忆提升为 pinned asset")
+  .option("-p, --profile <profile>", "检索画像：default / writing / debug / fact-check", "default")
+  .option("-q, --query <query>", "记录这条记忆来自哪个查询")
+  .option("-t, --title <title>", "自定义 asset 标题")
+  .option("--summary <summary>", "自定义 asset 摘要")
+  .action(async (memoryId: string, options) => {
     const config = loadConfig();
-    const { retriever } = createComponents(config);
-
-    const limit = parseInt(options.limit) || 5;
-    let scopeFilter: string[] | undefined;
-    if (options.scope) {
-      scopeFilter = [options.scope];
+    const { store, embedder } = createComponents(config, options.profile);
+    const entry = await store.get(memoryId);
+    if (!entry) {
+      console.log(`Memory not found: ${memoryId}`);
+      return;
     }
 
-    console.log(`搜索: "${query}"...\n`);
+    const pinnedImportance = Math.max(entry.importance || 0.7, 0.95);
+    await store.update(entry.id, { importance: pinnedImportance });
 
+    const asset = buildPinAsset(entryToRetrievalResult(entry), {
+      title: options.title,
+      summary: options.summary,
+      query: options.query,
+      profile: options.profile,
+    });
+    const path = savePinAsset(asset);
+    await indexPinnedAsset(store, embedder, asset);
+
+    console.log([
+      `Pinned   : ${asset.id.slice(0, 8)}`,
+      `Memory   : ${entry.id.slice(0, 8)} (${entry.scope})`,
+      `Title    : ${asset.title}`,
+      `Path     : ${path}`,
+    ].join("\n"));
+  });
+
+program
+  .command("pins")
+  .description("列出最近的 pinned assets")
+  .option("-n, --limit <n>", "返回结果数", "10")
+  .action((options) => {
+    const limit = parseInt(options.limit || "10") || 10;
+    const rows = listPinAssets(limit);
+    if (rows.length === 0) {
+      console.log("No pinned assets yet.");
+      return;
+    }
+    console.log("Pin ID    Title  Scope  Date");
+    console.log("--------  -----  -----  ----------");
+    for (const row of rows) {
+      console.log(pinSummaryLine(row));
+    }
+  });
+
+program
+  .command("export <query>")
+  .description("导出检索与蒸馏结果到 markdown/json")
+  .option("-n, --limit <n>", "返回结果数", "8")
+  .option("-s, --scope <scope>", "限定来源（cc/codex/gemini/memory）")
+  .option("-p, --profile <profile>", "检索画像：default / writing / debug / fact-check", "writing")
+  .option("-f, --format <format>", "导出格式：md / json", "md")
+  .action(async (query: string, options) => {
+    const format = options.format === "json" ? "json" : "md";
+    const config = loadConfig();
+    const { retriever, profile } = createComponents(config, options.profile);
+    const limit = parseInt(options.limit || "8") || 8;
+    const scopeFilter = options.scope ? [options.scope] : undefined;
     const results = await retriever.retrieve({ query, limit, scopeFilter });
+    const summary = distillResults(results, { query, profile: profile.name });
+    const artifact = writeExportArtifact({
+      query,
+      profile: profile.name,
+      results,
+      summary,
+      format,
+    });
 
-    if (results.length === 0) {
-      console.log("没有找到相关记忆。");
-      return;
-    }
-
-    if (options.json) {
-      console.log(
-        JSON.stringify(
-          results.map((r) => ({
-            score: r.score,
-            scope: r.entry.scope,
-            text: r.entry.text,
-            metadata: r.entry.metadata,
-          })),
-          null,
-          2,
-        ),
-      );
-      return;
-    }
-
-    for (let i = 0; i < results.length; i++) {
-      const r = results[i];
-      const score = (r.score * 100).toFixed(0);
-      const sources: string[] = [];
-      if (r.sources.vector) sources.push("向量");
-      if (r.sources.bm25) sources.push("关键词");
-      if (r.sources.reranked) sources.push("重排");
-
-      let meta: any = {};
-      try {
-        meta = JSON.parse(r.entry.metadata || "{}");
-      } catch {}
-
-      const date = new Date(r.entry.timestamp).toISOString().split("T")[0];
-      const sourceLabel = meta.source || r.entry.scope || "?";
-
-      console.log(
-        `${i + 1}. [${score}%] [${sourceLabel}] ${date}`,
-      );
-
-      // Show text with reasonable length
-      const text = r.entry.text;
-      const maxLen = 300;
-      if (text.length > maxLen) {
-        console.log(`   ${text.slice(0, maxLen)}...`);
-      } else {
-        console.log(`   ${text}`);
-      }
-
-      if (meta.file) {
-        console.log(`   📁 ${meta.file}`);
-      }
-      console.log(`   (${sources.join("+")})`);
-      console.log();
-    }
+    console.log([
+      `Exported : ${artifact.id.slice(0, 8)}`,
+      `Format   : ${artifact.format}`,
+      `Profile  : ${artifact.profile}`,
+      `Path     : ${artifact.outputPath}`,
+    ].join("\n"));
   });
 
 // ─── ingest ──────────────────────────────────────────────────────────────────

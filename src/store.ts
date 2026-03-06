@@ -567,6 +567,63 @@ export class MemoryStore {
       .slice(offset, offset + limit);
   }
 
+  async get(id: string, scopeFilter?: string[]): Promise<MemoryEntry | null> {
+    await this.ensureInitialized();
+
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const prefixRegex = /^[0-9a-f]{8,}$/i;
+    const isFullId = uuidRegex.test(id);
+    const isPrefix = !isFullId && prefixRegex.test(id);
+
+    if (!isFullId && !isPrefix) {
+      throw new Error(`Invalid memory ID format: ${id}`);
+    }
+
+    let rows: any[];
+    if (isFullId) {
+      const safeId = escapeSqlLiteral(id);
+      rows = await this.table!
+        .query()
+        .select(["id", "text", "vector", "category", "scope", "importance", "timestamp", "metadata"])
+        .where(`id = '${safeId}'`)
+        .limit(1)
+        .toArray();
+    } else {
+      const all = await this.table!
+        .query()
+        .select(["id", "text", "vector", "category", "scope", "importance", "timestamp", "metadata"])
+        .toArray();
+      rows = all.filter((r: any) => (r.id as string).startsWith(id));
+      if (rows.length > 1) {
+        throw new Error(`Ambiguous prefix "${id}" matches ${rows.length} memories. Use a longer prefix or full ID.`);
+      }
+    }
+
+    if (rows.length === 0) return null;
+
+    const row = rows[0];
+    const rowScope = (row.scope as string | undefined) ?? "global";
+    if (scopeFilter && scopeFilter.length > 0) {
+      const matches = scopeFilter.some(scope =>
+        scope.includes(":") ? rowScope === scope : rowScope.startsWith(scope),
+      );
+      if (!matches) {
+        throw new Error(`Memory ${id} is outside accessible scopes`);
+      }
+    }
+
+    return {
+      id: row.id as string,
+      text: row.text as string,
+      vector: Array.from(row.vector as Iterable<number>),
+      category: row.category as MemoryEntry["category"],
+      scope: rowScope,
+      importance: Number(row.importance),
+      timestamp: Number(row.timestamp),
+      metadata: (row.metadata as string) || "{}",
+    };
+  }
+
   async stats(scopeFilter?: string[]): Promise<{
     totalCount: number;
     scopeCounts: Record<string, number>;
@@ -631,7 +688,7 @@ export class MemoryStore {
       rows = await this.table!.query().where(`id = '${safeId}'`).limit(1).toArray();
     } else {
       // Prefix match
-      const all = await this.table!.query().select(["id", "text", "vector", "category", "scope", "importance", "timestamp", "metadata"]).limit(1000).toArray();
+      const all = await this.table!.query().select(["id", "text", "vector", "category", "scope", "importance", "timestamp", "metadata"]).toArray();
       rows = all.filter((r: any) => (r.id as string).startsWith(id));
       if (rows.length > 1) {
         throw new Error(`Ambiguous prefix "${id}" matches ${rows.length} memories. Use a longer prefix or full ID.`);
