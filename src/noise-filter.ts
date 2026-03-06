@@ -33,6 +33,13 @@ const BOILERPLATE_PATTERNS = [
   /^HEARTBEAT/i,
 ];
 
+// OpenClaw v3.2+ injected metadata headers (backport from v1.0.29)
+const METADATA_HEADER_PATTERNS = [
+  /^Conversation info \(untrusted metadata\)/i,
+  /^---\s*\n\s*\{[\s\S]*?\}\s*\n\s*---/m, // YAML-like JSON blocks
+  /^\[?\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[^\]]*\]?\s*$/m, // bare timestamps
+];
+
 export interface NoiseFilterOptions {
   /** Filter agent denial responses (default: true) */
   filterDenials?: boolean;
@@ -61,6 +68,8 @@ export function isNoise(text: string, options: NoiseFilterOptions = {}): boolean
   if (opts.filterDenials && DENIAL_PATTERNS.some(p => p.test(trimmed))) return true;
   if (opts.filterMetaQuestions && META_QUESTION_PATTERNS.some(p => p.test(trimmed))) return true;
   if (opts.filterBoilerplate && BOILERPLATE_PATTERNS.some(p => p.test(trimmed))) return true;
+  // OpenClaw v3.2+ metadata noise (backport from v1.0.29)
+  if (METADATA_HEADER_PATTERNS.some(p => p.test(trimmed))) return true;
 
   return false;
 }
