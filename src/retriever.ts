@@ -6,6 +6,7 @@
 import type { MemoryStore, MemorySearchResult } from "./store.js";
 import type { Embedder } from "./embedder.js";
 import { filterNoise } from "./noise-filter.js";
+import { shouldSkipRetrieval } from "./adaptive-retrieval.js";
 
 // ============================================================================
 // Types & Configuration
@@ -271,6 +272,11 @@ export class MemoryRetriever {
     const { query, limit, scopeFilter, category } = context;
     const safeLimit = clampInt(limit, 1, 20);
 
+    // Adaptive retrieval: skip trivial queries to save embedding API calls
+    if (shouldSkipRetrieval(query)) {
+      return [];
+    }
+
     // For vector-only mode, use legacy behavior
     if (this.config.mode === "vector" || !this.store.hasFtsSupport) {
       return this.vectorOnlyRetrieval(query, safeLimit, scopeFilter, category);
@@ -376,7 +382,14 @@ export class MemoryRetriever {
     scopeFilter?: string[],
     category?: string
   ): Promise<Array<MemorySearchResult & { rank: number }>> {
-    const results = await this.store.vectorSearch(queryVector, limit, 0.1, scopeFilter);
+    let results: MemorySearchResult[];
+    try {
+      results = await this.store.vectorSearch(queryVector, limit, 0.1, scopeFilter);
+    } catch (err) {
+      // Fail-open: log warning and continue with empty results (backport from v1.0.30)
+      console.warn("vectorSearch failed, continuing with empty results:", err);
+      results = [];
+    }
 
     // Filter by category if specified
     const filtered = category
