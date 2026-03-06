@@ -28,6 +28,11 @@ Use queries that matter in real usage:
 - visual style preference recall
 - AWS / config operations
 
+Important:
+- prefer the wording the operator actually types
+- do not invent a cleaner label if the real query is messier but more common
+- if `aws ssh` is what gets used in practice, benchmark `aws ssh`, not `aws bot config`
+
 Each case should define:
 - `query`
 - `profile`

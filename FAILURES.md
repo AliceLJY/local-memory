@@ -38,22 +38,22 @@ Do not rely on memory when retrieval quality changes. Add an entry, then update 
 
 | Query family | Current issue | Status |
 |------|------|------|
-| `aws bot config` | weakest baseline case in current eval report | open |
+| `aws ssh` | needs to stay strong because this is the real operator wording | watch |
 | asset-heavy topics | old briefs can pollute recall if asset hygiene is ignored | mitigated, keep watching |
 
 ## Entries
 
-## 2026-03-06 - aws_bot_config
+## 2026-03-06 - aws_query_wording
 
 | Field | Value |
 |------|------|
-| Query | `aws bot config` |
+| Query | `aws bot config` vs `aws ssh` |
 | Profile | `debug` |
 | Scope | `cc / codex / gemini / memory` |
-| Surface | `eval` |
-| Expected | configuration-related evidence should rank near the top |
-| Actual | baseline score is lower than other starter cases |
-| Failure Type | `weak hit` |
-| Hypothesis | retrieval still needs stronger keyword bias and cleaner config-oriented assets for this topic |
-| Fix | keep this query in the eval set and compare after upstream retrieval changes |
+| Surface | `UI` |
+| Expected | the AWS access path should be easy to recover using the wording the operator naturally types |
+| Actual | `aws ssh` returns stronger and more directly useful hits than `aws bot config` |
+| Failure Type | `bad ranking` |
+| Hypothesis | the earlier eval case used an artificial wording closer to a label than a real operator query |
+| Fix | replace the eval case with `aws ssh` and treat operator wording as the benchmark source of truth |
 | Eval Case Added | `yes` |
