@@ -237,6 +237,16 @@ function bindResultCardActions() {
       statusLine.textContent = 'Path copied.';
     });
   });
+
+  resultCards.querySelectorAll('[data-run-query]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      queryInput.value = decodeURIComponent(button.dataset.runQuery || '');
+      scopeInput.value = button.dataset.runScope || '';
+      setActiveView('search');
+      statusLine.textContent = 'Running evidence search...';
+      await runMode('search');
+    });
+  });
 }
 
 function renderSearchCards(items, mode) {
@@ -321,6 +331,9 @@ function assetDetailMarkup(item) {
 Profile: ${escapeHtml(item.profile || '-')}
 Hits: ${escapeHtml(String(item.hits || 0))}
 Sources: ${escapeHtml(formatSourceSummary(item.sources || []))}</code>
+          <div class="detail-actions">
+            <button class="card-chip" data-run-query="${encodeURIComponent(item.query || '')}" data-run-scope="">Run Brief Query</button>
+          </div>
         </div>
         <div class="detail-block">
           <strong>Takeaways</strong>
@@ -329,6 +342,17 @@ Sources: ${escapeHtml(formatSourceSummary(item.sources || []))}</code>
         <div class="detail-block">
           <strong>Evidence</strong>
           <pre>${escapeHtml(formatEvidenceList(item.evidence || []))}</pre>
+          <div class="detail-actions">
+            ${(item.evidence || []).map((evidence, index) => `
+              <button
+                class="card-chip evidence-chip"
+                data-run-query="${encodeURIComponent(evidence.snippet || '')}"
+                data-run-scope="${escapeHtml(evidence.scope || '')}"
+              >
+                ${escapeHtml(`${index + 1}. ${evidence.source || '-'} | ${evidence.date || '-'} | rerun`)}
+              </button>
+            `).join('')}
+          </div>
         </div>
         <div class="detail-block">
           <strong>Reusable Candidates</strong>
