@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { basename, extname, join, resolve } from "node:path";
 
@@ -65,9 +65,16 @@ export interface ExportArtifactRecord extends ExportArtifact {
   path: string;
 }
 
+export interface DirtyBriefAssetRecord extends BriefAsset {
+  path: string;
+  reasons: string[];
+  scope: string;
+}
+
 const DATA_DIR = resolve(import.meta.dir, "../data");
 const PINS_DIR = join(DATA_DIR, "pins");
 const ASSETS_DIR = join(DATA_DIR, "assets");
+const ARCHIVE_DIR = join(DATA_DIR, "archive", "dirty-briefs");
 const EXPORTS_DIR = join(DATA_DIR, "exports");
 
 function ensureDir(dir: string): string {
@@ -113,6 +120,10 @@ export function getPinsDir(): string {
 
 export function getAssetsDir(): string {
   return ensureDir(ASSETS_DIR);
+}
+
+export function getDirtyBriefArchiveDir(): string {
+  return ensureDir(ARCHIVE_DIR);
 }
 
 export function getExportsDir(): string {
@@ -233,6 +244,46 @@ function listJsonRecords<T extends MemoryAsset>(dir: string, limit = 20): Array<
 
 export function listBriefAssets(limit = 20): Array<BriefAsset & { path: string }> {
   return listJsonRecords<BriefAsset>(getAssetsDir(), limit);
+}
+
+function detectDirtyBriefReasons(asset: BriefAsset): string[] {
+  const reasons: string[] = [];
+  if (asset.sources.some((item) => item.source === "asset")) {
+    reasons.push("source includes asset");
+  }
+  if (asset.takeaways.some((item) => item.startsWith("asset:"))) {
+    reasons.push("takeaways include asset");
+  }
+  if (asset.evidence.some((item) => item.source === "asset")) {
+    reasons.push("evidence includes asset");
+  }
+  if (/\[(Pinned Asset|Memory Brief)\]/i.test(asset.summary)) {
+    reasons.push("summary contains asset marker");
+  }
+  if (asset.reusableCandidates.some((item) => /\[(Pinned Asset|Memory Brief)\]/i.test(item))) {
+    reasons.push("reusable candidate contains asset marker");
+  }
+  return reasons;
+}
+
+export function listDirtyBriefAssets(limit = 200): DirtyBriefAssetRecord[] {
+  return listBriefAssets(limit)
+    .map((asset) => {
+      const reasons = detectDirtyBriefReasons(asset);
+      return {
+        ...asset,
+        reasons,
+        scope: `asset:brief:${asset.id.slice(0, 8)}`,
+      };
+    })
+    .filter((asset) => asset.reasons.length > 0);
+}
+
+export function archiveDirtyBriefAsset(asset: DirtyBriefAssetRecord): string {
+  const dir = getDirtyBriefArchiveDir();
+  const targetPath = join(dir, basename(asset.path));
+  renameSync(asset.path, targetPath);
+  return targetPath;
 }
 
 export function listMemoryAssets(limit = 20): MemoryAssetRecord[] {

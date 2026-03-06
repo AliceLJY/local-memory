@@ -19,7 +19,7 @@ import { createEmbedder, type EmbeddingConfig } from "./embedder.js";
 import { createRetriever, type RetrievalConfig, DEFAULT_RETRIEVAL_CONFIG, type RetrievalResult } from "./retriever.js";
 import { applyRetrievalProfile, listRetrievalProfiles } from "./retrieval-profiles.js";
 import { distillResults, formatExplainResults, formatSearchResults, selectBriefSeedResults, summarizeResults } from "./memory-output.js";
-import { assetSummaryLine, buildBriefAsset, buildPinAsset, listMemoryAssets, listPinAssets, pinSummaryLine, saveBriefAsset, savePinAsset, writeExportArtifact } from "./memory-assets.js";
+import { archiveDirtyBriefAsset, assetSummaryLine, buildBriefAsset, buildPinAsset, listDirtyBriefAssets, listMemoryAssets, listPinAssets, pinSummaryLine, saveBriefAsset, savePinAsset, writeExportArtifact } from "./memory-assets.js";
 import { indexAsset, indexPinnedAsset } from "./asset-sync.js";
 import {
   ingestCCTranscripts,
@@ -386,6 +386,44 @@ program
     for (const row of rows) {
       console.log(assetSummaryLine(row));
     }
+  });
+
+program
+  .command("clean-briefs")
+  .description("归档旧规则生成的脏 brief，并从索引删除对应 asset scope")
+  .option("--apply", "执行清理；默认只预览")
+  .action(async (options) => {
+    const dirty = listDirtyBriefAssets();
+    if (dirty.length === 0) {
+      console.log("No dirty briefs found.");
+      return;
+    }
+
+    if (!options.apply) {
+      console.log("Dirty briefs detected:");
+      for (const item of dirty) {
+        console.log(`${item.id.slice(0, 8)}  ${item.title}  [${item.scope}]  ${item.reasons.join("; ")}`);
+      }
+      console.log("\nRun with --apply to archive files and delete their indexed asset scopes.");
+      return;
+    }
+
+    const config = loadConfig();
+    const { store } = createComponents(config);
+    let archived = 0;
+    let deleted = 0;
+
+    for (const item of dirty) {
+      archiveDirtyBriefAsset(item);
+      archived += 1;
+      deleted += await store.bulkDelete([item.scope]);
+    }
+
+    console.log([
+      `Dirty briefs: ${dirty.length}`,
+      `Archived    : ${archived}`,
+      `Index rows  : ${deleted}`,
+    ].join("\n"));
   });
 
 program
