@@ -18,7 +18,7 @@ import { MemoryStore, validateStoragePath } from "./store.js";
 import { createEmbedder, type EmbeddingConfig } from "./embedder.js";
 import { createRetriever, type RetrievalConfig, DEFAULT_RETRIEVAL_CONFIG, type RetrievalResult } from "./retriever.js";
 import { applyRetrievalProfile, listRetrievalProfiles } from "./retrieval-profiles.js";
-import { distillResults, formatExplainResults, formatSearchResults, summarizeResults } from "./memory-output.js";
+import { distillResults, formatExplainResults, formatSearchResults, selectBriefSeedResults, summarizeResults } from "./memory-output.js";
 import { assetSummaryLine, buildBriefAsset, buildPinAsset, listMemoryAssets, listPinAssets, pinSummaryLine, saveBriefAsset, savePinAsset, writeExportArtifact } from "./memory-assets.js";
 import { indexAsset, indexPinnedAsset } from "./asset-sync.js";
 import {
@@ -338,7 +338,8 @@ program
       return;
     }
 
-    const summary = summarizeResults(results, { query, profile: profile.name });
+    const briefSeedResults = selectBriefSeedResults(results);
+    const summary = summarizeResults(briefSeedResults, { query, profile: profile.name });
     const asset = buildBriefAsset(summary, { title: options.title });
     const path = saveBriefAsset(asset);
     await indexAsset(store, embedder, asset);

@@ -59,6 +59,11 @@ function getSourceLabel(result: RetrievalResult): string {
   return String(meta.source || result.entry.scope || "?");
 }
 
+export function selectBriefSeedResults(results: RetrievalResult[]): RetrievalResult[] {
+  const directResults = results.filter((result) => getSourceLabel(result) !== "asset");
+  return directResults.length > 0 ? directResults : results;
+}
+
 function getFileLabel(result: RetrievalResult): string {
   const meta = parseMetadata(result.entry);
   return String(meta.file || meta.heading || "-");

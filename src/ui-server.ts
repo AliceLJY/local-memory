@@ -8,7 +8,7 @@ import { MemoryStore, validateStoragePath } from "./store.js";
 import { createEmbedder, type EmbeddingConfig } from "./embedder.js";
 import { createRetriever, type RetrievalConfig, DEFAULT_RETRIEVAL_CONFIG, type RetrievalResult } from "./retriever.js";
 import { applyRetrievalProfile } from "./retrieval-profiles.js";
-import { distillResults, formatExplainResults, formatSearchResults, summarizeResults } from "./memory-output.js";
+import { distillResults, formatExplainResults, formatSearchResults, selectBriefSeedResults, summarizeResults } from "./memory-output.js";
 import { assetSummaryLine, buildBriefAsset, buildPinAsset, listExportArtifacts, listMemoryAssets, saveBriefAsset, savePinAsset, writeExportArtifact } from "./memory-assets.js";
 import { indexAsset, indexPinnedAsset } from "./asset-sync.js";
 
@@ -317,7 +317,8 @@ const server = Bun.serve({
       if (results.length === 0) {
         return textResponse(`No results found for: ${query}`, { status: 404 });
       }
-      const summary = summarizeResults(results, { query, profile: profile.name });
+      const briefSeedResults = selectBriefSeedResults(results);
+      const summary = summarizeResults(briefSeedResults, { query, profile: profile.name });
       const asset = buildBriefAsset(summary, { title: body.title ? String(body.title) : undefined });
       const path = saveBriefAsset(asset);
       await indexAsset(store, embedder, asset);
