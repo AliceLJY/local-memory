@@ -32,6 +32,8 @@ Important:
 - prefer the wording the operator actually types
 - do not invent a cleaner label if the real query is messier but more common
 - if `aws ssh` is what gets used in practice, benchmark `aws ssh`, not `aws bot config`
+- abstract, summarized queries are valid benchmarks if that is how the operator naturally searches
+- protect both query styles: exact operational wording and high-level conceptual wording
 
 Each case should define:
 - `query`

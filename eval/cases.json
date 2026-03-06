@@ -38,6 +38,15 @@
     "notes": "Visual preference memories should stay stable."
   },
   {
+    "name": "working_relationship",
+    "query": "我们相处态度",
+    "profile": "default",
+    "limit": 5,
+    "expectAny": ["直接", "少空话", "逻辑", "讲清楚", "表达方式", "Claude Code"],
+    "expectScopePrefixes": ["cc", "asset"],
+    "notes": "Abstract, summarized relationship queries should work without precise keywords."
+  },
+  {
     "name": "aws_ssh_access",
     "query": "aws ssh",
     "profile": "debug",

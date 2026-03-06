@@ -39,6 +39,7 @@ Do not rely on memory when retrieval quality changes. Add an entry, then update 
 | Query family | Current issue | Status |
 |------|------|------|
 | `aws ssh` | needs to stay strong because this is the real operator wording | watch |
+| abstract relationship queries | must keep working without exact keywords | watch |
 | asset-heavy topics | old briefs can pollute recall if asset hygiene is ignored | mitigated, keep watching |
 
 ## Entries
@@ -56,4 +57,19 @@ Do not rely on memory when retrieval quality changes. Add an entry, then update 
 | Failure Type | `bad ranking` |
 | Hypothesis | the earlier eval case used an artificial wording closer to a label than a real operator query |
 | Fix | replace the eval case with `aws ssh` and treat operator wording as the benchmark source of truth |
+| Eval Case Added | `yes` |
+
+## 2026-03-06 - working_relationship_positive
+
+| Field | Value |
+|------|------|
+| Query | `我们相处态度` |
+| Profile | `default` |
+| Scope | `cc / codex / gemini / memory` |
+| Surface | `UI` |
+| Expected | abstract relationship and collaboration preferences should still surface the right context |
+| Actual | user reported the result felt right; eval later passed at `73%`, which means it works but is still weaker than exact operational queries |
+| Failure Type | `weak hit / positive signal` |
+| Hypothesis | semantic recall is working for summarized wording, but abstract preference queries still need stronger ranking and cleaner memory prioritization |
+| Fix | keep this query as a protected eval case and treat it as a primary target for future retrieval tuning |
 | Eval Case Added | `yes` |
