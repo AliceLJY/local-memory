@@ -22,6 +22,7 @@ const toggleStatsButton = document.getElementById('toggleStatsButton');
 const togglePinsButton = document.getElementById('togglePinsButton');
 const toggleTraceButton = document.getElementById('toggleTraceButton');
 const viewTabs = Array.from(document.querySelectorAll('.view-tab'));
+const quickCards = Array.from(document.querySelectorAll('[data-quick-action]'));
 
 let currentView = 'search';
 let lastItems = [];
@@ -713,6 +714,22 @@ async function cleanDirtyBriefs() {
   }
 }
 
+async function handleQuickAction(action) {
+  if (action === 'search') {
+    await runMode('search');
+    return;
+  }
+  if (action === 'distill') {
+    await runMode('distill');
+    return;
+  }
+  if (action === 'pin') {
+    pinMemoryId.focus();
+    pinMemoryId.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    statusLine.textContent = 'Pin flow focused.';
+  }
+}
+
 viewTabs.forEach((tab) => {
   tab.addEventListener('click', async () => {
     const view = tab.dataset.view;
@@ -741,6 +758,11 @@ document.getElementById('statsButton').addEventListener('click', loadStats);
 document.getElementById('briefButton').addEventListener('click', createBrief);
 document.getElementById('exportButton').addEventListener('click', exportMemory);
 document.getElementById('cleanDirtyBriefsButton').addEventListener('click', cleanDirtyBriefs);
+quickCards.forEach((card) => {
+  card.addEventListener('click', async () => {
+    await handleQuickAction(card.dataset.quickAction);
+  });
+});
 toggleStatsButton.addEventListener('click', () => {
   statsExpanded = !statsExpanded;
   renderStats();

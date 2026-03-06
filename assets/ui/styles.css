@@ -95,6 +95,9 @@ body {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  color: var(--ink);
+  text-align: left;
+  width: 100%;
 }
 
 .brand-card strong {
@@ -104,6 +107,18 @@ body {
 .brand-card span {
   color: var(--muted);
   font-size: 12px;
+}
+
+.quick-card {
+  cursor: pointer;
+  transition: transform 140ms ease, background 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
+}
+
+.quick-card:hover {
+  transform: translateY(-1px);
+  background: rgba(255,255,255,0.82);
+  border-color: rgba(29, 107, 102, 0.2);
+  box-shadow: 0 12px 24px rgba(36, 28, 18, 0.08);
 }
 
 .workspace {
