@@ -17,6 +17,7 @@
     "distill": "bun run src/cli.ts distill",
     "brief": "bun run src/cli.ts brief",
     "assets": "bun run src/cli.ts assets",
+    "clean-briefs": "bun run src/cli.ts clean-briefs --apply",
     "profiles": "bun run src/cli.ts profiles",
     "ui": "bun run src/ui-server.ts"
   },
