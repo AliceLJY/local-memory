@@ -113,6 +113,14 @@ function clamp01(value: number, fallback: number): number {
   return Math.min(1, Math.max(0, value));
 }
 
+function parseMetadata(raw?: string): Record<string, unknown> {
+  try {
+    return JSON.parse(raw || "{}") as Record<string, unknown>;
+  } catch {
+    return {};
+  }
+}
+
 // ============================================================================
 // Rerank Provider Adapters
 // ============================================================================
@@ -309,7 +317,8 @@ export class MemoryRetriever {
 
     const boosted = this.applyRecencyBoost(mapped);
     const weighted = this.applyImportanceWeight(boosted);
-    const lengthNormalized = this.applyLengthNormalization(weighted);
+    const assetWeighted = this.applyAssetTypeWeight(weighted);
+    const lengthNormalized = this.applyLengthNormalization(assetWeighted);
     const timeDecayed = this.applyTimeDecay(lengthNormalized);
     const hardFiltered = timeDecayed.filter(r => r.score >= this.config.hardMinScore);
     const denoised = this.config.filterNoise
@@ -356,8 +365,13 @@ export class MemoryRetriever {
     // Apply importance weighting
     const importanceWeighted = this.applyImportanceWeight(temporalReranked);
 
+    // Separate pinned assets from synthesized briefs.
+    // Pins should be slightly easier to recall; briefs should stay useful
+    // without overpowering raw evidence or explicit pins.
+    const assetWeighted = this.applyAssetTypeWeight(importanceWeighted);
+
     // Apply length normalization (penalize long entries dominating via keyword density)
-    const lengthNormalized = this.applyLengthNormalization(importanceWeighted);
+    const lengthNormalized = this.applyLengthNormalization(assetWeighted);
 
     // Apply time decay (penalize stale entries)
     const timeDecayed = this.applyTimeDecay(lengthNormalized);
@@ -643,6 +657,28 @@ export class MemoryRetriever {
         score: clamp01(r.score * factor, r.score * baseWeight),
       };
     });
+    return weighted.sort((a, b) => b.score - a.score);
+  }
+
+  private applyAssetTypeWeight(results: RetrievalResult[]): RetrievalResult[] {
+    const weighted = results.map(r => {
+      const metadata = parseMetadata(r.entry.metadata);
+      const isAsset = metadata.source === "asset" || r.entry.scope.startsWith("asset:");
+      if (!isAsset) return r;
+
+      const assetType = String(metadata.assetType || (r.entry.scope.startsWith("asset:brief:") ? "memory-brief" : "pinned-memory"));
+      const factor = assetType === "memory-brief"
+        ? 0.88
+        : assetType === "pinned-memory"
+          ? 1.04
+          : 1.0;
+
+      return {
+        ...r,
+        score: clamp01(r.score * factor, r.score * 0.75),
+      };
+    });
+
     return weighted.sort((a, b) => b.score - a.score);
   }
 
