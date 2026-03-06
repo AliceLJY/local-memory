@@ -292,6 +292,74 @@ function renderSearchCards(items, mode) {
   bindResultCardActions();
 }
 
+function formatEvidenceList(evidence) {
+  if (!Array.isArray(evidence) || evidence.length === 0) return 'No evidence yet.';
+  return evidence.map((item, index) => {
+    const parts = [
+      `${index + 1}. ${item.source || '-'}`,
+      item.date || '-',
+      item.retrievalPath || '-',
+      item.scope || '-',
+      item.snippet || '-',
+    ];
+    return parts.join(' | ');
+  }).join('\n');
+}
+
+function formatSourceSummary(sources) {
+  if (!Array.isArray(sources) || sources.length === 0) return '-';
+  return sources.map((item) => `${item.source} (${item.hits})`).join(', ');
+}
+
+function assetDetailMarkup(item) {
+  if (item.type === 'memory-brief') {
+    return `
+      <div class="result-card-detail">
+        <div class="detail-block">
+          <strong>Brief Meta</strong>
+          <code>Query: ${escapeHtml(item.query || '-')}
+Profile: ${escapeHtml(item.profile || '-')}
+Hits: ${escapeHtml(String(item.hits || 0))}
+Sources: ${escapeHtml(formatSourceSummary(item.sources || []))}</code>
+        </div>
+        <div class="detail-block">
+          <strong>Takeaways</strong>
+          <pre>${escapeHtml((item.takeaways || []).map((line, index) => `${index + 1}. ${line}`).join('\n') || 'No takeaways yet.')}</pre>
+        </div>
+        <div class="detail-block">
+          <strong>Evidence</strong>
+          <pre>${escapeHtml(formatEvidenceList(item.evidence || []))}</pre>
+        </div>
+        <div class="detail-block">
+          <strong>Reusable Candidates</strong>
+          <pre>${escapeHtml((item.reusableCandidates || []).map((line, index) => `${index + 1}. ${line}`).join('\n') || 'No reusable candidates yet.')}</pre>
+        </div>
+      </div>
+    `;
+  }
+
+  return `
+    <div class="result-card-detail">
+      <div class="detail-block">
+        <strong>Pin Meta</strong>
+        <code>Source Memory: ${escapeHtml(item.sourceMemoryId || '-')}
+Source Scope: ${escapeHtml(item.sourceScope || '-')}
+Query: ${escapeHtml(item.retrieval?.query || '-')}
+Profile: ${escapeHtml(item.retrieval?.profile || '-')}
+Path: ${escapeHtml(item.retrieval?.path || '-')}</code>
+      </div>
+      <div class="detail-block">
+        <strong>Snippet</strong>
+        <pre>${escapeHtml(item.snippet || item.summary || '-')}</pre>
+      </div>
+      <div class="detail-block">
+        <strong>Tags</strong>
+        <pre>${escapeHtml((item.tags || []).join(', ') || '-')}</pre>
+      </div>
+    </div>
+  `;
+}
+
 function renderPinsView(items) {
   if (!items || items.length === 0) {
     resultCards.innerHTML = '<div class="empty-state">No memory assets yet.</div>';
@@ -312,9 +380,11 @@ function renderPinsView(items) {
       </div>
       <p class="result-snippet">${escapeHtml(item.summary || '')}</p>
       <div class="result-card-actions">
+        <button class="card-chip" data-toggle-id="${escapeHtml(item.shortId)}">Details</button>
         <button class="card-chip" data-copy-path="${escapeHtml(item.path)}">Copy Path</button>
         <button class="card-chip" data-open-path="${escapeHtml(item.path)}">Open File</button>
       </div>
+      ${assetDetailMarkup(item)}
     </article>
   `).join('');
 
