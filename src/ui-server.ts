@@ -9,7 +9,7 @@ import { createEmbedder, type EmbeddingConfig } from "./embedder.js";
 import { createRetriever, type RetrievalConfig, DEFAULT_RETRIEVAL_CONFIG, type RetrievalResult } from "./retriever.js";
 import { applyRetrievalProfile } from "./retrieval-profiles.js";
 import { distillResults, formatExplainResults, formatSearchResults, selectBriefSeedResults, summarizeResults } from "./memory-output.js";
-import { assetSummaryLine, buildBriefAsset, buildPinAsset, listExportArtifacts, listMemoryAssets, saveBriefAsset, savePinAsset, writeExportArtifact } from "./memory-assets.js";
+import { archiveDirtyBriefAsset, assetSummaryLine, buildBriefAsset, buildPinAsset, listDirtyBriefAssets, listExportArtifacts, listMemoryAssets, saveBriefAsset, savePinAsset, writeExportArtifact } from "./memory-assets.js";
 import { indexAsset, indexPinnedAsset } from "./asset-sync.js";
 
 interface LocalMemoryConfig {
@@ -292,6 +292,25 @@ const server = Bun.serve({
       return textResponse(`Total: ${stats.totalCount}\n\nBy scope:\n${sourceCounts}`);
     }
 
+    if (request.method === "GET" && url.pathname === "/api/dirty-briefs") {
+      const rows = listDirtyBriefAssets();
+      const output = rows.length === 0
+        ? "No dirty briefs found."
+        : rows.map((row) => `${row.id.slice(0, 8)}  ${row.title}  [${row.scope}]  ${row.reasons.join("; ")}`).join("\n");
+      return Response.json({
+        output,
+        count: rows.length,
+        items: rows.map((row) => ({
+          id: row.id,
+          shortId: row.id.slice(0, 8),
+          title: row.title,
+          scope: row.scope,
+          reasons: row.reasons,
+          path: row.path,
+        })),
+      });
+    }
+
     if (request.method === "POST" && url.pathname === "/api/pin") {
       const body = await readJson(request);
       const { store, embedder } = getComponents(body.profile);
@@ -335,6 +354,28 @@ const server = Bun.serve({
         output: `Created brief ${asset.id.slice(0, 8)}\nTitle: ${asset.title}\nHits: ${asset.hits}\nPath: ${path}`,
         assetId: asset.id,
         path,
+      });
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/clean-dirty-briefs") {
+      const rows = listDirtyBriefAssets();
+      if (rows.length === 0) {
+        return Response.json({ output: "No dirty briefs found.", count: 0, archived: 0, deleted: 0 });
+      }
+
+      let archived = 0;
+      let deleted = 0;
+      for (const row of rows) {
+        archiveDirtyBriefAsset(row);
+        archived += 1;
+        deleted += await getComponents().store.bulkDelete([row.scope]);
+      }
+
+      return Response.json({
+        output: `Dirty briefs: ${rows.length}\nArchived: ${archived}\nIndex rows deleted: ${deleted}`,
+        count: rows.length,
+        archived,
+        deleted,
       });
     }
 

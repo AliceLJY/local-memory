@@ -291,6 +291,22 @@ textarea { resize: vertical; min-height: 120px; }
   display: none;
 }
 
+.ops-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.ops-bar.is-hidden {
+  display: none;
+}
+
+.ops-copy {
+  color: var(--muted);
+  font-size: 13px;
+}
+
 .artifact-bar {
   display: grid;
   gap: 10px;

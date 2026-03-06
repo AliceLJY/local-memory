@@ -19,7 +19,7 @@ import { createEmbedder, type EmbeddingConfig } from "./embedder.js";
 import { createRetriever, type RetrievalConfig, DEFAULT_RETRIEVAL_CONFIG, type RetrievalResult } from "./retriever.js";
 import { applyRetrievalProfile } from "./retrieval-profiles.js";
 import { distillResults, formatExplainResults, formatSearchResults, selectBriefSeedResults, summarizeResults } from "./memory-output.js";
-import { assetSummaryLine, buildBriefAsset, buildPinAsset, listMemoryAssets, listPinAssets, saveBriefAsset, savePinAsset, writeExportArtifact } from "./memory-assets.js";
+import { archiveDirtyBriefAsset, assetSummaryLine, buildBriefAsset, buildPinAsset, listDirtyBriefAssets, listMemoryAssets, listPinAssets, saveBriefAsset, savePinAsset, writeExportArtifact } from "./memory-assets.js";
 import { indexAsset, indexPinnedAsset } from "./asset-sync.js";
 
 // ============================================================================
@@ -360,6 +360,63 @@ server.tool(
       ...rows.map(row => assetSummaryLine(row)),
     ];
     return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+  }
+);
+
+server.tool(
+  "list_dirty_briefs",
+  "Preview dirty memory briefs that were generated before the current brief-cleanup rules.",
+  {},
+  async () => {
+    const rows = listDirtyBriefAssets();
+    if (rows.length === 0) {
+      return { content: [{ type: "text" as const, text: "No dirty briefs found." }] };
+    }
+    const lines = [
+      "Brief ID  Title  Scope  Reasons",
+      "--------  -----  -----  ----------------------------------------",
+      ...rows.map(row => `${row.id.slice(0, 8)}  ${row.title}  [${row.scope}]  ${row.reasons.join("; ")}`),
+    ];
+    return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+  }
+);
+
+server.tool(
+  "clean_dirty_briefs",
+  "Archive dirty briefs and remove their indexed asset scopes. Use preview mode first if unsure.",
+  {
+    apply: z.boolean().default(false).describe("When false, preview only. When true, archive and delete indexed rows."),
+  },
+  async ({ apply }) => {
+    const rows = listDirtyBriefAssets();
+    if (rows.length === 0) {
+      return { content: [{ type: "text" as const, text: "No dirty briefs found." }] };
+    }
+
+    if (!apply) {
+      const preview = rows.map(row => `${row.id.slice(0, 8)}  ${row.title}  [${row.scope}]  ${row.reasons.join("; ")}`).join("\n");
+      return {
+        content: [{
+          type: "text" as const,
+          text: `Dirty briefs detected: ${rows.length}\n\n${preview}\n\nCall clean_dirty_briefs with apply=true to archive them.`,
+        }],
+      };
+    }
+
+    let archived = 0;
+    let deleted = 0;
+    for (const row of rows) {
+      archiveDirtyBriefAsset(row);
+      archived += 1;
+      deleted += await store.bulkDelete([row.scope]);
+    }
+
+    return {
+      content: [{
+        type: "text" as const,
+        text: `Dirty briefs: ${rows.length}\nArchived: ${archived}\nIndex rows deleted: ${deleted}`,
+      }],
+    };
   }
 );
 

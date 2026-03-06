@@ -11,6 +11,8 @@ const resultCards = document.getElementById('resultCards');
 const viewToolbar = document.getElementById('viewToolbar');
 const viewFilterInput = document.getElementById('viewFilterInput');
 const assetTagBar = document.getElementById('assetTagBar');
+const assetOpsBar = document.getElementById('assetOpsBar');
+const dirtyBriefCount = document.getElementById('dirtyBriefCount');
 const statusLine = document.getElementById('statusLine');
 const pinMemoryId = document.getElementById('pinMemoryId');
 const pinTitle = document.getElementById('pinTitle');
@@ -34,6 +36,7 @@ let lastPins = [];
 let lastExports = [];
 let currentViewFilter = '';
 let activeAssetTag = '';
+let lastDirtyBriefCount = 0;
 
 async function api(path, payload) {
   const response = await fetch(path, {
@@ -152,6 +155,7 @@ function setActiveView(view) {
   const filterEnabled = view === 'pins' || view === 'exports';
   viewToolbar.classList.toggle('is-hidden', !filterEnabled);
   assetTagBar.classList.toggle('is-hidden', view !== 'pins');
+  assetOpsBar.classList.toggle('is-hidden', view !== 'pins');
   if (!filterEnabled) {
     currentViewFilter = '';
     viewFilterInput.value = '';
@@ -199,6 +203,10 @@ function renderAssetTagBar(items) {
       </button>
     `).join('')}
   `;
+}
+
+function renderDirtyBriefOps() {
+  dirtyBriefCount.textContent = `Dirty briefs: ${lastDirtyBriefCount}`;
 }
 
 function filterPins(items) {
@@ -565,11 +573,25 @@ async function loadPins() {
     fullPinsText = data.output;
     renderPinsPanel();
     renderAssetTagBar(lastPins);
+    await loadDirtyBriefs();
     if (currentView === 'pins') renderMainSurface();
   } catch (error) {
     fullPinsText = String(error.message || error);
     renderPinsPanel();
     renderAssetTagBar([]);
+    lastDirtyBriefCount = 0;
+    renderDirtyBriefOps();
+  }
+}
+
+async function loadDirtyBriefs() {
+  try {
+    const data = await api('/api/dirty-briefs');
+    lastDirtyBriefCount = Number(data.count || 0);
+    renderDirtyBriefOps();
+  } catch {
+    lastDirtyBriefCount = 0;
+    renderDirtyBriefOps();
   }
 }
 
@@ -676,6 +698,21 @@ async function exportMemory() {
   }
 }
 
+async function cleanDirtyBriefs() {
+  statusLine.textContent = 'Archiving dirty briefs...';
+  try {
+    const data = await api('/api/clean-dirty-briefs', {});
+    resultOutput.textContent = data.output;
+    await loadPins();
+    await loadStats();
+    renderMainSurface();
+    statusLine.textContent = data.count > 0 ? 'Dirty briefs archived.' : 'No dirty briefs found.';
+  } catch (error) {
+    resultOutput.textContent = String(error.message || error);
+    statusLine.textContent = 'Dirty brief cleanup failed.';
+  }
+}
+
 viewTabs.forEach((tab) => {
   tab.addEventListener('click', async () => {
     const view = tab.dataset.view;
@@ -703,6 +740,7 @@ document.getElementById('reloadPinsButton').addEventListener('click', async () =
 document.getElementById('statsButton').addEventListener('click', loadStats);
 document.getElementById('briefButton').addEventListener('click', createBrief);
 document.getElementById('exportButton').addEventListener('click', exportMemory);
+document.getElementById('cleanDirtyBriefsButton').addEventListener('click', cleanDirtyBriefs);
 toggleStatsButton.addEventListener('click', () => {
   statsExpanded = !statsExpanded;
   renderStats();
@@ -738,6 +776,7 @@ setActiveView('search');
 renderArtifactBar();
 renderStats();
 renderPinsPanel();
+renderDirtyBriefOps();
 renderTrace();
 renderMainSurface();
 loadPins();
