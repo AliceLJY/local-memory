@@ -10,6 +10,7 @@ const artifactBar = document.getElementById('artifactBar');
 const resultCards = document.getElementById('resultCards');
 const viewToolbar = document.getElementById('viewToolbar');
 const viewFilterInput = document.getElementById('viewFilterInput');
+const assetTagBar = document.getElementById('assetTagBar');
 const statusLine = document.getElementById('statusLine');
 const pinMemoryId = document.getElementById('pinMemoryId');
 const pinTitle = document.getElementById('pinTitle');
@@ -32,6 +33,7 @@ let traceExpanded = false;
 let lastPins = [];
 let lastExports = [];
 let currentViewFilter = '';
+let activeAssetTag = '';
 
 async function api(path, payload) {
   const response = await fetch(path, {
@@ -149,22 +151,69 @@ function setActiveView(view) {
   });
   const filterEnabled = view === 'pins' || view === 'exports';
   viewToolbar.classList.toggle('is-hidden', !filterEnabled);
+  assetTagBar.classList.toggle('is-hidden', view !== 'pins');
   if (!filterEnabled) {
     currentViewFilter = '';
     viewFilterInput.value = '';
   }
+  if (view !== 'pins') {
+    activeAssetTag = '';
+    assetTagBar.innerHTML = '';
+  }
+}
+
+function topAssetTags(items, limit = 8) {
+  const counts = new Map();
+  for (const item of items) {
+    for (const tag of item.tags || []) {
+      counts.set(tag, (counts.get(tag) || 0) + 1);
+    }
+  }
+  return Array.from(counts.entries())
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .slice(0, limit);
+}
+
+function renderAssetTagBar(items) {
+  if (currentView !== 'pins') {
+    assetTagBar.innerHTML = '';
+    assetTagBar.classList.add('is-hidden');
+    return;
+  }
+
+  const tags = topAssetTags(items);
+  if (tags.length === 0) {
+    assetTagBar.innerHTML = '';
+    assetTagBar.classList.add('is-hidden');
+    return;
+  }
+
+  assetTagBar.classList.remove('is-hidden');
+  assetTagBar.innerHTML = `
+    <button class="tag-chip ${activeAssetTag ? '' : 'is-active'}" data-asset-tag="">
+      All Tags
+    </button>
+    ${tags.map(([tag, count]) => `
+      <button class="tag-chip ${activeAssetTag === tag ? 'is-active' : ''}" data-asset-tag="${escapeHtml(tag)}">
+        ${escapeHtml(tag)} <span>${count}</span>
+      </button>
+    `).join('')}
+  `;
 }
 
 function filterPins(items) {
   const needle = currentViewFilter.trim().toLowerCase();
-  if (!needle) return items;
-  return items.filter((item) =>
-    [item.title, item.summary, item.scope, item.type, item.hits, ...(item.tags || [])]
-      .filter(Boolean)
-      .join(' ')
-      .toLowerCase()
-      .includes(needle),
-  );
+  return items.filter((item) => {
+    const matchesText = !needle || (
+      [item.title, item.summary, item.scope, item.type, item.hits, ...(item.tags || [])]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase()
+        .includes(needle)
+    );
+    const matchesTag = !activeAssetTag || (item.tags || []).includes(activeAssetTag);
+    return matchesText && matchesTag;
+  });
 }
 
 function filterExports(items) {
@@ -245,6 +294,16 @@ function bindResultCardActions() {
       setActiveView('search');
       statusLine.textContent = 'Running evidence search...';
       await runMode('search');
+    });
+  });
+
+  resultCards.querySelectorAll('[data-asset-tag]').forEach((button) => {
+    button.addEventListener('click', () => {
+      activeAssetTag = button.dataset.assetTag || '';
+      renderMainSurface();
+      statusLine.textContent = activeAssetTag
+        ? `Filtered assets by tag: ${activeAssetTag}`
+        : 'Cleared asset tag filter.';
     });
   });
 }
@@ -403,6 +462,11 @@ function renderPinsView(items) {
         <span>${escapeHtml(item.date)}</span>
       </div>
       <p class="result-snippet">${escapeHtml(item.summary || '')}</p>
+      <div class="result-card-meta">
+        ${(item.tags || []).slice(0, 6).map((tag) => `
+          <button class="tag-chip inline" data-asset-tag="${escapeHtml(tag)}">${escapeHtml(tag)}</button>
+        `).join('') || '<span>-</span>'}
+      </div>
       <div class="result-card-actions">
         <button class="card-chip" data-toggle-id="${escapeHtml(item.shortId)}">Details</button>
         <button class="card-chip" data-copy-path="${escapeHtml(item.path)}">Copy Path</button>
@@ -447,7 +511,8 @@ function renderMainSurface() {
   if (currentView === 'pins') {
     const filtered = filterPins(lastPins);
     resultTitle.textContent = 'Memory Assets';
-    resultMeta.textContent = `Assets: ${filtered.length}${currentViewFilter ? ` / ${lastPins.length} total` : ''}`;
+    resultMeta.textContent = `Assets: ${filtered.length}${currentViewFilter || activeAssetTag ? ` / ${lastPins.length} total` : ''}${activeAssetTag ? ` | Tag: ${activeAssetTag}` : ''}`;
+    renderAssetTagBar(lastPins);
     renderPinsView(filtered);
     return;
   }
@@ -499,10 +564,12 @@ async function loadPins() {
     lastPins = data.items || [];
     fullPinsText = data.output;
     renderPinsPanel();
+    renderAssetTagBar(lastPins);
     if (currentView === 'pins') renderMainSurface();
   } catch (error) {
     fullPinsText = String(error.message || error);
     renderPinsPanel();
+    renderAssetTagBar([]);
   }
 }
 
@@ -653,6 +720,16 @@ viewFilterInput.addEventListener('input', () => {
   if (currentView === 'pins' || currentView === 'exports') {
     renderMainSurface();
   }
+});
+
+assetTagBar.addEventListener('click', (event) => {
+  const button = event.target.closest('[data-asset-tag]');
+  if (!button) return;
+  activeAssetTag = button.dataset.assetTag || '';
+  renderMainSurface();
+  statusLine.textContent = activeAssetTag
+    ? `Filtered assets by tag: ${activeAssetTag}`
+    : 'Cleared asset tag filter.';
 });
 
 queryInput.value = 'telegram bridge';

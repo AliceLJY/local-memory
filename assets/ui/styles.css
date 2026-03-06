@@ -230,6 +230,35 @@ textarea { resize: vertical; min-height: 120px; }
 
 .full-width { width: 100%; }
 
+.tag-chip {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 7px 12px;
+  background: rgba(29, 107, 102, 0.08);
+  color: var(--ink);
+  cursor: pointer;
+  transition: transform 140ms ease, background 140ms ease, border-color 140ms ease;
+}
+
+.tag-chip:hover {
+  transform: translateY(-1px);
+}
+
+.tag-chip.is-active {
+  background: var(--accent);
+  color: #f6fffd;
+  border-color: transparent;
+}
+
+.tag-chip.inline {
+  padding: 5px 10px;
+  font-size: 12px;
+}
+
+.tag-chip span {
+  opacity: 0.72;
+}
+
 .status-line {
   min-height: 20px;
   color: var(--muted);
@@ -244,10 +273,21 @@ textarea { resize: vertical; min-height: 120px; }
 
 .view-toolbar {
   display: grid;
+  gap: 10px;
   margin-bottom: 12px;
 }
 
 .view-toolbar.is-hidden {
+  display: none;
+}
+
+.tag-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.tag-bar.is-hidden {
   display: none;
 }
 
