@@ -247,7 +247,16 @@ const server = Bun.serve({
           tags: row.tags,
           path: row.path,
           sourceMemoryId: row.type === "pinned-memory" ? row.source.memoryId : undefined,
+          sourceScope: row.type === "pinned-memory" ? row.source.scope : undefined,
+          snippet: row.type === "pinned-memory" ? row.snippet : undefined,
+          retrieval: row.type === "pinned-memory" ? row.retrieval : undefined,
           hits: row.type === "memory-brief" ? row.hits : undefined,
+          query: row.type === "memory-brief" ? row.query : undefined,
+          profile: row.type === "memory-brief" ? row.profile : undefined,
+          takeaways: row.type === "memory-brief" ? row.takeaways : undefined,
+          evidence: row.type === "memory-brief" ? row.evidence : undefined,
+          reusableCandidates: row.type === "memory-brief" ? row.reusableCandidates : undefined,
+          sources: row.type === "memory-brief" ? row.sources : undefined,
         })),
       });
     }
