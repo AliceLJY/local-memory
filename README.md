@@ -159,6 +159,7 @@ Config lookup order:
 
 The next build phase is tracked in [ROADMAP.md](./ROADMAP.md).
 Retrieval quality changes should be tracked with [EVAL.md](./EVAL.md).
+Common operator actions live in [OPERATIONS.md](./OPERATIONS.md).
 
 Current focus:
 
