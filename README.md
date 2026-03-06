@@ -158,6 +158,7 @@ Config lookup order:
 ## Roadmap
 
 The next build phase is tracked in [ROADMAP.md](./ROADMAP.md).
+Retrieval quality changes should be tracked with [EVAL.md](./EVAL.md).
 
 Current focus:
 
@@ -166,6 +167,28 @@ Current focus:
 | Structured Memory | Move from raw chunks to reusable memory objects |
 | Product UI | Make the workbench cleaner, faster, and easier to demo |
 | Writing Workflow | Turn recall into reusable briefs and article inputs |
+
+## Eval
+
+When retrieval changes, do not rely on intuition alone.
+
+Run:
+
+```bash
+bun run src/eval.ts --output eval/reports/latest.md
+```
+
+Starter cases live in:
+
+```text
+eval/cases.json
+```
+
+Operator memo:
+
+```text
+EVAL.md
+```
 
 ## Architecture
 
