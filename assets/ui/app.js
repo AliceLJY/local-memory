@@ -500,6 +500,7 @@ viewFilterInput.addEventListener('input', () => {
 });
 
 queryInput.value = 'telegram bridge';
+profileInput.value = 'debug';
 setActiveView('search');
 renderArtifactBar();
 renderStats();
@@ -508,3 +509,4 @@ renderMainSurface();
 loadPins();
 loadExports();
 loadStats();
+runMode('search');
