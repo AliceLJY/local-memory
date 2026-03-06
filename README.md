@@ -5,6 +5,8 @@
 
 RecallNest turns Claude Code, Codex, Gemini, and markdown notes into a local-first recall layer you can search, explain, distill, pin, and export.
 
+![RecallNest workbench](./assets/recallnest-workbench.png)
+
 ## At A Glance
 
 | Problem | RecallNest answer |
@@ -143,6 +145,18 @@ Config lookup order:
 | MCP server name | `recallnest` |
 | GitHub repo | `AliceLJY/recallnest` |
 | Local directory | any path works |
+
+## Roadmap
+
+The next build phase is tracked in [ROADMAP.md](./ROADMAP.md).
+
+Current focus:
+
+| Track | Goal |
+|------|------|
+| Structured Memory | Move from raw chunks to reusable memory objects |
+| Product UI | Make the workbench cleaner, faster, and easier to demo |
+| Writing Workflow | Turn recall into reusable briefs and article inputs |
 
 ## Architecture
 
