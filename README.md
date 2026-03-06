@@ -1,7 +1,7 @@
 # RecallNest
 
 > MCP-native memory workbench for AI conversations.
-> Built with OpenAI Codex.
+> Foundation built with Claude Code. Productization and UI expansion completed with OpenAI Codex.
 
 RecallNest turns Claude Code, Codex, Gemini, and markdown notes into a local-first recall layer you can search, explain, distill, pin, and export.
 
