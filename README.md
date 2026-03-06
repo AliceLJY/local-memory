@@ -161,7 +161,17 @@ Config lookup order:
 
 ## Credit
 
-The retrieval engine (`store`, `retriever`, `embedder`, `chunker`, `noise-filter`) is based on [memory-lancedb-pro](https://github.com/win4r/memory-lancedb-pro) by [@win4r](https://github.com/win4r). RecallNest extracts that retrieval core and rebuilds it into a local-first memory workbench.
+| Source | Contribution |
+|------|------|
+| Claude Code | Foundation and early project scaffolding |
+| OpenAI Codex | Productization, branding pass, MCP/UI expansion |
+| [memory-lancedb-pro](https://github.com/win4r/memory-lancedb-pro) by [@win4r](https://github.com/win4r) | Retrieval core ideas and implementation base for `store`, `retriever`, `embedder`, `chunker`, and `noise-filter` |
+
+RecallNest extracts that retrieval core and rebuilds it into a local-first memory workbench.
+
+## Acknowledgements
+
+Special thanks to 秦超老师 ([`@win4r`](https://github.com/win4r)). The retrieval design direction behind RecallNest comes directly from the `memory-lancedb-pro` line of thinking: hybrid retrieval, reranking, scope-aware recall, and building memory as an engineering system instead of a simple vector demo.
 
 ## License
 
