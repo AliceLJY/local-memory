@@ -10,127 +10,12 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { readFileSync, existsSync } from "node:fs";
-import { resolve, join } from "node:path";
-import { homedir } from "node:os";
-
-import { MemoryStore, validateStoragePath } from "./store.js";
-import { createEmbedder, type EmbeddingConfig } from "./embedder.js";
-import { createRetriever, type RetrievalConfig, DEFAULT_RETRIEVAL_CONFIG, type RetrievalResult } from "./retriever.js";
-import { applyRetrievalProfile } from "./retrieval-profiles.js";
+import type { RetrievalResult } from "./retriever.js";
+import type { MemoryStore } from "./store.js";
 import { distillResults, formatExplainResults, formatSearchResults, selectBriefSeedResults, summarizeResults } from "./memory-output.js";
 import { archiveDirtyBriefAsset, assetSummaryLine, buildBriefAsset, buildPinAsset, listDirtyBriefAssets, listMemoryAssets, listPinAssets, saveBriefAsset, savePinAsset, writeExportArtifact } from "./memory-assets.js";
 import { indexAsset, indexPinnedAsset } from "./asset-sync.js";
-
-// ============================================================================
-// Config (same as cli.ts)
-// ============================================================================
-
-interface LocalMemoryConfig {
-  dbPath: string;
-  embedding: {
-    provider: string;
-    apiKey: string;
-    model: string;
-    baseURL?: string;
-    dimensions?: number;
-    taskQuery?: string;
-    taskPassage?: string;
-  };
-  sources: Record<string, { path: string; glob: string; description: string }>;
-  retrieval?: Partial<RetrievalConfig>;
-}
-
-function findConfigPath(): string {
-  // 1. Environment variable
-  if (process.env.LOCAL_MEMORY_CONFIG) {
-    return resolve(process.env.LOCAL_MEMORY_CONFIG);
-  }
-  // 2. Next to this script
-  const scriptDir = typeof import.meta.dir === "string"
-    ? import.meta.dir
-    : resolve(".");
-  const localConfig = resolve(scriptDir, "../config.json");
-  if (existsSync(localConfig)) return localConfig;
-  // 3. ~/.config/recallnest/config.json (preferred)
-  const brandedConfig = join(homedir(), ".config", "recallnest", "config.json");
-  if (existsSync(brandedConfig)) return brandedConfig;
-  // 4. ~/.config/local-memory/config.json (backward compatibility)
-  const homeConfig = join(homedir(), ".config", "local-memory", "config.json");
-  if (existsSync(homeConfig)) return homeConfig;
-
-  throw new Error(
-    "Config not found. Set LOCAL_MEMORY_CONFIG env var or place config.json next to the project."
-  );
-}
-
-function loadConfig(): LocalMemoryConfig {
-  const configPath = findConfigPath();
-  const raw = readFileSync(configPath, "utf-8");
-  return JSON.parse(raw) as LocalMemoryConfig;
-}
-
-function resolveEnv(value: string): string {
-  return value.replace(/\$\{([^}]+)\}/g, (_, name) => {
-    const envVal = process.env[name];
-    if (!envVal) throw new Error(`Environment variable ${name} not set`);
-    return envVal;
-  });
-}
-
-function expandHome(p: string): string {
-  if (p.startsWith("~/")) return join(homedir(), p.slice(2));
-  return p;
-}
-
-// ============================================================================
-// Initialize components
-// ============================================================================
-
-function createComponents(config: LocalMemoryConfig, profileName?: string) {
-  const configDir = typeof import.meta.dir === "string"
-    ? resolve(import.meta.dir, "..")
-    : resolve(".");
-  const dbPath = resolve(configDir, expandHome(config.dbPath));
-  validateStoragePath(dbPath);
-
-  const embeddingConfig: EmbeddingConfig = {
-    provider: "openai-compatible",
-    apiKey: resolveEnv(config.embedding.apiKey),
-    model: config.embedding.model,
-    baseURL: config.embedding.baseURL,
-    dimensions: config.embedding.dimensions,
-    taskQuery: config.embedding.taskQuery,
-    taskPassage: config.embedding.taskPassage,
-  };
-
-  const embedder = createEmbedder(embeddingConfig);
-
-  const store = new MemoryStore({
-    dbPath,
-    vectorDim: embedder.dimensions,
-  });
-
-  const baseRetrievalConfig = {
-    ...DEFAULT_RETRIEVAL_CONFIG,
-    ...(config.retrieval || {}),
-  };
-  const { profile, config: retrieverConfig } = applyRetrievalProfile(baseRetrievalConfig, profileName);
-  const retriever = createRetriever(store, embedder, retrieverConfig);
-
-  return { store, embedder, retriever, profile };
-}
-
-const componentCache = new Map<string, ReturnType<typeof createComponents>>();
-
-function getComponents(profileName?: string) {
-  const key = profileName || "default";
-  const cached = componentCache.get(key);
-  if (cached) return cached;
-  const created = createComponents(config, profileName);
-  componentCache.set(key, created);
-  return created;
-}
+import { createComponentResolver, loadConfig, loadDotEnv } from "./runtime-config.js";
 
 function entryToRetrievalResult(entry: Awaited<ReturnType<MemoryStore["get"]>>): RetrievalResult {
   if (!entry) {
@@ -149,26 +34,10 @@ function entryToRetrievalResult(entry: Awaited<ReturnType<MemoryStore["get"]>>):
 // MCP Server
 // ============================================================================
 
-// Load .env if present
-const envPath = resolve(typeof import.meta.dir === "string" ? import.meta.dir : ".", "../.env");
-if (existsSync(envPath)) {
-  const envContent = readFileSync(envPath, "utf-8");
-  for (const line of envContent.split("\n")) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) continue;
-    const eqIdx = trimmed.indexOf("=");
-    if (eqIdx > 0) {
-      const key = trimmed.slice(0, eqIdx).trim();
-      const val = trimmed.slice(eqIdx + 1).trim();
-      if (!process.env[key]) {
-        process.env[key] = val;
-      }
-    }
-  }
-}
-
+loadDotEnv();
 const config = loadConfig();
-const { store } = createComponents(config);
+const getComponents = createComponentResolver(config);
+const { store } = getComponents();
 
 const server = new McpServer({
   name: "recallnest",

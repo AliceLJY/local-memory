@@ -10,81 +10,22 @@
  */
 
 import { Command } from "commander";
-import { readFileSync, existsSync, readdirSync } from "node:fs";
-import { resolve, join } from "node:path";
+import { existsSync, readdirSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { homedir } from "node:os";
 
-import { MemoryStore, validateStoragePath } from "./store.js";
-import { createEmbedder, type EmbeddingConfig } from "./embedder.js";
-import { createRetriever, type RetrievalConfig, DEFAULT_RETRIEVAL_CONFIG, type RetrievalResult } from "./retriever.js";
+import type { RetrievalResult } from "./retriever.js";
 import { applyRetrievalProfile, listRetrievalProfiles } from "./retrieval-profiles.js";
 import { distillResults, formatExplainResults, formatSearchResults, selectBriefSeedResults, summarizeResults } from "./memory-output.js";
 import { archiveDirtyBriefAsset, assetSummaryLine, buildBriefAsset, buildPinAsset, listDirtyBriefAssets, listMemoryAssets, listPinAssets, pinSummaryLine, saveBriefAsset, savePinAsset, writeExportArtifact } from "./memory-assets.js";
 import { indexAsset, indexPinnedAsset } from "./asset-sync.js";
+import { createComponents, expandHome, loadConfig, loadDotEnv, type LocalMemoryConfig } from "./runtime-config.js";
 import {
   ingestCCTranscripts,
   ingestCodexSessions,
   ingestGeminiSessions,
   ingestMarkdownFiles,
 } from "./ingest.js";
-
-// ============================================================================
-// Config
-// ============================================================================
-
-interface LocalMemoryConfig {
-  dbPath: string;
-  embedding: {
-    provider: string;
-    apiKey: string;
-    model: string;
-    baseURL?: string;
-    dimensions?: number;
-    taskQuery?: string;
-    taskPassage?: string;
-  };
-  sources: Record<string, { path: string; glob: string; description: string }>;
-  retrieval?: Partial<RetrievalConfig>;
-}
-
-// Load .env file (simple parser, no dependency)
-function loadDotEnv(): void {
-  const envPath = resolve(import.meta.dir, "../.env");
-  if (!existsSync(envPath)) return;
-  const content = readFileSync(envPath, "utf-8");
-  for (const line of content.split("\n")) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) continue;
-    const eqIdx = trimmed.indexOf("=");
-    if (eqIdx > 0) {
-      const key = trimmed.slice(0, eqIdx).trim();
-      const val = trimmed.slice(eqIdx + 1).trim();
-      if (!process.env[key]) process.env[key] = val;
-    }
-  }
-}
-
-function loadConfig(): LocalMemoryConfig {
-  const configPath = resolve(import.meta.dir, "../config.json");
-  if (!existsSync(configPath)) {
-    throw new Error(`Config not found: ${configPath}`);
-  }
-  const raw = readFileSync(configPath, "utf-8");
-  return JSON.parse(raw) as LocalMemoryConfig;
-}
-
-function resolveEnv(value: string): string {
-  return value.replace(/\$\{([^}]+)\}/g, (_, name) => {
-    const envVal = process.env[name];
-    if (!envVal) throw new Error(`Environment variable ${name} not set`);
-    return envVal;
-  });
-}
-
-function expandHome(p: string): string {
-  if (p.startsWith("~/")) return join(homedir(), p.slice(2));
-  return p;
-}
 
 /**
  * Auto-detect Claude Code transcript directory.
@@ -133,41 +74,6 @@ function resolveSourcePath(source: string, key: string): string {
 }
 
 // ============================================================================
-// Initialize
-// ============================================================================
-
-function createComponents(config: LocalMemoryConfig, profileName?: string) {
-  const dbPath = resolve(import.meta.dir, "..", expandHome(config.dbPath));
-  validateStoragePath(dbPath);
-
-  const embeddingConfig: EmbeddingConfig = {
-    provider: "openai-compatible",
-    apiKey: resolveEnv(config.embedding.apiKey),
-    model: config.embedding.model,
-    baseURL: config.embedding.baseURL,
-    dimensions: config.embedding.dimensions,
-    taskQuery: config.embedding.taskQuery,
-    taskPassage: config.embedding.taskPassage,
-  };
-
-  const embedder = createEmbedder(embeddingConfig);
-
-  const store = new MemoryStore({
-    dbPath,
-    vectorDim: embedder.dimensions,
-  });
-
-  const baseRetrievalConfig = {
-    ...DEFAULT_RETRIEVAL_CONFIG,
-    ...(config.retrieval || {}),
-  };
-  const { profile, config: retrieverConfig } = applyRetrievalProfile(baseRetrievalConfig, profileName);
-  const retriever = createRetriever(store, embedder, retrieverConfig);
-
-  return { store, embedder, retriever, profile };
-}
-
-// ============================================================================
 // CLI
 // ============================================================================
 
@@ -186,8 +92,8 @@ async function runRetrievalView(
   const config = loadConfig();
   const { retriever, profile } = createComponents(config, options.profile);
 
-  const limit = parseInt(options.limit || "5") || 5;
-  const scopeFilter = options.scope ? [options.scope] : undefined;
+  const limit = parseLimitOption(options.limit, 5, 1, 20);
+  const scopeFilter = toScopeFilter(options.scope);
   const results = await retriever.retrieve({ query, limit, scopeFilter });
 
   if (view === "search" && options.json) {
@@ -219,6 +125,29 @@ async function runRetrievalView(
       : formatSearchResults(results, context);
 
   console.log(rendered);
+}
+
+function parseLimitOption(value: string | undefined, fallback: number, min = 1, max = 50): number {
+  const parsed = Number.parseInt(String(value ?? ""), 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, parsed));
+}
+
+function parseRequiredLimitOption(value: string | undefined, field: string, min = 1, max = 50): number {
+  const parsed = Number.parseInt(String(value ?? ""), 10);
+  if (!Number.isFinite(parsed)) {
+    throw new Error(`${field} must be an integer`);
+  }
+  return Math.min(max, Math.max(min, parsed));
+}
+
+function toScopeFilter(scope?: string): string[] | undefined {
+  const trimmed = typeof scope === "string" ? scope.trim() : "";
+  return trimmed ? [trimmed] : undefined;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function entryToRetrievalResult(entry: Awaited<ReturnType<MemoryStore["get"]>>): RetrievalResult {
@@ -330,8 +259,8 @@ program
   .action(async (query: string, options) => {
     const config = loadConfig();
     const { retriever, profile, store, embedder } = createComponents(config, options.profile);
-    const limit = parseInt(options.limit || "8") || 8;
-    const scopeFilter = options.scope ? [options.scope] : undefined;
+    const limit = parseLimitOption(options.limit, 8, 1, 20);
+    const scopeFilter = toScopeFilter(options.scope);
     const results = await retriever.retrieve({ query, limit, scopeFilter });
     if (results.length === 0) {
       console.log("No results found.");
@@ -357,7 +286,7 @@ program
   .description("列出最近的 pinned assets")
   .option("-n, --limit <n>", "返回结果数", "10")
   .action((options) => {
-    const limit = parseInt(options.limit || "10") || 10;
+    const limit = parseLimitOption(options.limit, 10, 1, 50);
     const rows = listPinAssets(limit);
     if (rows.length === 0) {
       console.log("No pinned assets yet.");
@@ -375,7 +304,7 @@ program
   .description("列出最近的 structured memory assets")
   .option("-n, --limit <n>", "返回结果数", "12")
   .action((options) => {
-    const limit = parseInt(options.limit || "12") || 12;
+    const limit = parseLimitOption(options.limit, 12, 1, 50);
     const rows = listMemoryAssets(limit);
     if (rows.length === 0) {
       console.log("No assets yet.");
@@ -437,8 +366,8 @@ program
     const format = options.format === "json" ? "json" : "md";
     const config = loadConfig();
     const { retriever, profile } = createComponents(config, options.profile);
-    const limit = parseInt(options.limit || "8") || 8;
-    const scopeFilter = options.scope ? [options.scope] : undefined;
+    const limit = parseLimitOption(options.limit, 8, 1, 20);
+    const scopeFilter = toScopeFilter(options.scope);
     const results = await retriever.retrieve({ query, limit, scopeFilter });
     const summary = distillResults(results, { query, profile: profile.name });
     const artifact = writeExportArtifact({
@@ -470,7 +399,9 @@ program
     const { store, embedder } = createComponents(config);
 
     const source = options.source || "all";
-    const limit = options.limit ? parseInt(options.limit) : undefined;
+    const limit = options.limit
+      ? parseRequiredLimitOption(options.limit, "--limit", 1, Number.MAX_SAFE_INTEGER)
+      : undefined;
     const verbose = options.verbose || false;
     const results: any[] = [];
 
@@ -603,4 +534,7 @@ program
 
 // Run
 loadDotEnv();
-program.parse();
+program.parseAsync(process.argv).catch((error) => {
+  console.error(`RecallNest CLI error: ${errorMessage(error)}`);
+  process.exitCode = 1;
+});

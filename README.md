@@ -74,6 +74,10 @@ bun run src/cli.ts ingest --source all
 # open the local workbench
 bun run src/ui-server.ts
 # then visit http://localhost:4317
+
+# if 4317 is already in use
+RECALLNEST_UI_PORT=4321 bun run src/ui-server.ts
+# then visit http://localhost:4321
 ```
 
 ## Common Flows
@@ -112,6 +116,12 @@ Run:
 
 ```bash
 bun run src/ui-server.ts
+```
+
+If port `4317` is already occupied:
+
+```bash
+RECALLNEST_UI_PORT=4321 bun run src/ui-server.ts
 ```
 
 Open:

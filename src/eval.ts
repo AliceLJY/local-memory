@@ -1,28 +1,11 @@
 #!/usr/bin/env bun
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { resolve, join } from "node:path";
-import { homedir } from "node:os";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
 
-import { MemoryStore, validateStoragePath } from "./store.js";
-import { createEmbedder, type EmbeddingConfig } from "./embedder.js";
-import { createRetriever, type RetrievalConfig, DEFAULT_RETRIEVAL_CONFIG } from "./retriever.js";
-import { applyRetrievalProfile } from "./retrieval-profiles.js";
+import { createComponentResolver, loadConfig, loadDotEnv } from "./runtime-config.js";
 
 type ProfileName = "default" | "writing" | "debug" | "fact-check";
-
-interface EvalConfig {
-  dbPath: string;
-  embedding: {
-    apiKey: string;
-    model: string;
-    baseURL?: string;
-    dimensions?: number;
-    taskQuery?: string;
-    taskPassage?: string;
-  };
-  retrieval?: Partial<RetrievalConfig>;
-}
 
 interface EvalCase {
   name: string;
@@ -51,80 +34,6 @@ interface CaseReport {
   topScopes: string[];
   topSnippet: string;
   notes?: string;
-}
-
-function loadDotEnv(): void {
-  const envPath = resolve(import.meta.dir, "../.env");
-  if (!existsSync(envPath)) return;
-  const content = readFileSync(envPath, "utf-8");
-  for (const line of content.split("\n")) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) continue;
-    const eqIdx = trimmed.indexOf("=");
-    if (eqIdx > 0) {
-      const key = trimmed.slice(0, eqIdx).trim();
-      const val = trimmed.slice(eqIdx + 1).trim();
-      if (!process.env[key]) process.env[key] = val;
-    }
-  }
-}
-
-function findConfigPath(): string {
-  if (process.env.LOCAL_MEMORY_CONFIG) {
-    return resolve(process.env.LOCAL_MEMORY_CONFIG);
-  }
-  const localConfig = resolve(import.meta.dir, "../config.json");
-  if (existsSync(localConfig)) return localConfig;
-  const brandedConfig = join(homedir(), ".config", "recallnest", "config.json");
-  if (existsSync(brandedConfig)) return brandedConfig;
-  const legacyConfig = join(homedir(), ".config", "local-memory", "config.json");
-  if (existsSync(legacyConfig)) return legacyConfig;
-  throw new Error("Config not found.");
-}
-
-function loadConfig(): EvalConfig {
-  return JSON.parse(readFileSync(findConfigPath(), "utf-8")) as EvalConfig;
-}
-
-function resolveEnv(value: string): string {
-  return value.replace(/\$\{([^}]+)\}/g, (_, name) => {
-    const envVal = process.env[name];
-    if (!envVal) throw new Error(`Environment variable ${name} not set`);
-    return envVal;
-  });
-}
-
-function expandHome(p: string): string {
-  if (p.startsWith("~/")) return join(homedir(), p.slice(2));
-  return p;
-}
-
-function createComponents(config: EvalConfig, profileName?: ProfileName) {
-  const dbPath = resolve(import.meta.dir, "..", expandHome(config.dbPath));
-  validateStoragePath(dbPath);
-
-  const embeddingConfig: EmbeddingConfig = {
-    provider: "openai-compatible",
-    apiKey: resolveEnv(config.embedding.apiKey),
-    model: config.embedding.model,
-    baseURL: config.embedding.baseURL,
-    dimensions: config.embedding.dimensions,
-    taskQuery: config.embedding.taskQuery,
-    taskPassage: config.embedding.taskPassage,
-  };
-
-  const embedder = createEmbedder(embeddingConfig);
-  const store = new MemoryStore({
-    dbPath,
-    vectorDim: embedder.dimensions,
-  });
-  const baseRetrievalConfig = {
-    ...DEFAULT_RETRIEVAL_CONFIG,
-    ...(config.retrieval || {}),
-  };
-  const { profile, config: retrieverConfig } = applyRetrievalProfile(baseRetrievalConfig, profileName);
-  const retriever = createRetriever(store, embedder, retrieverConfig);
-  return { retriever, profile };
 }
 
 function loadCases(pathArg?: string): EvalCase[] {
@@ -252,16 +161,13 @@ async function main() {
   const casesPath = casesIdx >= 0 ? args[casesIdx + 1] : undefined;
 
   const config = loadConfig();
+  const getComponents = createComponentResolver(config);
   const cases = loadCases(casesPath);
-  const cache = new Map<string, ReturnType<typeof createComponents>>();
 
   const reports: CaseReport[] = [];
   for (const evalCase of cases) {
     const profileName = evalCase.profile || "default";
-    if (!cache.has(profileName)) {
-      cache.set(profileName, createComponents(config, profileName));
-    }
-    const { retriever } = cache.get(profileName)!;
+    const { retriever } = getComponents(profileName);
     const results = await retriever.retrieve({
       query: evalCase.query,
       limit: evalCase.limit || 5,
