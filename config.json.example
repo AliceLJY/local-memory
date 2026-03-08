@@ -1,5 +1,5 @@
 {
-  "dbPath": "./data/lancedb",
+  "dbPath": "~/.recallnest/data/lancedb",
   "embedding": {
     "provider": "jina",
     "apiKey": "${JINA_API_KEY}",
@@ -24,11 +24,6 @@
       "path": "auto",
       "glob": "*.md",
       "description": "Claude Code memory files"
-    },
-    "gemini": {
-      "path": "~/.gemini/tmp",
-      "glob": "session-*.json",
-      "description": "Gemini CLI sessions"
     }
   },
   "retrieval": {

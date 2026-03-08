@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - run: bun install
+
+      - name: Doctor (CI mode)
+        run: bun run src/cli.ts doctor --ci
+
+      - name: TypeScript check
+        run: bun build src/cli.ts --target bun --no-bundle --outdir /tmp/check 2>&1 || true

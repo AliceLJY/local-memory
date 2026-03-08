@@ -50,8 +50,13 @@ export function findConfigPath(): string {
   const legacy = join(homedir(), ".config", "local-memory", "config.json");
   if (existsSync(legacy)) return legacy;
 
+  const exampleExists = existsSync(resolve(import.meta.dir, "../config.json.example"));
   throw new Error(
-    "Config not found. Set LOCAL_MEMORY_CONFIG env var, or place config.json in the project / ~/.config/recallnest / ~/.config/local-memory."
+    "Config not found.\n" +
+    (exampleExists
+      ? "  Quick fix: cp config.json.example config.json\n"
+      : "") +
+    "  Or set LOCAL_MEMORY_CONFIG env var, or place config.json in ~/.config/recallnest/"
   );
 }
 

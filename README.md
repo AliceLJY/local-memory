@@ -3,7 +3,7 @@
 > MCP-native memory workbench for AI conversations.
 > Foundation built with Claude Code. Productization and UI expansion completed with OpenAI Codex.
 
-RecallNest turns Claude Code, Codex, Gemini, and markdown notes into a local-first recall layer you can search, explain, distill, pin, and export.
+RecallNest turns Claude Code, Codex, and markdown notes into a local-first recall layer you can search, explain, distill, pin, and export.
 
 ![RecallNest workbench](./assets/recallnest-workbench.png)
 
@@ -33,7 +33,7 @@ RecallNest turns Claude Code, Codex, Gemini, and markdown notes into a local-fir
 
 | Layer | What it does |
 |------|------|
-| Ingest | Parse Claude Code, Codex, Gemini CLI, Markdown |
+| Ingest | Parse Claude Code, Codex, Markdown (Gemini CLI: coming soon) |
 | Store | LanceDB vector store + FTS |
 | Retrieve | Hybrid search + rerank + time-aware scoring |
 | Explain | Show why a memory matched |
@@ -60,25 +60,86 @@ RecallNest turns Claude Code, Codex, Gemini, and markdown notes into a local-fir
 | MCP | `search_memory`, `explain_memory`, `distill_memory`, `brief_memory`, `pin_memory`, `list_assets`, `list_pins`, `export_memory`, `memory_stats` |
 | UI | query console, source-grouped cards, one-click pin, `Assets / Exports` views, stats, structured asset panel |
 
+## Prerequisites
+
+| Requirement | Version | Check |
+|-------------|---------|-------|
+| [Bun](https://bun.sh) | >= 1.0 | `bun --version` |
+| [Jina API key](https://jina.ai/embeddings/) | free tier works | sign up and copy key |
+
+> Node.js >= 20 also works (`npx tsx src/cli.ts ...`) but Bun is recommended for speed.
+
 ## Quick Start
+
+**Step 1: Clone and install**
 
 ```bash
 git clone https://github.com/AliceLJY/recallnest.git
 cd recallnest
-npm install
-cp .env.example .env
-
-# index your memory
-bun run src/cli.ts ingest --source all
-
-# open the local workbench
-bun run src/ui-server.ts
-# then visit http://localhost:4317
-
-# if 4317 is already in use
-RECALLNEST_UI_PORT=4321 bun run src/ui-server.ts
-# then visit http://localhost:4321
+bun install        # or: npm install
 ```
+
+**Step 2: Configure**
+
+```bash
+cp config.json.example config.json
+cp .env.example .env
+```
+
+Edit `.env` and paste your Jina API key:
+
+```
+JINA_API_KEY=jina_xxxxxxxxxxxx
+```
+
+**Step 3: Verify setup**
+
+```bash
+bun run src/cli.ts doctor
+```
+
+Expected output — all green checks:
+
+```
+  RecallNest Doctor
+
+  ✅ Bun runtime: v1.x.x
+  ✅ Config file: /path/to/config.json
+  ✅ JINA_API_KEY: set (jina_xxx...)
+  ✅ Config parse: valid JSON
+  ✅ Data directory: ~/.recallnest/data/lancedb
+  ✅ CC transcripts: auto-detected: ~/.claude/projects
+  ✅ Embedding API: jina-embeddings-v5-text-small (1024d)
+```
+
+**Step 4: Index your conversations**
+
+```bash
+bun run src/cli.ts ingest --source all
+```
+
+**Step 5: Search**
+
+```bash
+bun run src/cli.ts search "your query here"
+```
+
+Or open the local workbench:
+
+```bash
+bun run src/ui-server.ts
+# visit http://localhost:4317
+```
+
+## Troubleshooting
+
+| Problem | Fix |
+|---------|-----|
+| `bun: command not found` | Install Bun: `curl -fsSL https://bun.sh/install \| bash` |
+| `JINA_API_KEY not set` | Copy your key from https://jina.ai/embeddings/ into `.env` |
+| Jina 401 / Embedding API fail | Check if key is valid — run `lm doctor` to diagnose |
+| CC transcripts not found | Set `sources.cc.path` in config.json to your `~/.claude/projects/-Users-yourname` path |
+| Port 4317 in use | `RECALLNEST_UI_PORT=4321 bun run src/ui-server.ts` |
 
 ## Common Flows
 
@@ -151,7 +212,7 @@ Edit `config.json`.
 | `dbPath` | LanceDB storage path |
 | `sources.cc.path` | `auto` or an explicit Claude Code transcript directory |
 | `sources.codex.path` | Codex sessions directory |
-| `sources.gemini.path` | Gemini CLI session directory |
+| `sources.gemini.path` | Gemini CLI session directory (coming soon — encrypted protobuf, not yet supported) |
 | `sources.memory.path` | Markdown memory directory |
 | `embedding` | OpenAI-compatible embedding config |
 | `retrieval` | Base retrieval defaults before mode overrides |

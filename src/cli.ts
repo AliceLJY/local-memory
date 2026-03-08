@@ -26,6 +26,7 @@ import {
   ingestGeminiSessions,
   ingestMarkdownFiles,
 } from "./ingest.js";
+import { runDoctor, formatDoctorResults } from "./doctor.js";
 
 /**
  * Auto-detect Claude Code transcript directory.
@@ -82,7 +83,7 @@ const program = new Command();
 program
   .name("recallnest")
   .description("本地优先 AI 对话记忆搜索与蒸馏层")
-  .version("1.1.0");
+  .version("1.2.0");
 
 async function runRetrievalView(
   view: "search" | "explain" | "distill",
@@ -386,6 +387,50 @@ program
     ].join("\n"));
   });
 
+// ─── demo ────────────────────────────────────────────────────────────────────
+
+program
+  .command("demo")
+  .description("运行示例搜索，展示 RecallNest 工作效果")
+  .action(async () => {
+    const demoQueries = [
+      "how to debug a failing bot",
+      "telegram bridge setup",
+      "memory search architecture",
+    ];
+
+    console.log("\n  RecallNest Demo\n");
+    console.log("  Running sample queries to show what RecallNest can do.\n");
+
+    const config = loadConfig();
+    const { store } = createComponents(config);
+    const stats = await store.stats();
+
+    if (stats.totalCount === 0) {
+      console.log("  Index is empty. Run `lm ingest --source all` first.\n");
+      return;
+    }
+
+    console.log(`  Index: ${stats.totalCount} entries across ${Object.keys(stats.scopeCounts).length} scopes\n`);
+
+    const { retriever, profile } = createComponents(config);
+    for (const query of demoQueries) {
+      console.log(`  Query: "${query}"`);
+      const results = await retriever.retrieve({ query, limit: 3 });
+      if (results.length === 0) {
+        console.log("    (no results)\n");
+        continue;
+      }
+      for (const r of results) {
+        const preview = r.entry.text.slice(0, 80).replace(/\n/g, " ");
+        console.log(`    [${r.score.toFixed(2)}] ${r.entry.scope} — ${preview}...`);
+      }
+      console.log();
+    }
+
+    console.log("  Try your own: lm search \"your question here\"\n");
+  });
+
 // ─── ingest ──────────────────────────────────────────────────────────────────
 
 program
@@ -405,7 +450,20 @@ program
     const verbose = options.verbose || false;
     const results: any[] = [];
 
-    console.log(`\n🔄 开始导入记忆 (source: ${source})...\n`);
+    // Pre-flight: validate embedding API before processing any files
+    console.log("\n🔑 验证 Embedding API...");
+    const testResult = await embedder.test();
+    if (!testResult.success) {
+      console.error(`\n❌ Embedding API 验证失败: ${testResult.error}`);
+      console.error("   → 检查 .env 中的 JINA_API_KEY 是否正确");
+      console.error("   → 获取免费 key: https://jina.ai/embeddings/");
+      console.error("   → 运行 lm doctor 查看完整诊断\n");
+      process.exitCode = 1;
+      return;
+    }
+    console.log(`  ✅ ${config.embedding.model} (${testResult.dimensions}d)\n`);
+
+    console.log(`🔄 开始导入记忆 (source: ${source})...\n`);
 
     // CC Transcripts
     if (source === "all" || source === "cc") {
@@ -434,14 +492,15 @@ program
       );
     }
 
-    // Gemini Sessions
+    // Gemini Sessions (known limitation: encrypted protobuf, not yet supported)
     if (source === "all" || source === "gemini") {
-      console.log("💎 导入 Gemini 对话...");
-      const r = await ingestGeminiSessions(store, embedder, { limit, verbose });
-      results.push(r);
-      console.log(
-        `  ✅ Gemini: ${r.filesProcessed} files, ${r.chunksIngested} chunks, ${r.errors.length} errors`,
-      );
+      if (source === "gemini") {
+        console.log("⚠️  Gemini CLI sessions are encrypted protobuf — ingestion not yet supported.");
+        console.log("   This will be available once Gemini CLI provides an export API.\n");
+      } else {
+        // source === "all": skip silently with a brief note
+        console.log("💎 Gemini 对话: skipped (encrypted protobuf, not yet supported)");
+      }
     }
 
     // Memory markdown files
@@ -530,6 +589,19 @@ program
     } else {
       console.log("索引目录不存在，无需清空。");
     }
+  });
+
+// ─── doctor ──────────────────────────────────────────────────────────────────
+
+program
+  .command("doctor")
+  .description("检查安装状态和配置")
+  .option("--ci", "跳过 API key 在线验证（CI 模式）")
+  .action(async (options) => {
+    const results = await runDoctor({ ci: options.ci });
+    console.log(formatDoctorResults(results));
+    const hasFailure = results.some(r => r.status === "fail");
+    if (hasFailure) process.exitCode = 1;
   });
 
 // Run

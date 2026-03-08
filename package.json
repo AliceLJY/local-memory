@@ -1,6 +1,6 @@
 {
   "name": "recallnest",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "RecallNest \u2014 MCP-native, local-first memory search and distillation for AI conversations",
   "license": "MIT",
   "type": "module",
@@ -21,6 +21,8 @@
     "clean-briefs": "bun run src/cli.ts clean-briefs --apply",
     "eval": "bun run src/eval.ts",
     "profiles": "bun run src/cli.ts profiles",
+    "doctor": "bun run src/cli.ts doctor",
+    "demo": "bun run src/cli.ts demo",
     "ui": "bun run src/ui-server.ts"
   },
   "dependencies": {
