@@ -70,6 +70,11 @@ export async function runDoctor(options: { ci?: boolean } = {}): Promise<CheckRe
   const jinaKey = process.env.JINA_API_KEY;
   if (jinaKey && jinaKey !== "your_jina_api_key_here") {
     results.push(pass("JINA_API_KEY", `set (${jinaKey.slice(0, 8)}...)`));
+  } else if (options.ci) {
+    results.push(warn(
+      "JINA_API_KEY",
+      jinaKey === "your_jina_api_key_here" ? "still placeholder value" : "not set (CI mode, skipped)",
+    ));
   } else {
     results.push(fail(
       "JINA_API_KEY",
