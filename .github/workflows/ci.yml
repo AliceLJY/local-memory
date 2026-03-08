@@ -18,6 +18,9 @@ jobs:
 
       - run: bun install
 
+      - name: Setup config
+        run: cp config.json.example config.json
+
       - name: Doctor (CI mode)
         run: bun run src/cli.ts doctor --ci
 
