@@ -7,6 +7,7 @@ import type { MemoryStore, MemorySearchResult } from "./store.js";
 import type { Embedder } from "./embedder.js";
 import { filterNoise } from "./noise-filter.js";
 import { shouldSkipRetrieval } from "./adaptive-retrieval.js";
+import { expandQuery } from "./query-expander.js";
 
 // ============================================================================
 // Types & Configuration
@@ -345,7 +346,7 @@ export class MemoryRetriever {
     // Run vector and BM25 searches in parallel
     const [vectorResults, bm25Results] = await Promise.all([
       this.runVectorSearch(queryVector, candidatePoolSize, scopeFilter, category),
-      this.runBM25Search(query, candidatePoolSize, scopeFilter, category),
+      this.runBM25Search(expandQuery(query), candidatePoolSize, scopeFilter, category),
     ]);
 
     // Fuse results using RRF (async: validates BM25-only entries exist in store)
