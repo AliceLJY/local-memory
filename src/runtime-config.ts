@@ -6,6 +6,7 @@ import { MemoryStore, validateStoragePath } from "./store.js";
 import { createEmbedder, type EmbeddingConfig } from "./embedder.js";
 import { createRetriever, type RetrievalConfig, DEFAULT_RETRIEVAL_CONFIG } from "./retriever.js";
 import { applyRetrievalProfile } from "./retrieval-profiles.js";
+import { AccessTracker } from "./access-tracker.js";
 
 export interface LocalMemoryConfig {
   dbPath: string;
@@ -101,7 +102,11 @@ export function createComponents(config: LocalMemoryConfig, profileName?: string
   const { profile, config: retrieverConfig } = applyRetrievalProfile(baseRetrievalConfig, profileName);
   const retriever = createRetriever(store, embedder, retrieverConfig);
 
-  return { store, embedder, retriever, profile };
+  // Attach access tracker for reinforcement-based decay
+  const accessTracker = new AccessTracker(store);
+  retriever.setAccessTracker(accessTracker);
+
+  return { store, embedder, retriever, profile, accessTracker };
 }
 
 export function createComponentResolver(config: LocalMemoryConfig) {

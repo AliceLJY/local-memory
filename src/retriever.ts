@@ -8,6 +8,7 @@ import type { Embedder } from "./embedder.js";
 import { filterNoise } from "./noise-filter.js";
 import { shouldSkipRetrieval } from "./adaptive-retrieval.js";
 import { expandQuery } from "./query-expander.js";
+import type { AccessTracker } from "./access-tracker.js";
 
 // ============================================================================
 // Types & Configuration
@@ -271,11 +272,18 @@ function cosineSimilarity(a: number[], b: number[]): number {
 // ============================================================================
 
 export class MemoryRetriever {
+  private accessTracker?: AccessTracker;
+
   constructor(
     private store: MemoryStore,
     private embedder: Embedder,
     private config: RetrievalConfig = DEFAULT_RETRIEVAL_CONFIG
   ) {}
+
+  /** Attach an AccessTracker to enable reinforcement-based decay. */
+  setAccessTracker(tracker: AccessTracker): void {
+    this.accessTracker = tracker;
+  }
 
   async retrieve(context: RetrievalContext): Promise<RetrievalResult[]> {
     const { query, limit, scopeFilter, category } = context;
@@ -286,13 +294,22 @@ export class MemoryRetriever {
       return [];
     }
 
+    let results: RetrievalResult[];
+
     // For vector-only mode, use legacy behavior
     if (this.config.mode === "vector" || !this.store.hasFtsSupport) {
-      return this.vectorOnlyRetrieval(query, safeLimit, scopeFilter, category);
+      results = await this.vectorOnlyRetrieval(query, safeLimit, scopeFilter, category);
+    } else {
+      // Hybrid retrieval with vector + BM25 + RRF fusion
+      results = await this.hybridRetrieval(query, safeLimit, scopeFilter, category);
     }
 
-    // Hybrid retrieval with vector + BM25 + RRF fusion
-    return this.hybridRetrieval(query, safeLimit, scopeFilter, category);
+    // Record access for returned results (async, non-blocking)
+    if (this.accessTracker && results.length > 0) {
+      this.accessTracker.recordAccess(results.map(r => r.entry.id));
+    }
+
+    return results;
   }
 
   private async vectorOnlyRetrieval(
@@ -724,13 +741,19 @@ export class MemoryRetriever {
    * Floor at 0.5x (never penalize more than half)
    */
   private applyTimeDecay(results: RetrievalResult[]): RetrievalResult[] {
-    const halfLife = this.config.timeDecayHalfLifeDays;
-    if (!halfLife || halfLife <= 0) return results;
+    const baseHalfLife = this.config.timeDecayHalfLifeDays;
+    if (!baseHalfLife || baseHalfLife <= 0) return results;
 
     const now = Date.now();
     const decayed = results.map(r => {
       const ts = (r.entry.timestamp && r.entry.timestamp > 0) ? r.entry.timestamp : now;
       const ageDays = (now - ts) / 86_400_000;
+
+      // Use access-reinforced half-life if tracker is attached
+      const halfLife = this.accessTracker
+        ? this.accessTracker.computeEffectiveHalfLife(baseHalfLife, r.entry.metadata)
+        : baseHalfLife;
+
       // floor at 0.5: even very old entries keep at least 50% of their score
       const factor = 0.5 + 0.5 * Math.exp(-ageDays / halfLife);
       return {
