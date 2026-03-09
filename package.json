@@ -6,7 +6,6 @@
   "type": "module",
   "bin": {
     "recallnest": "src/cli.ts",
-    "memlayer": "src/cli.ts",
     "local-memory": "src/cli.ts"
   },
   "scripts": {

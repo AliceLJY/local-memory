@@ -48,9 +48,6 @@ export function findConfigPath(): string {
   const branded = join(homedir(), ".config", "recallnest", "config.json");
   if (existsSync(branded)) return branded;
 
-  const legacy = join(homedir(), ".config", "local-memory", "config.json");
-  if (existsSync(legacy)) return legacy;
-
   const exampleExists = existsSync(resolve(import.meta.dir, "../config.json.example"));
   throw new Error(
     "Config not found.\n" +
