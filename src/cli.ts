@@ -439,15 +439,17 @@ program
   .option("-s, --source <source>", "数据源: cc / codex / memory / all", "all")
   .option("-l, --limit <n>", "限制处理文件数（调试用）")
   .option("-v, --verbose", "详细输出")
+  .option("--no-dedup", "跳过向量去重")
   .action(async (options) => {
     const config = loadConfig();
-    const { store, embedder } = createComponents(config);
+    const { store, embedder, llm } = createComponents(config);
 
     const source = options.source || "all";
     const limit = options.limit
       ? parseRequiredLimitOption(options.limit, "--limit", 1, Number.MAX_SAFE_INTEGER)
       : undefined;
     const verbose = options.verbose || false;
+    const noDedup = options.dedup === false; // --no-dedup
     const results: any[] = [];
 
     // Pre-flight: validate embedding API before processing any files
@@ -461,9 +463,22 @@ program
       process.exitCode = 1;
       return;
     }
-    console.log(`  ✅ ${config.embedding.model} (${testResult.dimensions}d)\n`);
+    console.log(`  ✅ ${config.embedding.model} (${testResult.dimensions}d)`);
 
+    // LLM status
+    if (llm) {
+      const llmTest = await llm.test();
+      console.log(llmTest.success
+        ? `  ✅ LLM: ${config.llm?.model} (L0 摘要 + 语义去重)`
+        : `  ⚠️  LLM: ${config.llm?.model} 连接失败，降级为提取式摘要`);
+    } else {
+      console.log("  ℹ️  LLM: 未配置，使用提取式 L0 摘要");
+    }
+
+    console.log(`  ${noDedup ? "⚠️  去重已禁用 (--no-dedup)" : "✅ 两阶段去重: vector + LLM 语义判断"}\n`);
     console.log(`🔄 开始导入记忆 (source: ${source})...\n`);
+
+    const ingestOpts = { limit, verbose, noDedup, llm };
 
     // CC Transcripts
     if (source === "all" || source === "cc") {
@@ -471,13 +486,10 @@ program
       const ccSource = config.sources.cc;
       if (ccSource) {
         const ccPath = resolveSourcePath(ccSource.path, "cc");
-        const r = await ingestCCTranscripts(store, embedder, ccPath, {
-          limit,
-          verbose,
-        });
+        const r = await ingestCCTranscripts(store, embedder, ccPath, ingestOpts);
         results.push(r);
         console.log(
-          `  ✅ CC: ${r.filesProcessed} files, ${r.chunksIngested} chunks, ${r.errors.length} errors`,
+          `  ✅ CC: ${r.filesProcessed} files, ${r.chunksIngested} ingested, ${r.chunksDeduped} deduped, ${r.errors.length} errors`,
         );
       }
     }
@@ -485,22 +497,26 @@ program
     // Codex Sessions
     if (source === "all" || source === "codex") {
       console.log("🤖 导入 Codex 对话...");
-      const r = await ingestCodexSessions(store, embedder, { limit, verbose });
+      const r = await ingestCodexSessions(store, embedder, ingestOpts);
       results.push(r);
       console.log(
-        `  ✅ Codex: ${r.filesProcessed} files, ${r.chunksIngested} chunks, ${r.errors.length} errors`,
+        `  ✅ Codex: ${r.filesProcessed} files, ${r.chunksIngested} ingested, ${r.chunksDeduped} deduped, ${r.errors.length} errors`,
       );
     }
 
-    // Gemini Sessions (known limitation: encrypted protobuf, not yet supported)
+    // Gemini Sessions (JSON format under ~/.gemini/tmp/*/chats/)
     if (source === "all" || source === "gemini") {
-      if (source === "gemini") {
-        console.log("⚠️  Gemini CLI sessions are encrypted protobuf — ingestion not yet supported.");
-        console.log("   This will be available once Gemini CLI provides an export API.\n");
-      } else {
-        // source === "all": skip silently with a brief note
-        console.log("💎 Gemini 对话: skipped (encrypted protobuf, not yet supported)");
-      }
+      console.log("💎 导入 Gemini 对话...");
+      const r = await ingestGeminiSessions(store, embedder, {
+        limit,
+        verbose,
+        noDedup,
+        llm,
+      });
+      results.push(r);
+      console.log(
+        `  ✅ Gemini: ${r.filesProcessed} files, ${r.chunksIngested} ingested, ${r.chunksDeduped} deduped, ${r.errors.length} errors`,
+      );
     }
 
     // Memory markdown files
@@ -511,10 +527,12 @@ program
         const memPath = resolveSourcePath(memSource.path, "memory");
         const r = await ingestMarkdownFiles(store, embedder, memPath, "memory", {
           verbose,
+          noDedup,
+          llm,
         });
         results.push(r);
         console.log(
-          `  ✅ Memory: ${r.filesProcessed} files, ${r.chunksIngested} chunks, ${r.errors.length} errors`,
+          `  ✅ Memory: ${r.filesProcessed} files, ${r.chunksIngested} ingested, ${r.chunksDeduped} deduped, ${r.errors.length} errors`,
         );
       }
     }
@@ -522,9 +540,11 @@ program
     // Summary
     console.log("\n📊 导入汇总:");
     let totalChunks = 0;
+    let totalDeduped = 0;
     let totalErrors = 0;
     for (const r of results) {
       totalChunks += r.chunksIngested;
+      totalDeduped += r.chunksDeduped;
       totalErrors += r.errors.length;
       if (r.errors.length > 0 && verbose) {
         console.log(`  ⚠️  ${r.source} errors:`);
@@ -533,7 +553,7 @@ program
         }
       }
     }
-    console.log(`  总计: ${totalChunks} chunks 已索引, ${totalErrors} errors`);
+    console.log(`  总计: ${totalChunks} chunks 已索引, ${totalDeduped} chunks 去重, ${totalErrors} errors`);
     console.log();
   });
 

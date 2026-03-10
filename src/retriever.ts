@@ -9,6 +9,8 @@ import { filterNoise } from "./noise-filter.js";
 import { shouldSkipRetrieval } from "./adaptive-retrieval.js";
 import { expandQuery } from "./query-expander.js";
 import type { AccessTracker } from "./access-tracker.js";
+import { weibullDecay, resolveTier } from "./decay-engine.js";
+import { logWarn } from "./stderr-log.js";
 
 // ============================================================================
 // Types & Configuration
@@ -419,7 +421,7 @@ export class MemoryRetriever {
       results = await this.store.vectorSearch(queryVector, limit, 0.1, scopeFilter);
     } catch (err) {
       // Fail-open: log warning and continue with empty results (backport from v1.0.30)
-      console.warn("vectorSearch failed, continuing with empty results:", err);
+      logWarn("vectorSearch failed, continuing with empty results:", err);
       results = [];
     }
 
@@ -565,7 +567,7 @@ export class MemoryRetriever {
           const parsed = parseRerankResponse(provider, data);
 
           if (!parsed) {
-            console.warn("Rerank API: invalid response shape, falling back to cosine");
+            logWarn("Rerank API: invalid response shape, falling back to cosine");
           } else {
             // Build a Set of returned indices to identify unreturned candidates
             const returnedIndices = new Set(parsed.map(r => r.index));
@@ -598,13 +600,13 @@ export class MemoryRetriever {
           }
         } else {
           const errText = await response.text().catch(() => "");
-          console.warn(`Rerank API returned ${response.status}: ${errText.slice(0, 200)}, falling back to cosine`);
+          logWarn(`Rerank API returned ${response.status}: ${errText.slice(0, 200)}, falling back to cosine`);
         }
       } catch (error) {
         if (error instanceof Error && error.name === "AbortError") {
-          console.warn("Rerank API timed out (5s), falling back to cosine");
+          logWarn("Rerank API timed out (5s), falling back to cosine");
         } else {
-          console.warn("Rerank API failed, falling back to cosine:", error);
+          logWarn("Rerank API failed, falling back to cosine:", error);
         }
       }
     }
@@ -627,7 +629,7 @@ export class MemoryRetriever {
 
       return reranked.sort((a, b) => b.score - a.score);
     } catch (error) {
-      console.warn("Reranking failed, returning original results:", error);
+      logWarn("Reranking failed, returning original results:", error);
       return results;
     }
   }
@@ -731,14 +733,15 @@ export class MemoryRetriever {
   }
 
   /**
-   * Time decay: multiplicative penalty for old entries.
-   * Unlike recencyBoost (additive bonus for new entries), this actively
-   * penalizes stale information so recent knowledge wins ties.
-   * Formula: score *= 0.5 + 0.5 * exp(-ageDays / halfLife)
-   * At 0 days: 1.0x (no penalty)
-   * At halfLife: ~0.68x
-   * At 2*halfLife: ~0.59x
-   * Floor at 0.5x (never penalize more than half)
+   * Time decay: Weibull stretched-exponential penalty for old entries.
+   * Borrowed from memory-lancedb-pro v1.1.0 decay engine.
+   *
+   * Tier-aware: Core memories decay slower (β=0.8, floor=0.85),
+   * Working memories at standard rate (β=1.0, floor=0.65),
+   * Peripheral memories decay faster (β=1.3, floor=0.45).
+   *
+   * Combined with access-tracker reinforcement: frequently recalled
+   * memories get extended half-life regardless of tier.
    */
   private applyTimeDecay(results: RetrievalResult[]): RetrievalResult[] {
     const baseHalfLife = this.config.timeDecayHalfLifeDays;
@@ -754,11 +757,14 @@ export class MemoryRetriever {
         ? this.accessTracker.computeEffectiveHalfLife(baseHalfLife, r.entry.metadata)
         : baseHalfLife;
 
-      // floor at 0.5: even very old entries keep at least 50% of their score
-      const factor = 0.5 + 0.5 * Math.exp(-ageDays / halfLife);
+      // Resolve tier from metadata (defaults to peripheral)
+      const tier = resolveTier(r.entry.metadata);
+
+      // Weibull decay with tier-specific shape and floor
+      const factor = weibullDecay(ageDays, halfLife, tier);
       return {
         ...r,
-        score: clamp01(r.score * factor, r.score * 0.5),
+        score: clamp01(r.score * factor, r.score * 0.3),
       };
     });
 

@@ -6,20 +6,40 @@ import type * as LanceDB from "@lancedb/lancedb";
 import { randomUUID } from "node:crypto";
 import { existsSync, accessSync, constants, mkdirSync, realpathSync, lstatSync } from "node:fs";
 import { dirname } from "node:path";
+import { logWarn } from "./stderr-log.js";
 
 // ============================================================================
 // Types
 // ============================================================================
 
+/**
+ * Memory categories (v1.1 six-category system, inspired by OpenViking).
+ *
+ * User Memory (4):
+ *   profile      — 用户身份/背景（静态，合并优先）
+ *   preferences  — 偏好/倾向（合并优先）
+ *   entities     — 持续存在的名词：项目/工具/人物（合并优先）
+ *   events       — 发生过的事（追加，不合并）
+ *
+ * Agent Memory (2):
+ *   cases        — 问题→解决方案对（追加，不合并）
+ *   patterns     — 可复用的流程/模式（合并优先）
+ *
+ * Legacy categories kept for backward compatibility.
+ */
+export type MemoryCategory =
+  | "profile" | "preferences" | "entities" | "events" | "cases" | "patterns"
+  | "preference" | "fact" | "decision" | "entity" | "other";
+
 export interface MemoryEntry {
   id: string;
   text: string;
   vector: number[];
-  category: "preference" | "fact" | "decision" | "entity" | "other";
+  category: MemoryCategory;
   scope: string;
   importance: number;
   timestamp: number;
-  metadata?: string; // JSON string for extensible metadata
+  metadata?: string; // JSON string for extensible metadata — includes l0/l1/tier
 }
 
 export interface MemorySearchResult {
@@ -185,10 +205,10 @@ export class MemoryStore {
       try {
         const sample = await table.query().limit(1).toArray();
         if (sample.length > 0 && !("scope" in sample[0])) {
-          console.warn("Adding scope column for backward compatibility with existing data");
+          logWarn("Adding scope column for backward compatibility with existing data");
         }
       } catch (err) {
-        console.warn("Could not check table schema:", err);
+        logWarn("Could not check table schema:", err);
       }
     } catch (_openErr) {
       // Table doesn't exist yet — create it
@@ -235,7 +255,7 @@ export class MemoryStore {
       await this.createFtsIndex(table);
       this.ftsIndexCreated = true;
     } catch (err) {
-      console.warn("Failed to create FTS index, falling back to vector-only search:", err);
+      logWarn("Failed to create FTS index, falling back to vector-only search:", err);
       this.ftsIndexCreated = false;
     }
 
@@ -474,7 +494,7 @@ export class MemoryStore {
 
       return mapped;
     } catch (err) {
-      console.warn("BM25 search failed, falling back to empty results:", err);
+      logWarn("BM25 search failed, falling back to empty results:", err);
       return [];
     }
   }

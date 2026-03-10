@@ -11,6 +11,7 @@
 import OpenAI from "openai";
 import { createHash } from "node:crypto";
 import { smartChunk } from "./chunker.js";
+import { logInfo, logWarn } from "./stderr-log.js";
 
 // ============================================================================
 // Embedding Cache (LRU with TTL)
@@ -287,7 +288,7 @@ export class Embedder {
 
       if (isContextError && this._autoChunk) {
         try {
-          console.log(`Document exceeded context limit (${errorMsg}), attempting chunking...`);
+          logInfo(`Document exceeded context limit (${errorMsg}), attempting chunking...`);
           const chunkResult = smartChunk(text, this._model);
           
           if (chunkResult.chunks.length === 0) {
@@ -295,14 +296,14 @@ export class Embedder {
           }
 
           // Embed all chunks in parallel
-          console.log(`Split document into ${chunkResult.chunkCount} chunks for embedding`);
+          logInfo(`Split document into ${chunkResult.chunkCount} chunks for embedding`);
           const chunkEmbeddings = await Promise.all(
             chunkResult.chunks.map(async (chunk, idx) => {
               try {
                 const embedding = await this.embedSingle(chunk, task);
                 return { embedding };
               } catch (chunkError) {
-                console.warn(`Failed to embed chunk ${idx}:`, chunkError);
+                logWarn(`Failed to embed chunk ${idx}:`, chunkError);
                 throw chunkError;
               }
             })
@@ -323,12 +324,12 @@ export class Embedder {
           
           // Cache the result for the original text (using its hash)
           this._cache.set(text, task, finalEmbedding);
-          console.log(`Successfully embedded long document as ${chunkEmbeddings.length} averaged chunks`);
+          logInfo(`Successfully embedded long document as ${chunkEmbeddings.length} averaged chunks`);
           
           return finalEmbedding;
         } catch (chunkError) {
           // If chunking fails, throw the original error
-          console.warn(`Chunking failed, using original error:`, chunkError);
+          logWarn(`Chunking failed, using original error:`, chunkError);
           throw new Error(`Failed to generate embedding: ${errorMsg}`, { cause: error });
         }
       }
@@ -392,7 +393,7 @@ export class Embedder {
 
       if (isContextError && this._autoChunk) {
         try {
-          console.log(`Batch embedding failed with context error, attempting chunking...`);
+          logInfo(`Batch embedding failed with context error, attempting chunking...`);
           
           const chunkResults = await Promise.all(
             validTexts.map(async (text, idx) => {
@@ -425,7 +426,7 @@ export class Embedder {
             })
           );
 
-          console.log(`Successfully chunked and embedded ${chunkResults.length} long documents`);
+          logInfo(`Successfully chunked and embedded ${chunkResults.length} long documents`);
 
           // Build results array
           const results: number[][] = new Array(texts.length);

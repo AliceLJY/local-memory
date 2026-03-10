@@ -15,6 +15,8 @@ import type { MemoryStore, MemoryEntry } from "./store.js";
 import type { Embedder } from "./embedder.js";
 import { chunkDocument, type ChunkerConfig } from "./chunker.js";
 import { isProcessed, markProcessed } from "./tracker.js";
+import type { LLMClient, SmartExtraction } from "./llm-client.js";
+import { CATEGORY_DEFAULT_IMPORTANCE } from "./llm-client.js";
 
 // ============================================================================
 // Types
@@ -31,6 +33,7 @@ export interface IngestResult {
   filesProcessed: number;
   chunksIngested: number;
   chunksSkipped: number;
+  chunksDeduped: number;
   errors: string[];
 }
 
@@ -39,6 +42,129 @@ interface ConversationTurn {
   text: string;
   timestamp: string;
   sessionId: string;
+}
+
+// ============================================================================
+// Dedup & L0 Summary
+// ============================================================================
+
+/** Score thresholds for two-stage dedup (borrowed from memory-lancedb-pro v1.1.0).
+ *  - Above HARD: definitely duplicate, skip without LLM
+ *  - Between SOFT and HARD: borderline, ask LLM if available
+ *  - Below SOFT: definitely unique, store directly
+ */
+const DEDUP_HARD_THRESHOLD = 0.80;
+const DEDUP_SOFT_THRESHOLD = 0.68;
+
+/**
+ * Two-stage dedup: vector pre-filter + optional LLM semantic decision.
+ *
+ * Returns: "store" | "skip" | "merge" (merge falls back to skip for now)
+ */
+async function dedupCheck(
+  store: MemoryStore,
+  vector: number[],
+  text: string,
+  llm?: LLMClient | null,
+): Promise<{ action: "store" | "skip"; existingText?: string }> {
+  try {
+    // Stage 1: vector similarity check
+    const results = await store.vectorSearch(vector, 1, DEDUP_SOFT_THRESHOLD);
+    if (results.length === 0) {
+      return { action: "store" }; // Clearly unique
+    }
+
+    const topScore = results[0].score;
+    const existingText = results[0].entry.text;
+
+    // Hard duplicate: skip without LLM
+    if (topScore >= DEDUP_HARD_THRESHOLD) {
+      return { action: "skip", existingText };
+    }
+
+    // Borderline: ask LLM if available
+    if (llm) {
+      try {
+        const decision = await llm.dedupDecision(text, existingText);
+        if (decision.action === "SKIP" || decision.action === "MERGE") {
+          return { action: "skip", existingText };
+        }
+      } catch {
+        // LLM failed, fall through to store
+      }
+    }
+
+    return { action: "store" };
+  } catch {
+    return { action: "store" }; // Fail-open
+  }
+}
+
+/**
+ * Extractive L0 fallback: takes the first meaningful sentence.
+ * Used when LLM is unavailable or fails.
+ */
+function extractL0Fallback(text: string): string {
+  // Strip role prefixes
+  const cleaned = text.replace(/^\[(用户|助手)\]\s*/gm, "").trim();
+
+  // Split into sentences (Chinese + English punctuation)
+  const sentences = cleaned.split(/(?<=[。！？\.\!\?\n])\s*/);
+
+  for (const s of sentences) {
+    const trimmed = s.trim();
+    // Skip very short or boilerplate sentences
+    if (trimmed.length >= 15 && !/^(好的|OK|是的|嗯|谢谢|Thanks)/.test(trimmed)) {
+      return trimmed.slice(0, 150);
+    }
+  }
+
+  // Fallback: first 150 chars
+  return cleaned.slice(0, 150);
+}
+
+/** Fallback extraction result when LLM is unavailable */
+function fallbackExtraction(text: string): SmartExtraction {
+  return {
+    category: "events", // Default to events (most common, safest)
+    l0: extractL0Fallback(text),
+    l1: "",
+    importance: 0.6,
+  };
+}
+
+/**
+ * Smart extraction for a batch of texts.
+ * Uses LLM 6-category extraction when available, falls back to heuristic.
+ * Returns: category + L0 + L1 + importance for each text.
+ */
+async function smartExtractBatch(
+  texts: string[],
+  llm?: LLMClient | null,
+): Promise<SmartExtraction[]> {
+  if (!llm) {
+    return texts.map(fallbackExtraction);
+  }
+
+  try {
+    const llmResults = await llm.smartExtractBatch(texts);
+    // Fill in fallbacks for any LLM failures
+    return llmResults.map((r, i) => r ?? fallbackExtraction(texts[i]));
+  } catch {
+    return texts.map(fallbackExtraction);
+  }
+}
+
+/** Determine initial tier based on category and importance */
+function initialTier(extraction: SmartExtraction): "core" | "working" | "peripheral" {
+  // Profile and patterns are inherently important → working
+  if (extraction.category === "profile" || extraction.category === "patterns") return "working";
+  // Cases (problem→solution) are valuable → working
+  if (extraction.category === "cases") return "working";
+  // High importance → working
+  if (extraction.importance >= 0.8) return "working";
+  // Everything else → peripheral
+  return "peripheral";
 }
 
 // ============================================================================
@@ -131,7 +257,8 @@ function parseCCTranscript(filePath: string): ConversationTurn[] {
             .join("\n");
         }
 
-        if (text.trim().length > 20) {
+        // 中文 8 字符已是完整句，阈值不宜过高（v1.1.0 反馈）
+        if (text.trim().length > 8) {
           turns.push({
             role: "assistant",
             text: text.trim(),
@@ -254,7 +381,7 @@ function parseCodexSession(filePath: string): ConversationTurn[] {
                 sessionId,
               });
             }
-            if (c.type === "output_text" && c.text && c.text.length > 20) {
+            if (c.type === "output_text" && c.text && c.text.length > 8) {
               turns.push({
                 role: "assistant",
                 text: c.text.trim(),
@@ -293,13 +420,14 @@ function parseCodexSession(filePath: string): ConversationTurn[] {
 export async function ingestCodexSessions(
   store: MemoryStore,
   embedder: Embedder,
-  options: { limit?: number; verbose?: boolean } = {},
+  options: { limit?: number; verbose?: boolean; noDedup?: boolean; llm?: LLMClient | null } = {},
 ): Promise<IngestResult> {
   const result: IngestResult = {
     source: "codex",
     filesProcessed: 0,
     chunksIngested: 0,
     chunksSkipped: 0,
+    chunksDeduped: 0,
     errors: [],
   };
 
@@ -360,7 +488,12 @@ export async function ingestCodexSessions(
 
         try {
           const vectors = await embedder.embedBatchPassage(batch);
-          const toStore: Array<{text: string; vector: number[]; category: "fact"; scope: string; importance: number; metadata: string}> = [];
+          const toStore: Array<{text: string; vector: number[]; category: string; scope: string; importance: number; metadata: string}> = [];
+
+          // Dedup + L0 batch
+          const dedupedTexts: string[] = [];
+          const dedupedVectors: number[][] = [];
+          const dedupedChunks: typeof batchChunks = [];
 
           for (let j = 0; j < batch.length; j++) {
             const vector = vectors[j];
@@ -368,20 +501,36 @@ export async function ingestCodexSessions(
               result.chunksSkipped++;
               continue;
             }
+            if (!options.noDedup) {
+              const { action } = await dedupCheck(store, vector, batch[j], options.llm);
+              if (action === "skip") { result.chunksDeduped++; continue; }
+            }
+            dedupedTexts.push(batch[j]);
+            dedupedVectors.push(vector);
+            dedupedChunks.push(batchChunks[j]);
+          }
 
-            const chunk = batchChunks[j];
-            toStore.push({
-              text: chunk.text,
-              vector,
-              category: "fact",
-              scope: `codex:${chunk.sessionId.slice(0, 8)}`,
-              importance: 0.6,
-              metadata: JSON.stringify({
-                source: "codex",
-                sessionId: chunk.sessionId,
-                file: basename(filePath),
-              }),
-            });
+          if (dedupedTexts.length > 0) {
+            const extractions = await smartExtractBatch(dedupedTexts, options.llm);
+            for (let j = 0; j < dedupedTexts.length; j++) {
+              const chunk = dedupedChunks[j];
+              const ext = extractions[j];
+              toStore.push({
+                text: dedupedTexts[j],
+                vector: dedupedVectors[j],
+                category: ext.category,
+                scope: `codex:${chunk.sessionId.slice(0, 8)}`,
+                importance: ext.importance,
+                metadata: JSON.stringify({
+                  source: "codex",
+                  sessionId: chunk.sessionId,
+                  file: basename(filePath),
+                  l0: ext.l0,
+                  l1: ext.l1,
+                  tier: initialTier(ext),
+                }),
+              });
+            }
           }
 
           if (toStore.length > 0) {
@@ -456,13 +605,14 @@ function parseGeminiSession(filePath: string): ConversationTurn[] {
 export async function ingestGeminiSessions(
   store: MemoryStore,
   embedder: Embedder,
-  options: { limit?: number; verbose?: boolean } = {},
+  options: { limit?: number; verbose?: boolean; noDedup?: boolean; llm?: LLMClient | null } = {},
 ): Promise<IngestResult> {
   const result: IngestResult = {
     source: "gemini",
     filesProcessed: 0,
     chunksIngested: 0,
     chunksSkipped: 0,
+    chunksDeduped: 0,
     errors: [],
   };
 
@@ -525,7 +675,11 @@ export async function ingestGeminiSessions(
 
         try {
           const vectors = await embedder.embedBatchPassage(batch);
-          const toStore: Array<{text: string; vector: number[]; category: "fact"; scope: string; importance: number; metadata: string}> = [];
+          const toStore: Array<{text: string; vector: number[]; category: string; scope: string; importance: number; metadata: string}> = [];
+
+          const dedupedTexts: string[] = [];
+          const dedupedVectors: number[][] = [];
+          const dedupedChunks: typeof batchChunks = [];
 
           for (let j = 0; j < batch.length; j++) {
             const vector = vectors[j];
@@ -533,20 +687,36 @@ export async function ingestGeminiSessions(
               result.chunksSkipped++;
               continue;
             }
+            if (!options.noDedup) {
+              const { action } = await dedupCheck(store, vector, batch[j], options.llm);
+              if (action === "skip") { result.chunksDeduped++; continue; }
+            }
+            dedupedTexts.push(batch[j]);
+            dedupedVectors.push(vector);
+            dedupedChunks.push(batchChunks[j]);
+          }
 
-            const chunk = batchChunks[j];
-            toStore.push({
-              text: chunk.text,
-              vector,
-              category: "fact",
-              scope: `gemini:${chunk.sessionId.slice(0, 8)}`,
-              importance: 0.6,
-              metadata: JSON.stringify({
-                source: "gemini",
-                sessionId: chunk.sessionId,
-                file: basename(filePath),
-              }),
-            });
+          if (dedupedTexts.length > 0) {
+            const extractions = await smartExtractBatch(dedupedTexts, options.llm);
+            for (let j = 0; j < dedupedTexts.length; j++) {
+              const chunk = dedupedChunks[j];
+              const ext = extractions[j];
+              toStore.push({
+                text: dedupedTexts[j],
+                vector: dedupedVectors[j],
+                category: ext.category,
+                scope: `gemini:${chunk.sessionId.slice(0, 8)}`,
+                importance: ext.importance,
+                metadata: JSON.stringify({
+                  source: "gemini",
+                  sessionId: chunk.sessionId,
+                  file: basename(filePath),
+                  l0: ext.l0,
+                  l1: ext.l1,
+                  tier: initialTier(ext),
+                }),
+              });
+            }
           }
 
           if (toStore.length > 0) {
@@ -638,13 +808,14 @@ export async function ingestCCTranscripts(
   store: MemoryStore,
   embedder: Embedder,
   sourcePath: string,
-  options: { limit?: number; verbose?: boolean } = {},
+  options: { limit?: number; verbose?: boolean; noDedup?: boolean; llm?: LLMClient | null } = {},
 ): Promise<IngestResult> {
   const result: IngestResult = {
     source: "cc",
     filesProcessed: 0,
     chunksIngested: 0,
     chunksSkipped: 0,
+    chunksDeduped: 0,
     errors: [],
   };
 
@@ -699,7 +870,11 @@ export async function ingestCCTranscripts(
 
         try {
           const vectors = await embedder.embedBatchPassage(batch);
-          const toStore: Array<{text: string; vector: number[]; category: "fact"; scope: string; importance: number; metadata: string}> = [];
+
+          // Collect non-duplicate chunks
+          const dedupedTexts: string[] = [];
+          const dedupedVectors: number[][] = [];
+          const dedupedChunks: typeof batchChunks = [];
 
           for (let j = 0; j < batch.length; j++) {
             const vector = vectors[j];
@@ -708,17 +883,42 @@ export async function ingestCCTranscripts(
               continue;
             }
 
-            const chunk = batchChunks[j];
+            // Two-stage dedup: vector pre-filter + optional LLM
+            if (!options.noDedup) {
+              const { action } = await dedupCheck(store, vector, batch[j], options.llm);
+              if (action === "skip") {
+                result.chunksDeduped++;
+                continue;
+              }
+            }
+
+            dedupedTexts.push(batch[j]);
+            dedupedVectors.push(vector);
+            dedupedChunks.push(batchChunks[j]);
+          }
+
+          if (dedupedTexts.length === 0) continue;
+
+          // Batch smart extraction (LLM 6-category or fallback)
+          const extractions = await smartExtractBatch(dedupedTexts, options.llm);
+
+          const toStore: Array<{text: string; vector: number[]; category: string; scope: string; importance: number; metadata: string}> = [];
+          for (let j = 0; j < dedupedTexts.length; j++) {
+            const chunk = dedupedChunks[j];
+            const ext = extractions[j];
             toStore.push({
-              text: chunk.text,
-              vector,
-              category: "fact",
+              text: dedupedTexts[j],
+              vector: dedupedVectors[j],
+              category: ext.category,
               scope: `cc:${chunk.sessionId.slice(0, 8)}`,
-              importance: 0.6,
+              importance: ext.importance,
               metadata: JSON.stringify({
                 source: "cc",
                 sessionId: chunk.sessionId,
                 file: file,
+                l0: ext.l0,
+                l1: ext.l1,
+                tier: initialTier(ext),
               }),
             });
           }
@@ -755,13 +955,14 @@ export async function ingestMarkdownFiles(
   embedder: Embedder,
   sourcePath: string,
   scope: string,
-  options: { verbose?: boolean } = {},
+  options: { verbose?: boolean; noDedup?: boolean; llm?: LLMClient | null } = {},
 ): Promise<IngestResult> {
   const result: IngestResult = {
     source: scope,
     filesProcessed: 0,
     chunksIngested: 0,
     chunksSkipped: 0,
+    chunksDeduped: 0,
     errors: [],
   };
 
@@ -800,7 +1001,11 @@ export async function ingestMarkdownFiles(
 
         try {
           const vectors = await embedder.embedBatchPassage(batch);
-          const toStore: Array<{text: string; vector: number[]; category: "fact"; scope: string; importance: number; metadata: string}> = [];
+          const toStore: Array<{text: string; vector: number[]; category: string; scope: string; importance: number; metadata: string}> = [];
+
+          const dedupedTexts: string[] = [];
+          const dedupedVectors: number[][] = [];
+          const dedupedSections: typeof batchSections = [];
 
           for (let j = 0; j < batch.length; j++) {
             const vector = vectors[j];
@@ -808,19 +1013,35 @@ export async function ingestMarkdownFiles(
               result.chunksSkipped++;
               continue;
             }
+            if (!options.noDedup) {
+              const { action } = await dedupCheck(store, vector, batch[j], options.llm);
+              if (action === "skip") { result.chunksDeduped++; continue; }
+            }
+            dedupedTexts.push(batch[j]);
+            dedupedVectors.push(vector);
+            dedupedSections.push(batchSections[j]);
+          }
 
-            toStore.push({
-              text: batch[j],
-              vector,
-              category: "fact",
-              scope,
-              importance: 0.7,
-              metadata: JSON.stringify({
-                source: scope,
-                file: file,
-                heading: batchSections[j].heading,
-              }),
-            });
+          if (dedupedTexts.length > 0) {
+            const extractions = await smartExtractBatch(dedupedTexts, options.llm);
+            for (let j = 0; j < dedupedTexts.length; j++) {
+              const ext = extractions[j];
+              toStore.push({
+                text: dedupedTexts[j],
+                vector: dedupedVectors[j],
+                category: ext.category,
+                scope,
+                importance: ext.importance,
+                metadata: JSON.stringify({
+                  source: scope,
+                  file: file,
+                  heading: dedupedSections[j].heading,
+                  l0: ext.l0,
+                  l1: ext.l1,
+                  tier: initialTier(ext),
+                }),
+              });
+            }
           }
 
           if (toStore.length > 0) {
@@ -853,13 +1074,14 @@ export async function ingestGenericText(
   sourcePath: string,
   scope: string,
   globPattern: string,
-  options: { verbose?: boolean } = {},
+  options: { verbose?: boolean; noDedup?: boolean; llm?: LLMClient | null } = {},
 ): Promise<IngestResult> {
   const result: IngestResult = {
     source: scope,
     filesProcessed: 0,
     chunksIngested: 0,
     chunksSkipped: 0,
+    chunksDeduped: 0,
     errors: [],
   };
 
@@ -914,6 +1136,8 @@ export async function ingestGenericText(
 
         try {
           const vectors = await embedder.embedBatchPassage(batch);
+          const dedupedTexts: string[] = [];
+          const dedupedVectors: number[][] = [];
 
           for (let j = 0; j < batch.length; j++) {
             const vector = vectors[j];
@@ -921,20 +1145,40 @@ export async function ingestGenericText(
               result.chunksSkipped++;
               continue;
             }
+            if (!options.noDedup) {
+              const { action } = await dedupCheck(store, vector, batch[j], options.llm);
+              if (action === "skip") { result.chunksDeduped++; continue; }
+            }
+            dedupedTexts.push(batch[j]);
+            dedupedVectors.push(vector);
+          }
 
-            await store.store({
-              text: batch[j],
-              vector,
-              category: "fact",
-              scope,
-              importance: 0.6,
-              metadata: JSON.stringify({
-                source: scope,
-                file: file,
-              }),
-            });
+          if (dedupedTexts.length > 0) {
+            const extractions = await smartExtractBatch(dedupedTexts, options.llm);
+            const toStore: Array<{text: string; vector: number[]; category: string; scope: string; importance: number; metadata: string}> = [];
 
-            result.chunksIngested++;
+            for (let j = 0; j < dedupedTexts.length; j++) {
+              const ext = extractions[j];
+              toStore.push({
+                text: dedupedTexts[j],
+                vector: dedupedVectors[j],
+                category: ext.category,
+                scope,
+                importance: ext.importance,
+                metadata: JSON.stringify({
+                  source: scope,
+                  file: file,
+                  l0: ext.l0,
+                  l1: ext.l1,
+                  tier: initialTier(ext),
+                }),
+              });
+            }
+
+            if (toStore.length > 0) {
+              await store.storeBatch(toStore);
+              result.chunksIngested += toStore.length;
+            }
           }
         } catch (err: any) {
           result.errors.push(`Embedding error in ${file}: ${err.message}`);

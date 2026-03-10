@@ -7,6 +7,8 @@ import { createEmbedder, type EmbeddingConfig } from "./embedder.js";
 import { createRetriever, type RetrievalConfig, DEFAULT_RETRIEVAL_CONFIG } from "./retriever.js";
 import { applyRetrievalProfile } from "./retrieval-profiles.js";
 import { AccessTracker } from "./access-tracker.js";
+import { createLLMClient, type LLMClient, type LLMConfig } from "./llm-client.js";
+import { logInfo } from "./stderr-log.js";
 
 export interface LocalMemoryConfig {
   dbPath: string;
@@ -18,6 +20,11 @@ export interface LocalMemoryConfig {
     dimensions?: number;
     taskQuery?: string;
     taskPassage?: string;
+  };
+  llm?: {
+    apiKey: string;
+    model: string;
+    baseURL: string;
   };
   sources: Record<string, { path: string; glob: string; description: string }>;
   retrieval?: Partial<RetrievalConfig>;
@@ -103,7 +110,16 @@ export function createComponents(config: LocalMemoryConfig, profileName?: string
   const accessTracker = new AccessTracker(store);
   retriever.setAccessTracker(accessTracker);
 
-  return { store, embedder, retriever, profile, accessTracker };
+  // Create LLM client if configured (optional, graceful)
+  let llm: LLMClient | null = null;
+  if (config.llm) {
+    llm = createLLMClient(config.llm);
+    if (llm) {
+      logInfo(`[INFO] LLM client initialized: ${config.llm.model} @ ${config.llm.baseURL}`);
+    }
+  }
+
+  return { store, embedder, retriever, profile, accessTracker, llm };
 }
 
 export function createComponentResolver(config: LocalMemoryConfig) {

@@ -4,6 +4,8 @@
  * Inspired by openclaw-plugin-continuity's noise filtering approach.
  */
 
+import { logInfo } from "./stderr-log.js";
+
 // Agent-side denial patterns
 const DENIAL_PATTERNS = [
   /i don'?t have (any )?(information|data|memory|record)/i,
@@ -63,13 +65,28 @@ export function isNoise(text: string, options: NoiseFilterOptions = {}): boolean
   const opts = { ...DEFAULT_OPTIONS, ...options };
   const trimmed = text.trim();
 
-  if (trimmed.length < 5) return true;
+  if (trimmed.length < 5) {
+    logInfo(`[INFO] noise-filter: skipped short text (${trimmed.length} chars)`);
+    return true;
+  }
 
-  if (opts.filterDenials && DENIAL_PATTERNS.some(p => p.test(trimmed))) return true;
-  if (opts.filterMetaQuestions && META_QUESTION_PATTERNS.some(p => p.test(trimmed))) return true;
-  if (opts.filterBoilerplate && BOILERPLATE_PATTERNS.some(p => p.test(trimmed))) return true;
+  if (opts.filterDenials && DENIAL_PATTERNS.some(p => p.test(trimmed))) {
+    logInfo(`[INFO] noise-filter: denial pattern matched: "${trimmed.slice(0, 60)}..."`);
+    return true;
+  }
+  if (opts.filterMetaQuestions && META_QUESTION_PATTERNS.some(p => p.test(trimmed))) {
+    logInfo(`[INFO] noise-filter: meta-question filtered: "${trimmed.slice(0, 60)}..."`);
+    return true;
+  }
+  if (opts.filterBoilerplate && BOILERPLATE_PATTERNS.some(p => p.test(trimmed))) {
+    logInfo(`[INFO] noise-filter: boilerplate filtered: "${trimmed.slice(0, 60)}..."`);
+    return true;
+  }
   // OpenClaw v3.2+ metadata noise (backport from v1.0.29)
-  if (METADATA_HEADER_PATTERNS.some(p => p.test(trimmed))) return true;
+  if (METADATA_HEADER_PATTERNS.some(p => p.test(trimmed))) {
+    logInfo(`[INFO] noise-filter: metadata header filtered`);
+    return true;
+  }
 
   return false;
 }

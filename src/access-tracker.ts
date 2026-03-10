@@ -5,10 +5,13 @@
  * time-decay half-life accordingly. Frequently accessed memories
  * decay slower; rarely accessed ones decay at the base rate.
  *
- * Inspired by memory-lancedb-pro's access-tracker.ts.
+ * v1.1: Added tier promotion/demotion on flush (borrowed from
+ * memory-lancedb-pro v1.1.0 tier-manager).
  */
 
 import type { MemoryStore } from "./store.js";
+import { evaluateTierChange, resolveTier, type MemoryTier } from "./decay-engine.js";
+import { logInfo, logWarn } from "./stderr-log.js";
 
 // ============================================================================
 // Configuration
@@ -61,7 +64,7 @@ export class AccessTracker {
       this.flushTimer = setTimeout(() => {
         this.flushTimer = null;
         this.flush().catch(err => {
-          console.warn("AccessTracker flush failed:", err);
+          logWarn("AccessTracker flush failed:", err);
         });
       }, this.config.flushIntervalMs);
     }
@@ -69,6 +72,7 @@ export class AccessTracker {
 
   /**
    * Write accumulated access deltas to store metadata.
+   * Also evaluates tier promotion/demotion based on access patterns.
    */
   async flush(): Promise<void> {
     if (this.pending.size === 0) return;
@@ -78,6 +82,8 @@ export class AccessTracker {
     this.pending.clear();
 
     const now = Date.now();
+    let promotions = 0;
+    let demotions = 0;
 
     for (const [id, delta] of batch) {
       try {
@@ -86,10 +92,35 @@ export class AccessTracker {
 
         const meta = safeParseMetadata(entry.metadata);
         const prevCount = typeof meta.accessCount === "number" ? meta.accessCount : 0;
+        const newCount = prevCount + delta;
+        const importance = entry.importance ?? 0.6;
+        const lastAccessedAt = now;
+
+        // Evaluate tier change
+        const currentTier = resolveTier(entry.metadata);
+        const newTier = evaluateTierChange(
+          currentTier,
+          newCount,
+          importance,
+          lastAccessedAt,
+        );
+
+        const tierChanged = newTier !== currentTier;
+        if (tierChanged) {
+          if (TIER_ORDER[newTier] > TIER_ORDER[currentTier]) {
+            promotions++;
+            logInfo(`[INFO] Tier promotion: ${id.slice(0, 8)} ${currentTier} → ${newTier} (access=${newCount})`);
+          } else {
+            demotions++;
+            logInfo(`[INFO] Tier demotion: ${id.slice(0, 8)} ${currentTier} → ${newTier}`);
+          }
+        }
+
         const updatedMeta = {
           ...meta,
-          accessCount: prevCount + delta,
-          lastAccessedAt: now,
+          accessCount: newCount,
+          lastAccessedAt,
+          ...(tierChanged ? { tier: newTier } : {}),
         };
 
         await this.store.update(id, { metadata: JSON.stringify(updatedMeta) });
@@ -97,6 +128,10 @@ export class AccessTracker {
         // Re-queue failed entries for next flush
         this.pending.set(id, (this.pending.get(id) || 0) + delta);
       }
+    }
+
+    if (promotions + demotions > 0) {
+      logInfo(`[INFO] Tier changes: ${promotions} promotions, ${demotions} demotions`);
     }
   }
 
@@ -146,6 +181,12 @@ export class AccessTracker {
 // ============================================================================
 // Helpers
 // ============================================================================
+
+const TIER_ORDER: Record<MemoryTier, number> = {
+  peripheral: 0,
+  working: 1,
+  core: 2,
+};
 
 function safeParseMetadata(raw?: string): Record<string, unknown> {
   try {
