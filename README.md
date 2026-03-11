@@ -295,13 +295,13 @@ EVAL.md
 |------|------|
 | Claude Code | Foundation and early project scaffolding |
 | OpenAI Codex | Productization, branding pass, MCP/UI expansion |
-| [memory-lancedb-pro](https://github.com/win4r/memory-lancedb-pro) by [@win4r](https://github.com/win4r) | Retrieval core ideas and implementation base for `store`, `retriever`, `embedder`, `chunker`, and `noise-filter` |
+| [memory-lancedb-pro](https://github.com/CortexReach/memory-lancedb-pro) by [@win4r](https://github.com/win4r) | Retrieval core ideas and implementation base for `store`, `retriever`, `embedder`, `chunker`, and `noise-filter`. Tracking upstream `master` (v1.1.0-beta.6+). |
 
 RecallNest extracts that retrieval core and rebuilds it into a local-first memory workbench.
 
 ## Acknowledgements
 
-Special thanks to 秦超老师 ([`@win4r`](https://github.com/win4r)). The retrieval design direction behind RecallNest comes directly from the `memory-lancedb-pro` line of thinking: hybrid retrieval, reranking, scope-aware recall, and building memory as an engineering system instead of a simple vector demo.
+Special thanks to 秦超老师 ([`@win4r`](https://github.com/win4r)) and the [CortexReach](https://github.com/CortexReach) team. The retrieval design direction behind RecallNest comes directly from the `memory-lancedb-pro` line of thinking: hybrid retrieval, reranking, scope-aware recall, and building memory as an engineering system instead of a simple vector demo.
 
 ## License
 

@@ -71,6 +71,10 @@ export interface RetrievalContext {
   limit: number;
   scopeFilter?: string[];
   category?: string;
+  /** Origin of retrieval call. Access reinforcement is only applied for "manual"
+   *  calls to prevent auto-recall from strengthening noise memories.
+   *  Defaults to "manual" when unset (backward-compatible). */
+  source?: "manual" | "auto-recall";
 }
 
 export interface RetrievalResult extends MemorySearchResult {
@@ -306,8 +310,9 @@ export class MemoryRetriever {
       results = await this.hybridRetrieval(query, safeLimit, scopeFilter, category);
     }
 
-    // Record access for returned results (async, non-blocking)
-    if (this.accessTracker && results.length > 0) {
+    // Record access for returned results (async, non-blocking).
+    // Only reinforce on manual retrieval — auto-recall must not strengthen noise.
+    if (this.accessTracker && results.length > 0 && context.source !== "auto-recall") {
       this.accessTracker.recordAccess(results.map(r => r.entry.id));
     }
 

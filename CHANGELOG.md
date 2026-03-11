@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.3.1 — Upstream Sync (2026-03-12)
+
+Synced with [CortexReach/memory-lancedb-pro](https://github.com/CortexReach/memory-lancedb-pro) master (v1.1.0-beta.6+).
+
+### Changed
+
+- **Retriever**: Added `source` field to `RetrievalContext` — access reinforcement now only fires on manual retrieval, preventing auto-recall from strengthening noise memories (synced from upstream beta.2 design).
+- **Noise filter**: Added Chinese meta-question patterns (`你记得`, `记不记得`, `还记得…吗`, `上次…说`, `之前…提到`) and diagnostic artifact filter (synced from upstream beta.3).
+- **README**: Updated upstream credit link from `win4r/memory-lancedb-pro` to `CortexReach/memory-lancedb-pro`, added CortexReach team acknowledgement.
+
 ## v1.2.0 — First Distributable Release (2026-03-08)
 
 The goal of this release: a new user can go from `git clone` to first search result in 15 minutes.
