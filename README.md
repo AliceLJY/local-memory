@@ -224,7 +224,7 @@ Config lookup order:
 | 1 | `LOCAL_MEMORY_CONFIG` env var |
 | 2 | project `config.json` |
 | 3 | `~/.config/recallnest/config.json` |
-| 4 | `~/.config/local-memory/config.json` |
+| 4 | `~/.config/recallnest/config.json` |
 
 ## Branding
 
