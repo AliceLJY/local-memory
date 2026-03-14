@@ -611,6 +611,93 @@ program
     }
   });
 
+// ─── export ──────────────────────────────────────────────────────────────────
+
+program
+  .command("export-memories")
+  .description("导出最近记忆为 markdown（供 digital-clone 等下游消费）")
+  .option("-d, --days <n>", "导出最近 N 天的记忆", "7")
+  .option("-n, --limit <n>", "最多导出条数", "200")
+  .option("-o, --output <path>", "输出文件路径（默认 stdout）")
+  .option("-s, --scope <scope>", "限定来源")
+  .option("--json", "输出 JSONL 格式")
+  .action(async (options) => {
+    const config = loadConfig();
+    const { store } = createComponents(config);
+    const scopeFilter = toScopeFilter(options.scope);
+    const limit = parseLimitOption(options.limit, 200, 1, 1000);
+    const days = parseLimitOption(options.days, 7, 1, 365);
+    const cutoff = Date.now() - days * 86_400_000;
+
+    // List all entries, filter by time
+    const entries = await store.list(scopeFilter, undefined, limit * 2, 0);
+    const recent = entries
+      .filter(e => e.timestamp >= cutoff)
+      .slice(0, limit);
+
+    if (recent.length === 0) {
+      console.log(`最近 ${days} 天没有新记忆。`);
+      return;
+    }
+
+    let output: string;
+
+    if (options.json) {
+      output = recent.map(e => JSON.stringify({
+        id: e.id,
+        text: e.text,
+        category: e.category,
+        scope: e.scope,
+        importance: e.importance,
+        timestamp: e.timestamp,
+      })).join("\n") + "\n";
+    } else {
+      // Markdown format: grouped by scope, sorted by time
+      const grouped: Record<string, typeof recent> = {};
+      for (const e of recent) {
+        const key = e.scope || "global";
+        if (!grouped[key]) grouped[key] = [];
+        grouped[key].push(e);
+      }
+
+      const lines: string[] = [
+        `# RecallNest 记忆导出`,
+        ``,
+        `> 导出时间: ${new Date().toISOString().slice(0, 10)}`,
+        `> 范围: 最近 ${days} 天, ${recent.length} 条`,
+        ``,
+      ];
+
+      for (const [scope, entries] of Object.entries(grouped)) {
+        lines.push(`## ${scope}`);
+        lines.push(``);
+        for (const e of entries) {
+          const date = new Date(e.timestamp).toISOString().slice(0, 10);
+          const cat = e.category || "other";
+          lines.push(`### [${cat}] ${date}`);
+          lines.push(``);
+          lines.push(e.text);
+          lines.push(``);
+          lines.push(`---`);
+          lines.push(``);
+        }
+      }
+
+      output = lines.join("\n");
+    }
+
+    if (options.output) {
+      const { writeFileSync } = require("node:fs");
+      const { mkdirSync } = require("node:fs");
+      const { dirname } = require("node:path");
+      mkdirSync(dirname(options.output), { recursive: true });
+      writeFileSync(options.output, output, "utf-8");
+      console.log(`✅ 导出 ${recent.length} 条记忆 → ${options.output}`);
+    } else {
+      console.log(output);
+    }
+  });
+
 // ─── doctor ──────────────────────────────────────────────────────────────────
 
 program
