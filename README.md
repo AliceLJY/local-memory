@@ -56,7 +56,7 @@ RecallNest turns Claude Code, Codex, and markdown notes into a local-first recal
 
 | Interface | Commands / tools |
 |------|------|
-| CLI | `search`, `explain`, `distill`, `brief`, `pin`, `pins`, `assets`, `export`, `profiles` |
+| CLI | `search`, `explain`, `distill`, `brief`, `pin`, `pins`, `assets`, `export`, `export-memories`, `profiles` |
 | MCP | `search_memory`, `explain_memory`, `distill_memory`, `brief_memory`, `pin_memory`, `list_assets`, `list_pins`, `export_memory`, `memory_stats` |
 | UI | query console, source-grouped cards, one-click pin, `Assets / Exports` views, stats, structured asset panel |
 
@@ -158,14 +158,29 @@ bun run src/cli.ts brief "OpenClaw 记忆系统" --profile writing
 bun run src/cli.ts export "OpenClaw 记忆系统" --profile writing --format md
 ```
 
-### 3. Pin and recall again
+### 3. Export memories for downstream tools
+
+```bash
+# export last 7 days as markdown
+bun run src/cli.ts export-memories --days 7
+
+# export to file (for digital-clone or NotebookLM)
+bun run src/cli.ts export-memories --days 14 --output ~/digital-clone-skill/clone-workspace/refreshed/recallnest.md
+
+# export as JSONL
+bun run src/cli.ts export-memories --days 30 --scope cc --json
+```
+
+> Used by [Digital Clone](https://github.com/AliceLJY/digital-clone-skill)'s `clone refresh` command to keep your digital clone updated with recent memories.
+
+### 4. Pin and recall again
 
 ```bash
 bun run src/cli.ts pin a2597723 --query "telegram bridge"
 bun run src/cli.ts search "telegram bridge" --scope asset --profile debug
 ```
 
-### 4. Inspect structured assets
+### 5. Inspect structured assets
 
 ```bash
 bun run src/cli.ts assets
