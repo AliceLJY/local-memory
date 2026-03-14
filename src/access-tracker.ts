@@ -42,6 +42,7 @@ export const DEFAULT_ACCESS_TRACKER_CONFIG: AccessTrackerConfig = {
 export class AccessTracker {
   private pending = new Map<string, number>();
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
+  private flushPromise: Promise<void> | null = null;
 
   constructor(
     private store: MemoryStore,
@@ -73,10 +74,25 @@ export class AccessTracker {
   /**
    * Write accumulated access deltas to store metadata.
    * Also evaluates tier promotion/demotion based on access patterns.
+   * Concurrent flush protection: prevents data corruption from overlapping flushes.
    */
   async flush(): Promise<void> {
+    if (this.flushPromise) {
+      await this.flushPromise;
+      if (this.pending.size > 0) return this.flush();
+      return;
+    }
     if (this.pending.size === 0) return;
 
+    this.flushPromise = this.doFlush();
+    try {
+      await this.flushPromise;
+    } finally {
+      this.flushPromise = null;
+    }
+  }
+
+  private async doFlush(): Promise<void> {
     // Snapshot and clear pending
     const batch = new Map(this.pending);
     this.pending.clear();
@@ -87,7 +103,7 @@ export class AccessTracker {
 
     for (const [id, delta] of batch) {
       try {
-        const entry = await this.store.get(id);
+        const entry = await this.store.getById(id);
         if (!entry) continue;
 
         const meta = safeParseMetadata(entry.metadata);

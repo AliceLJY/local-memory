@@ -376,7 +376,7 @@ export class MemoryStore {
     const safeLimit = clampInt(limit, 1, 20);
     const fetchLimit = Math.min(safeLimit * 10, 200); // Over-fetch for scope filtering
 
-    let query = this.table!.vectorSearch(vector).limit(fetchLimit);
+    let query = this.table!.vectorSearch(vector).distanceType('cosine').limit(fetchLimit);
 
     // Apply scope filter if provided
     // Support both exact match ("cc:abc123") and prefix match ("cc")
@@ -638,6 +638,32 @@ export class MemoryStore {
       vector: Array.from(row.vector as Iterable<number>),
       category: row.category as MemoryEntry["category"],
       scope: rowScope,
+      importance: Number(row.importance),
+      timestamp: Number(row.timestamp),
+      metadata: (row.metadata as string) || "{}",
+    };
+  }
+
+  /**
+   * Get a single entry by exact ID without scope filtering.
+   * Lightweight read used by AccessTracker for metadata updates.
+   */
+  async getById(id: string): Promise<MemoryEntry | null> {
+    await this.ensureInitialized();
+    const safeId = escapeSqlLiteral(id);
+    const rows = await this.table!.query()
+      .select(["id", "text", "vector", "category", "scope", "importance", "timestamp", "metadata"])
+      .where(`id = '${safeId}'`)
+      .limit(1)
+      .toArray();
+    if (rows.length === 0) return null;
+    const row = rows[0];
+    return {
+      id: row.id as string,
+      text: row.text as string,
+      vector: Array.from(row.vector as Iterable<number>),
+      category: row.category as MemoryEntry["category"],
+      scope: (row.scope as string | undefined) ?? "global",
       importance: Number(row.importance),
       timestamp: Number(row.timestamp),
       metadata: (row.metadata as string) || "{}",

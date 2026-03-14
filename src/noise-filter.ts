@@ -16,6 +16,15 @@ const DENIAL_PATTERNS = [
   /i wasn'?t able to find/i,
   /no (relevant )?memories found/i,
   /i don'?t have access to/i,
+  // Chinese denial patterns (synced from upstream)
+  /我没有(任何)?(相关)?(信息|数据|记忆|记录)/,
+  /我不(太)?确定/,
+  /我不记得/,
+  /我想不起来/,
+  /我没(有)?找到/,
+  /找不到(相关)?记忆/,
+  /没有(相关)?记忆/,
+  /我无法(访问|获取)/,
 ];
 
 // User-side meta-question patterns (about memory itself, not content)
@@ -25,21 +34,35 @@ const META_QUESTION_PATTERNS = [
   /\bdid i (tell|mention|say|share)\b/i,
   /\bhave i (told|mentioned|said)\b/i,
   /\bwhat did i (tell|say|mention)\b/i,
-  // Chinese meta-question patterns (synced from upstream v1.1.0-beta.3)
-  /你还?记得/,
-  /记不记得/,
-  /还记得.*吗/,
-  /上次.*说/,
-  /之前.*提到/,
+  // Chinese meta-question patterns (synced from upstream)
+  /你(还)?记得吗/,
+  /你(还)?记不记得/,
+  /你知道我(说过|提过|告诉|提到).*吗/,
+  /我(有没有|是不是)(说过|提过|告诉|提到)/,
+  /我之前(说过|提过|提到|告诉)/,
+  /我(跟你)?说过.*吗/,
 ];
 
-// Session boilerplate
+// Session boilerplate (anchored to prevent false positives on real content)
 const BOILERPLATE_PATTERNS = [
   /^(hi|hello|hey|good morning|good evening|greetings)/i,
   /^fresh session/i,
   /^new session/i,
   /^HEARTBEAT/i,
+  /^你好[!！\s,.，。]?$/,
+  /^(早上好|早安|午安|晚上好|晚安)[!！\s,.，。]?$/,
+  /^(嗨|哈[喽啰]|哈[喽啰]呀)[!！\s,.，。]?$/,
+  /^(嗯|哦|噢|呃)[!！\s,.，。]?$/,
+  /^新(会话|对话|聊天)/,
 ];
+
+// Short boilerplate: only noise when total text is very short
+// "好的" alone = noise, "好的方案是使用Redis" = real content
+const SHORT_BOILERPLATE_PATTERNS = [
+  /^(好的|好吧|行|可以|没问题|OK|ok|收到|明白|了解|知道了)/i,
+  /^(谢谢|感谢|多谢|谢啦|3Q|thx)/i,
+];
+const BOILERPLATE_MAX_LENGTH = 10;
 
 // OpenClaw v3.2+ injected metadata headers (backport from v1.0.29)
 const METADATA_HEADER_PATTERNS = [
@@ -94,9 +117,16 @@ export function isNoise(text: string, options: NoiseFilterOptions = {}): boolean
     logInfo(`[INFO] noise-filter: meta-question filtered: "${trimmed.slice(0, 60)}..."`);
     return true;
   }
-  if (opts.filterBoilerplate && BOILERPLATE_PATTERNS.some(p => p.test(trimmed))) {
-    logInfo(`[INFO] noise-filter: boilerplate filtered: "${trimmed.slice(0, 60)}..."`);
-    return true;
+  if (opts.filterBoilerplate) {
+    if (BOILERPLATE_PATTERNS.some(p => p.test(trimmed))) {
+      logInfo(`[INFO] noise-filter: boilerplate filtered: "${trimmed.slice(0, 60)}..."`);
+      return true;
+    }
+    if (trimmed.length <= BOILERPLATE_MAX_LENGTH &&
+        SHORT_BOILERPLATE_PATTERNS.some(p => p.test(trimmed))) {
+      logInfo(`[INFO] noise-filter: short boilerplate filtered: "${trimmed}"`);
+      return true;
+    }
   }
   // OpenClaw v3.2+ metadata noise (backport from v1.0.29)
   if (METADATA_HEADER_PATTERNS.some(p => p.test(trimmed))) {

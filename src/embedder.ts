@@ -86,7 +86,8 @@ class EmbeddingCache {
 
 export interface EmbeddingConfig {
   provider: "openai-compatible";
-  apiKey: string;
+  /** API key. Optional for local providers (Ollama, Docker Model Runner). */
+  apiKey?: string;
   model: string;
   baseURL?: string;
   dimensions?: number;
@@ -116,6 +117,13 @@ const EMBEDDING_DIMENSIONS: Record<string, number> = {
   // Jina v5
   "jina-embeddings-v5-text-small": 1024,
   "jina-embeddings-v5-text-nano": 768,
+
+  // Qwen3 Embedding (Docker Model Runner / local)
+  "ai/qwen3-embedding": 1024,
+  "ai/qwen3-embedding:0.6B-F16": 1024,
+  "ai/qwen3-embedding:4B": 1024,
+  "ai/qwen3-embedding:4B-Q4_K_M": 1024,
+  "ai/qwen3-embedding:8B-Q4_K_M": 1024,
 };
 
 // ============================================================================
@@ -167,8 +175,8 @@ export class Embedder {
   private readonly _autoChunk: boolean;
 
   constructor(config: EmbeddingConfig & { chunking?: boolean }) {
-    // Resolve environment variables in API key
-    const resolvedApiKey = resolveEnvVars(config.apiKey);
+    // Resolve environment variables in API key (fallback for local providers)
+    const resolvedApiKey = config.apiKey ? resolveEnvVars(config.apiKey) : "no-key-required";
 
     this._model = config.model;
     this._taskQuery = config.taskQuery;

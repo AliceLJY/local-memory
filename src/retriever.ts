@@ -40,7 +40,7 @@ export interface RetrievalConfig {
    *  - "siliconflow": same format as jina (alias, for clarity)
    *  - "voyage": Authorization: Bearer, string[] documents, data[].relevance_score
    *  - "pinecone": Api-Key header, {text}[] documents, data[].score */
-  rerankProvider?: "jina" | "siliconflow" | "voyage" | "pinecone";
+  rerankProvider?: "jina" | "siliconflow" | "voyage" | "pinecone" | "vllm";
   /**
    * Length normalization: penalize long entries that dominate via sheer keyword
    * density. Formula: score *= 1 / (1 + log2(charLen / anchor)).
@@ -74,7 +74,7 @@ export interface RetrievalContext {
   /** Origin of retrieval call. Access reinforcement is only applied for "manual"
    *  calls to prevent auto-recall from strengthening noise memories.
    *  Defaults to "manual" when unset (backward-compatible). */
-  source?: "manual" | "auto-recall";
+  source?: "manual" | "auto-recall" | "cli";
 }
 
 export interface RetrievalResult extends MemorySearchResult {
@@ -133,7 +133,7 @@ function parseMetadata(raw?: string): Record<string, unknown> {
 // Rerank Provider Adapters
 // ============================================================================
 
-type RerankProvider = "jina" | "siliconflow" | "voyage" | "pinecone";
+type RerankProvider = "jina" | "siliconflow" | "voyage" | "pinecone" | "vllm";
 
 interface RerankItem { index: number; score: number }
 
@@ -174,6 +174,19 @@ function buildRerankRequest(
           documents,
           // Voyage uses top_k (not top_n) to limit reranked outputs.
           top_k: topN,
+        },
+      };
+    case "vllm":
+      // Docker Model Runner / vLLM: no auth required, runs locally
+      return {
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: {
+          model,
+          query,
+          documents,
+          top_n: topN,
         },
       };
     case "siliconflow":
@@ -240,10 +253,11 @@ function parseRerankResponse(
         parseItems(data.results, ["relevance_score", "score"])
       );
     }
+    case "vllm":
     case "siliconflow":
     case "jina":
     default: {
-      // Jina / SiliconFlow: usually { results: [{ index, relevance_score }] }
+      // Jina / SiliconFlow / vLLM: usually { results: [{ index, relevance_score }] }
       // Also tolerate data[] for compatibility across gateways.
       return (
         parseItems(data.results, ["relevance_score", "score"]) ??
@@ -539,15 +553,16 @@ export class MemoryRetriever {
     }
 
     // Try cross-encoder rerank via configured provider API
-    if (this.config.rerank === "cross-encoder" && this.config.rerankApiKey) {
+    const provider = this.config.rerankProvider || "jina";
+    const needsApiKey = provider !== "vllm";
+    if (this.config.rerank === "cross-encoder" && (!needsApiKey || this.config.rerankApiKey)) {
       try {
-        const provider = this.config.rerankProvider || "jina";
         const model = this.config.rerankModel || "jina-reranker-v3";
         const endpoint = this.config.rerankEndpoint || "https://api.jina.ai/v1/rerank";
         const documents = results.map(r => r.entry.text);
 
         // Build provider-specific request
-        const { headers, body } = buildRerankRequest(provider, this.config.rerankApiKey, model, query, documents, results.length);
+        const { headers, body } = buildRerankRequest(provider, this.config.rerankApiKey || "", model, query, documents, results.length);
 
         // Timeout: 5 seconds to prevent stalling retrieval pipeline
         const controller = new AbortController();
