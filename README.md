@@ -4,7 +4,7 @@
 
 Give any AI agent persistent memory that survives across sessions, consolidates over time, and gets smarter the more you use it. Works with any framework — Claude Agent SDK, OpenAI Agents SDK, LangChain, or plain HTTP.
 
-> 给任何 AI agent 加上会自我进化的持久记忆。跨框架、跨语言、一键接入。
+[中文文档](README_CN.md)
 
 ## Why RecallNest
 
