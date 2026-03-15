@@ -7,7 +7,7 @@ This file is the short operator memo for common actions.
 ### Manual
 
 ```bash
-cd $HOME/local-memory
+cd $HOME/recallnest
 bun run src/ui-server.ts
 ```
 

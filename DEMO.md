@@ -15,7 +15,7 @@ Show three things in one pass:
 ## Fast Setup
 
 ```bash
-cd $HOME/local-memory
+cd $HOME/recallnest
 bun run src/ui-server.ts
 ```
 
