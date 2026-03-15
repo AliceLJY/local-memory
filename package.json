@@ -22,7 +22,8 @@
     "profiles": "bun run src/cli.ts profiles",
     "doctor": "bun run src/cli.ts doctor",
     "demo": "bun run src/cli.ts demo",
-    "ui": "bun run src/ui-server.ts"
+    "ui": "bun run src/ui-server.ts",
+    "api": "bun run src/api-server.ts"
   },
   "dependencies": {
     "@lancedb/lancedb": "^0.26.0",

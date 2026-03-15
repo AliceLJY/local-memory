@@ -47,17 +47,18 @@ const server = new McpServer({
 // --- search_memory tool ---
 server.tool(
   "search_memory",
-  "Search indexed AI conversations (Claude Code, Codex, Gemini, etc.) using hybrid vector + keyword retrieval",
+  "IMPORTANT: Use this tool proactively at the start of tasks to recall relevant past conversations, decisions, and patterns. Search when: starting a new task, debugging, writing, making decisions, or when the user references past work. Do NOT wait for the user to ask you to search. Query with key nouns/verbs from the user's message.",
   {
     query: z.string().describe("Search query — natural language or keywords"),
     limit: z.number().min(1).max(20).default(5).describe("Max results to return"),
     scope: z.string().optional().describe("Filter by source: cc, codex, gemini, memory"),
+    category: z.enum(["profile", "preferences", "entities", "events", "cases", "patterns"]).optional().describe("Filter by memory category: profile (identity/background), preferences (habits/style), entities (projects/tools/people), events (past happenings), cases (problem-solution pairs), patterns (reusable workflows)"),
     profile: z.enum(["default", "writing", "debug", "fact-check"]).optional().describe("Retrieval profile"),
   },
-  async ({ query, limit, scope, profile: profileName }) => {
+  async ({ query, limit, scope, category, profile: profileName }) => {
     const { retriever, profile } = getComponents(profileName);
     const scopeFilter = scope ? [scope] : undefined;
-    const results = await retriever.retrieve({ query, limit, scopeFilter });
+    const results = await retriever.retrieve({ query, limit, scopeFilter, category });
 
     return {
       content: [{
@@ -75,12 +76,13 @@ server.tool(
     query: z.string().describe("Search query — natural language or keywords"),
     limit: z.number().min(1).max(20).default(5).describe("Max results to analyze"),
     scope: z.string().optional().describe("Filter by source: cc, codex, gemini, memory"),
+    category: z.enum(["profile", "preferences", "entities", "events", "cases", "patterns"]).optional().describe("Filter by memory category"),
     profile: z.enum(["default", "writing", "debug", "fact-check"]).optional().describe("Retrieval profile"),
   },
-  async ({ query, limit, scope, profile: profileName }) => {
+  async ({ query, limit, scope, category, profile: profileName }) => {
     const { retriever, profile } = getComponents(profileName);
     const scopeFilter = scope ? [scope] : undefined;
-    const results = await retriever.retrieve({ query, limit, scopeFilter });
+    const results = await retriever.retrieve({ query, limit, scopeFilter, category });
     return {
       content: [{
         type: "text" as const,
@@ -331,6 +333,11 @@ server.tool(
       ...Object.entries(sourceCounts)
         .sort((a, b) => b[1] - a[1])
         .map(([src, count]) => `  ${src}: ${count}`),
+      "",
+      "By category:",
+      ...Object.entries(stats.categoryCounts || {})
+        .sort((a, b) => b[1] - a[1])
+        .map(([cat, count]) => `  ${cat}: ${count}`),
     ];
 
     return {

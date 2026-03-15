@@ -59,6 +59,15 @@ function getSourceLabel(result: RetrievalResult): string {
   return String(meta.source || result.entry.scope || "?");
 }
 
+function getCategoryLabel(result: RetrievalResult): string {
+  return result.entry.category || "other";
+}
+
+function getTierLabel(result: RetrievalResult): string {
+  const meta = parseMetadata(result.entry);
+  return String(meta.tier || "peripheral");
+}
+
 export function selectBriefSeedResults(results: RetrievalResult[]): RetrievalResult[] {
   const directResults = results.filter((result) => getSourceLabel(result) !== "asset");
   return directResults.length > 0 ? directResults : results;
@@ -191,6 +200,8 @@ function buildSearchRow(index: number, query: string, result: RetrievalResult): 
     String(index + 1).padEnd(2),
     result.entry.id.slice(0, 8).padEnd(8),
     `${(result.score * 100).toFixed(0)}%`.padEnd(5),
+    getCategoryLabel(result).padEnd(12),
+    getTierLabel(result).padEnd(10),
     getSourceLabel(result).padEnd(7),
     getDateLabel(result.entry.timestamp),
     getRetrievalPath(result).padEnd(20),
@@ -210,13 +221,13 @@ export function formatSearchResults(
     `Profile : ${context.profile}`,
     `Hits    : ${results.length}`,
     "",
-    "#  ID       Score Source  Date       Retrieval Path       File / Snippet",
-    "-- -------- ----- ------- ---------- -------------------- --------------",
+    "#  ID       Score Category     Tier       Source  Date       Retrieval Path       File / Snippet",
+    "-- -------- ----- ------------ ---------- ------- ---------- -------------------- --------------",
   ];
 
   for (let i = 0; i < results.length; i++) {
     const row = buildSearchRow(i, context.query, results[i]);
-    lines.push(`${row[0]} ${row[1]} ${row[2]} ${row[3]} ${row[4]} ${row[5]} ${row[6]} | ${row[7]}`);
+    lines.push(`${row[0]} ${row[1]} ${row[2]} ${row[3]} ${row[4]} ${row[5]} ${row[6]} ${row[7]} ${row[8]} | ${row[9]}`);
   }
 
   return lines.join("\n");
@@ -245,6 +256,8 @@ export function formatExplainResults(
     const why = buildWhyMatched(context.query, result);
 
     lines.push(`${i + 1}. ${result.entry.id.slice(0, 8)} | ${score} | ${getSourceLabel(result)} | ${getDateLabel(result.entry.timestamp)}`);
+    lines.push(`   category: ${getCategoryLabel(result)}`);
+    lines.push(`   tier    : ${getTierLabel(result)}`);
     lines.push(`   path    : ${retrieval}`);
     lines.push(`   session : ${session}`);
     lines.push(`   file    : ${file}`);
