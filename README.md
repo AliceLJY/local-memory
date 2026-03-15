@@ -1,322 +1,219 @@
 # RecallNest
 
-> MCP-native memory workbench for AI conversations.
-> Foundation built with Claude Code. Productization and UI expansion completed with OpenAI Codex.
+> Memory layer for AI agents that evolves itself.
 
-RecallNest turns Claude Code, Codex, and markdown notes into a local-first recall layer you can search, explain, distill, pin, and export.
+Give any AI agent persistent memory that survives across sessions, consolidates over time, and gets smarter the more you use it. Works with any framework — Claude Agent SDK, OpenAI Agents SDK, LangChain, or plain HTTP.
 
-![RecallNest workbench](./assets/recallnest-workbench.png)
+> 给任何 AI agent 加上会自我进化的持久记忆。跨框架、跨语言、一键接入。
 
 ## Why RecallNest
 
-| Problem | Why existing transcript search is not enough | RecallNest answer |
-|------|------|------|
-| Too many chats | Raw archives are searchable but not reusable | Turn transcripts into recallable memory assets |
-| Agent memory is opaque | You do not know why a hit surfaced | Show score, source, scope, retrieval path, and evidence |
-| Good context disappears | One useful hit is lost in the next session | Pin and brief write useful context back into recall |
-| CLI-only demos do not spread | People do not see the value fast enough | Pair MCP-native tools with a local workbench UI |
-| Retrieval tuning is guesswork | "Feels better" is not a reliable benchmark | Track eval baselines and failure cases over time |
-
-## At A Glance
-
-| Problem | RecallNest answer |
-|------|------|
-| Too many transcripts, no recall | Hybrid vector + BM25 retrieval |
-| Hits are opaque | Explain mode with source, file, path, and score trace |
-| Raw chunks are not reusable | Distill mode turns hits into a briefing |
-| Good memories disappear again | Pin turns them into reusable assets |
-| Distilled context is still ephemeral | Brief mode writes structured memory briefs back into recall |
-| Assets stay isolated | Pinned assets are re-indexed into `asset:*` recall scope |
-| CLI is hard to demo | Local web workbench at `http://localhost:4317` |
-
-## Product Shape
-
-| Layer | What it does |
-|------|------|
-| Ingest | Parse Claude Code, Codex, Markdown (Gemini CLI: coming soon) |
-| Store | LanceDB vector store + FTS |
-| Retrieve | Hybrid search + rerank + time-aware scoring |
-| Explain | Show why a memory matched |
-| Distill | Produce briefings and evidence bundles |
-| Assetize | Pin reusable memory into long-lived assets |
-| Structure | Save distilled result sets as `memory-brief` assets |
-| Recall Again | Feed pinned assets back into retrieval |
-| Interface | CLI + MCP + local web UI |
-
-## Modes
-
-| Mode | Best for | Retrieval bias |
-|------|----------|----------------|
-| `default` | everyday recall | balanced |
-| `writing` | drafting, idea mining | broader semantic recall |
-| `debug` | errors, commands, fixes | stronger keyword + recency |
-| `fact-check` | evidence lookup | tighter exact-match cutoff |
-
-## Interfaces
-
-| Interface | Commands / tools |
-|------|------|
-| CLI | `search`, `explain`, `distill`, `brief`, `pin`, `pins`, `assets`, `export`, `export-memories`, `profiles` |
-| MCP | `search_memory`, `explain_memory`, `distill_memory`, `brief_memory`, `pin_memory`, `list_assets`, `list_pins`, `export_memory`, `memory_stats` |
-| UI | query console, source-grouped cards, one-click pin, `Assets / Exports` views, stats, structured asset panel |
-
-## Prerequisites
-
-| Requirement | Version | Check |
-|-------------|---------|-------|
-| [Bun](https://bun.sh) | >= 1.0 | `bun --version` |
-| [Jina API key](https://jina.ai/embeddings/) | free tier works | sign up and copy key |
-
-> Node.js >= 20 also works (`npx tsx src/cli.ts ...`) but Bun is recommended for speed.
+| Feature | RecallNest | Typical solutions |
+|---------|:---------:|:-----------------:|
+| Works with any agent framework | ✅ HTTP API + MCP | ❌ Single-tool only |
+| Self-evolution (consolidation + gap detection) | ✅ | ❌ |
+| 6-category classification | ✅ | ❌ |
+| Weibull decay + 3-tier lifecycle | ✅ | ❌ |
+| Hybrid retrieval (vector + BM25 + reranking) | ✅ | Partial |
+| One-click integration scripts | ✅ | ❌ |
 
 ## Quick Start
-
-**Step 1: Clone and install**
 
 ```bash
 git clone https://github.com/AliceLJY/recallnest.git
 cd recallnest
-bun install        # or: npm install
-```
-
-**Step 2: Configure**
-
-```bash
+bun install
 cp config.json.example config.json
 cp .env.example .env
+# Edit .env → add your JINA_API_KEY
 ```
 
-Edit `.env` and paste your Jina API key:
-
-```
-JINA_API_KEY=jina_xxxxxxxxxxxx
-```
-
-**Step 3: Verify setup**
+### Start the API server
 
 ```bash
-bun run src/cli.ts doctor
+bun run api
+# → RecallNest API running at http://localhost:4318
 ```
 
-Expected output — all green checks:
+### Try it
 
+```bash
+# Store a memory
+curl -X POST http://localhost:4318/v1/store \
+  -H "Content-Type: application/json" \
+  -d '{"text": "User prefers dark mode", "category": "preferences"}'
+
+# Recall memories
+curl -X POST http://localhost:4318/v1/recall \
+  -H "Content-Type: application/json" \
+  -d '{"query": "user preferences"}'
+
+# Check stats
+curl http://localhost:4318/v1/stats
 ```
-  RecallNest Doctor
 
-  ✅ Bun runtime: v1.x.x
-  ✅ Config file: /path/to/config.json
-  ✅ JINA_API_KEY: set (jina_xxx...)
-  ✅ Config parse: valid JSON
-  ✅ Data directory: ~/.recallnest/data/lancedb
-  ✅ CC transcripts: auto-detected: ~/.claude/projects
-  ✅ Embedding API: jina-embeddings-v5-text-small (1024d)
-```
-
-**Step 4: Index your conversations**
+### Index existing conversations
 
 ```bash
 bun run src/cli.ts ingest --source all
+bun run src/cli.ts doctor   # verify setup
 ```
 
-**Step 5: Search**
+## Integrations
+
+RecallNest works through two interfaces: **HTTP API** (any language) and **MCP** (Claude Code, Gemini CLI, Codex).
+
+### CLI Tools (one-click setup)
 
 ```bash
-bun run src/cli.ts search "your query here"
+# Claude Code
+bash integrations/claude-code/setup.sh
+
+# Gemini CLI
+bash integrations/gemini-cli/setup.sh
+
+# Codex
+bash integrations/codex/setup.sh
 ```
 
-Or open the local workbench:
+### Agent Frameworks
 
-```bash
-bun run src/ui-server.ts
-# visit http://localhost:4317
-```
+Drop-in examples for popular agent SDKs — see [`integrations/examples/`](integrations/examples/):
 
-## Troubleshooting
+| Framework | Example | Language |
+|-----------|---------|----------|
+| [Claude Agent SDK](integrations/examples/claude-agent-sdk/) | `memory-agent.ts` | TypeScript |
+| [OpenAI Agents SDK](integrations/examples/openai-agents-sdk/) | `memory-agent.py` | Python |
+| [LangChain](integrations/examples/langchain/) | `memory-chain.py` | Python |
 
-| Problem | Fix |
-|---------|-----|
-| `bun: command not found` | Install Bun: `curl -fsSL https://bun.sh/install \| bash` |
-| `JINA_API_KEY not set` | Copy your key from https://jina.ai/embeddings/ into `.env` |
-| Jina 401 / Embedding API fail | Check if key is valid — run `lm doctor` to diagnose |
-| CC transcripts not found | Set `sources.cc.path` in config.json to your `~/.claude/projects/-Users-yourname` path |
-| Port 4317 in use | `RECALLNEST_UI_PORT=4321 bun run src/ui-server.ts` |
+Each example shows how to add `recall_memory` and `store_memory` tools to your agent in ~30 lines.
 
-## Common Flows
+## API Reference
 
-### 1. Search and explain
+Base URL: `http://localhost:4318`
 
-```bash
-bun run src/cli.ts search "telegram bridge" --profile debug
-bun run src/cli.ts explain "telegram bridge" --profile debug
-```
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/v1/recall` | POST | Quick semantic search |
+| `/v1/store` | POST | Store a new memory |
+| `/v1/search` | POST | Advanced search with full metadata |
+| `/v1/stats` | GET | Memory statistics |
+| `/v1/health` | GET | Health check |
 
-### 2. Distill and export
+Full documentation: [`docs/api-reference.md`](docs/api-reference.md)
 
-```bash
-bun run src/cli.ts distill "OpenClaw 记忆系统" --profile writing
-bun run src/cli.ts brief "OpenClaw 记忆系统" --profile writing
-bun run src/cli.ts export "OpenClaw 记忆系统" --profile writing --format md
-```
+## MCP Tools
 
-### 3. Export memories for downstream tools
+When connected via MCP, agents get these tools:
 
-```bash
-# export last 7 days as markdown
-bun run src/cli.ts export-memories --days 7
-
-# export to file (for digital-clone or NotebookLM)
-bun run src/cli.ts export-memories --days 14 --output ~/digital-clone-skill/clone-workspace/refreshed/recallnest.md
-
-# export as JSONL
-bun run src/cli.ts export-memories --days 30 --scope cc --json
-```
-
-> Used by [Digital Clone](https://github.com/AliceLJY/digital-clone-skill)'s `clone refresh` command to keep your digital clone updated with recent memories.
-
-### 4. Pin and recall again
-
-```bash
-bun run src/cli.ts pin a2597723 --query "telegram bridge"
-bun run src/cli.ts search "telegram bridge" --scope asset --profile debug
-```
-
-### 5. Inspect structured assets
-
-```bash
-bun run src/cli.ts assets
-```
-
-## UI Workbench
-
-Run:
-
-```bash
-bun run src/ui-server.ts
-```
-
-If port `4317` is already occupied:
-
-```bash
-RECALLNEST_UI_PORT=4321 bun run src/ui-server.ts
-```
-
-Open:
-
-```text
-http://localhost:4317
-```
-
-Current UI surfaces:
-
-| Surface | Capability |
-|------|------|
-| Query Console | search / explain / distill / export |
-| Result Surface | structured cards with memory ID, score, scope, retrieval path |
-| View Switch | `Search / Assets / Exports` |
-| Recall Actions | click-to-pin, create brief, or paste short ID |
-| Trace Output | raw explain/distill trace |
-| Stats Panel | index stats |
-| Assets Panel | recent structured assets |
-
-## Configuration
-
-Edit `config.json`.
-
-| Field | Description |
+| Tool | Description |
 |------|-------------|
-| `dbPath` | LanceDB storage path |
-| `sources.cc.path` | `auto` or an explicit Claude Code transcript directory |
-| `sources.codex.path` | Codex sessions directory |
-| `sources.gemini.path` | Gemini CLI session directory (coming soon — encrypted protobuf, not yet supported) |
-| `sources.memory.path` | Markdown memory directory |
-| `embedding` | OpenAI-compatible embedding config |
-| `retrieval` | Base retrieval defaults before mode overrides |
+| `search_memory` | Proactive recall — agents are encouraged to use this at the start of every task |
+| `explain_memory` | Show why memories matched |
+| `distill_memory` | Compact briefing from results |
+| `brief_memory` | Create structured brief + re-index |
+| `pin_memory` | Promote a memory to pinned asset |
+| `memory_stats` | Index statistics with category breakdown |
 
-Config lookup order:
+## Memory Categories
 
-| Priority | Path |
-|------|------|
-| 1 | `LOCAL_MEMORY_CONFIG` env var |
-| 2 | project `config.json` |
-| 3 | `~/.config/recallnest/config.json` |
-| 4 | `~/.config/recallnest/config.json` |
+RecallNest classifies memories into 6 categories during ingestion:
 
-## Branding
+| Category | Description | Strategy |
+|----------|-------------|----------|
+| `profile` | User identity and background | Merge |
+| `preferences` | Habits, style, dislikes | Merge |
+| `entities` | Projects, tools, people | Merge |
+| `events` | Things that happened | Append |
+| `cases` | Problem → solution pairs | Append |
+| `patterns` | Reusable workflows | Merge |
 
-| Item | Value |
-|------|------|
-| Public name | `RecallNest` |
-| CLI | `recallnest` |
-| MCP server name | `recallnest` |
-| GitHub repo | `AliceLJY/recallnest` |
-| Local directory | any path works |
+Details: [`docs/memory-categories.md`](docs/memory-categories.md)
 
-## Roadmap
+## Retrieval Profiles
 
-The next build phase is tracked in [ROADMAP.md](./ROADMAP.md).
-Retrieval quality changes should be tracked with [EVAL.md](./EVAL.md).
-Common operator actions live in [OPERATIONS.md](./OPERATIONS.md).
-Observed misses and weak hits should be logged in [FAILURES.md](./FAILURES.md).
-The short demo flow for screenshots and social posts lives in [DEMO.md](./DEMO.md).
-
-Current focus:
-
-| Track | Goal |
-|------|------|
-| Retrieval Quality | Improve hit quality with evals, failure review, and asset hygiene |
-| MCP + UI Product | Keep RecallNest easy to operate through agents and the workbench |
-| Writing Workflow | Turn recall into reusable briefs and article inputs |
-
-## Eval
-
-When retrieval changes, do not rely on intuition alone.
-
-Run:
-
-```bash
-bun run src/eval.ts --output eval/reports/latest.md
-```
-
-Starter cases live in:
-
-```text
-eval/cases.json
-```
-
-Operator memo:
-
-```text
-EVAL.md
-```
+| Profile | Best for | Bias |
+|---------|----------|------|
+| `default` | Everyday recall | Balanced |
+| `writing` | Drafting, idea mining | Broader semantic, older material OK |
+| `debug` | Errors, commands, fixes | Keyword-heavy, recency-biased |
+| `fact-check` | Evidence lookup | Tighter cutoff, exact-match bias |
 
 ## Architecture
 
-| File | Role |
-|------|------|
-| `src/cli.ts` | CLI entry |
-| `src/mcp-server.ts` | MCP tools |
-| `src/ui-server.ts` | local web UI server |
-| `src/ingest.ts` | multi-source transcript parsing |
-| `src/store.ts` | LanceDB storage and FTS |
-| `src/retriever.ts` | hybrid retrieval pipeline |
-| `src/retrieval-profiles.ts` | task-oriented retrieval profiles |
-| `src/memory-output.ts` | search/explain/distill rendering |
-| `src/memory-assets.ts` | pin/export asset storage |
-| `src/asset-sync.ts` | pinned asset re-indexing |
+```
+┌─────────────────────────────────────────────────┐
+│                  AI Agents                       │
+├──────────┬──────────┬──────────┬────────────────┤
+│ Claude   │ OpenAI   │ LangChain│ Any HTTP       │
+│ Agent SDK│ Agents   │          │ client         │
+└────┬─────┴────┬─────┴────┬─────┴──────┬─────────┘
+     │          │          │            │
+     ▼          ▼          ▼            ▼
+┌─────────────────────────────────────────────────┐
+│             RecallNest Access Layer              │
+├─────────────────┬───────────────────────────────┤
+│  HTTP API :4318 │   MCP Server (stdio)          │
+└────────┬────────┴────────────┬──────────────────┘
+         │                     │
+         ▼                     ▼
+┌─────────────────────────────────────────────────┐
+│             RecallNest Core Engine               │
+│  Hybrid Retrieval · 6-Category Classification   │
+│  Weibull Decay · 3-Tier Lifecycle               │
+│  Smart Extraction · Self-Evolution (planned)    │
+└─────────────────────┬───────────────────────────┘
+                      │
+                      ▼
+┌─────────────────────────────────────────────────┐
+│       LanceDB + Jina Embeddings v5              │
+└─────────────────────────────────────────────────┘
+```
+
+Details: [`docs/architecture.md`](docs/architecture.md)
+
+## Additional Interfaces
+
+### CLI
+
+```bash
+bun run src/cli.ts search "your query"
+bun run src/cli.ts explain "your query" --profile debug
+bun run src/cli.ts distill "topic" --profile writing
+bun run src/cli.ts stats
+```
+
+### Web UI (debug tool)
+
+A lightweight web interface is available for debugging and exploring memories:
+
+```bash
+bun run src/ui-server.ts
+# → http://localhost:4317
+```
+
+> The web UI is a development/debugging tool, not the primary interface. For production agent integration, use the HTTP API or MCP.
+
+## Roadmap
+
+See [ROADMAP.md](./ROADMAP.md) for the full evolution plan.
+
+**Coming next:**
+- Memory consolidation (auto-merge duplicates)
+- Gap detection (find topics with weak coverage)
+- Promotion suggestions (surface high-value memories)
 
 ## Credit
 
 | Source | Contribution |
-|------|------|
+|--------|-------------|
+| [claude-memory-pro](https://github.com/CortexReach/claude-memory-pro) by [@win4r](https://github.com/win4r) | Retrieval core ideas and implementation base |
 | Claude Code | Foundation and early project scaffolding |
-| OpenAI Codex | Productization, branding pass, MCP/UI expansion |
-| [memory-lancedb-pro](https://github.com/CortexReach/memory-lancedb-pro) by [@win4r](https://github.com/win4r) | Retrieval core ideas and implementation base for `store`, `retriever`, `embedder`, `chunker`, and `noise-filter`. Tracking upstream `master` (v1.1.0-beta.6+). |
-
-RecallNest extracts that retrieval core and rebuilds it into a local-first memory workbench.
+| OpenAI Codex | Productization and MCP expansion |
 
 ## Acknowledgements
 
-Special thanks to 秦超老师 ([`@win4r`](https://github.com/win4r)) and the [CortexReach](https://github.com/CortexReach) team. The retrieval design direction behind RecallNest comes directly from the `memory-lancedb-pro` line of thinking: hybrid retrieval, reranking, scope-aware recall, and building memory as an engineering system instead of a simple vector demo.
+Special thanks to 秦超老师 ([@win4r](https://github.com/win4r)) and the [CortexReach](https://github.com/CortexReach) team. RecallNest's retrieval design — hybrid search, reranking, scope-aware recall, and memory-as-engineering-system — comes directly from the `memory-lancedb-pro` line of thinking. RecallNest takes a different direction (universal agent memory layer) but shares the same foundation.
 
 ## License
 
