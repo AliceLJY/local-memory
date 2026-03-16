@@ -19,9 +19,12 @@
     "assets": "bun run src/cli.ts assets",
     "clean-briefs": "bun run src/cli.ts clean-briefs --apply",
     "eval": "bun run src/eval.ts",
+    "eval:continuity": "bun run src/eval.ts --mode continuity --cases eval/continuity/cases.json",
     "profiles": "bun run src/cli.ts profiles",
     "doctor": "bun run src/cli.ts doctor",
     "demo": "bun run src/cli.ts demo",
+    "seed:patterns": "bun run src/cli.ts seed-patterns",
+    "seed:cases": "bun run src/cli.ts seed-cases",
     "ui": "bun run src/ui-server.ts",
     "api": "bun run src/api-server.ts"
   },

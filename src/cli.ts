@@ -10,14 +10,14 @@
  */
 
 import { Command } from "commander";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { homedir } from "node:os";
 
 import type { RetrievalResult } from "./retriever.js";
 import { applyRetrievalProfile, listRetrievalProfiles } from "./retrieval-profiles.js";
 import { distillResults, formatExplainResults, formatSearchResults, selectBriefSeedResults, summarizeResults } from "./memory-output.js";
-import { archiveDirtyBriefAsset, assetSummaryLine, buildBriefAsset, buildPinAsset, listDirtyBriefAssets, listMemoryAssets, listPinAssets, pinSummaryLine, saveBriefAsset, savePinAsset, writeExportArtifact } from "./memory-assets.js";
+import { archiveDirtyBriefAsset, assetSummaryLine, buildBriefAsset, buildPinAsset, getExportsDir, listDirtyBriefAssets, listMemoryAssets, listPinAssets, pinSummaryLine, saveBriefAsset, savePinAsset, writeExportArtifact } from "./memory-assets.js";
 import { indexAsset, indexPinnedAsset } from "./asset-sync.js";
 import { createComponents, expandHome, loadConfig, loadDotEnv, type LocalMemoryConfig } from "./runtime-config.js";
 import {
@@ -27,6 +27,21 @@ import {
   ingestMarkdownFiles,
 } from "./ingest.js";
 import { runDoctor, formatDoctorResults } from "./doctor.js";
+import { persistCaseMemory, persistWorkflowPattern } from "./capture-engine.js";
+import {
+  CaseMemoryInputSchema,
+  type CaseMemoryInput,
+  WorkflowPatternInputSchema,
+  type WorkflowPatternInput,
+} from "./memory-schema.js";
+import type { MemoryEntry } from "./store.js";
+import { ConflictStatusSchema } from "./conflict-schema.js";
+import { resolveConflictCandidate } from "./conflict-engine.js";
+import { escalateConflicts } from "./conflict-escalation.js";
+import { ConflictCandidateStore } from "./conflict-store.js";
+import { formatConflictAudit, formatConflictAuditMarkdown, formatConflictClusters, formatConflictEscalation, formatConflictList, formatConflictRecord, formatConflictResolution } from "./conflict-output.js";
+import { CONFLICT_ATTENTION_LEVELS, parseConflictAttention, summarizeConflictLifecycle } from "./conflict-lifecycle.js";
+import { buildConflictAuditSummary, clusterConflicts, summarizeConflictAdvice } from "./conflict-advisor.js";
 
 /**
  * Auto-detect Claude Code transcript directory.
@@ -83,7 +98,7 @@ const program = new Command();
 program
   .name("recallnest")
   .description("本地优先 AI 对话记忆搜索与蒸馏层")
-  .version("1.2.0");
+  .version("1.3.1");
 
 async function runRetrievalView(
   view: "search" | "explain" | "distill",
@@ -149,6 +164,126 @@ function toScopeFilter(scope?: string): string[] | undefined {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function parseExportFormat(value: string | undefined, fallback: "md" | "json" = "md"): "md" | "json" {
+  if (!value) return fallback;
+  if (value === "md" || value === "json") return value;
+  throw new Error(`Invalid export format: ${value}`);
+}
+
+function defaultConflictAuditExportPath(format: "md" | "json", canonicalKey?: string): string {
+  const timestamp = new Date().toISOString().replace(/[:]/g, "-").replace(/\..+/, "");
+  const stem = canonicalKey
+    ? canonicalKey
+      .toLowerCase()
+      .replace(/[^a-z0-9\p{Script=Han}]+/giu, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 48) || "conflict-audit"
+    : "conflict-audit";
+  return join(getExportsDir(), `${timestamp}-${stem}.${format}`);
+}
+
+function parseConflictStatusOption(value?: string): "open" | "accepted-incoming" | "kept-existing" | undefined {
+  if (!value) return undefined;
+  const parsed = ConflictStatusSchema.safeParse(value);
+  if (!parsed.success) {
+    throw new Error(`Invalid conflict status: ${value}`);
+  }
+  return parsed.data;
+}
+
+function filterConflictsByAttention<T extends { status: string; createdAt: string; updatedAt: string; reopenCount?: number; lastReopenedAt?: string }>(
+  records: T[],
+  attention?: string,
+  staleOnly?: boolean,
+): T[] {
+  if (!attention && !staleOnly) return records;
+  return records.filter((record) => {
+    const lifecycle = summarizeConflictLifecycle(record as any);
+    if (staleOnly) {
+      return lifecycle.attention === "stale" || lifecycle.attention === "escalated";
+    }
+    return lifecycle.attention === attention;
+  });
+}
+
+function workflowPatternSeedsPath(file?: string): string {
+  return file
+    ? resolve(file)
+    : resolve(import.meta.dir, "../eval/continuity/pattern-seeds.json");
+}
+
+function caseMemorySeedsPath(file?: string): string {
+  return file
+    ? resolve(file)
+    : resolve(import.meta.dir, "../eval/continuity/case-seeds.json");
+}
+
+function parseMetadata(raw?: string): Record<string, unknown> {
+  try {
+    return JSON.parse(raw || "{}") as Record<string, unknown>;
+  } catch {
+    return {};
+  }
+}
+
+function extractWorkflowPatternTitle(entry: MemoryEntry): string {
+  const metadata = parseMetadata(entry.metadata);
+  const workflowPattern = metadata.workflowPattern;
+  if (workflowPattern && typeof workflowPattern === "object" && typeof (workflowPattern as any).title === "string") {
+    return String((workflowPattern as any).title).trim();
+  }
+
+  const match = entry.text.match(/^Workflow pattern:\s*(.+)$/im);
+  return match?.[1]?.trim() || "";
+}
+
+function extractCaseMemoryTitle(entry: MemoryEntry): string {
+  const metadata = parseMetadata(entry.metadata);
+  const caseMemory = metadata.caseMemory;
+  if (caseMemory && typeof caseMemory === "object" && typeof (caseMemory as any).title === "string") {
+    return String((caseMemory as any).title).trim();
+  }
+
+  const match = entry.text.match(/^Case:\s*(.+)$/im);
+  return match?.[1]?.trim() || "";
+}
+
+function workflowPatternIdentity(title: string, scope: string): string {
+  return `${scope.toLowerCase()}::${title.trim().toLowerCase()}`;
+}
+
+function caseMemoryIdentity(title: string, scope: string): string {
+  return `${scope.toLowerCase()}::${title.trim().toLowerCase()}`;
+}
+
+function normalizeWorkflowPatternSeed(raw: unknown, defaults: {
+  scope?: string;
+  source?: string;
+}): WorkflowPatternInput {
+  const record = raw && typeof raw === "object" && !Array.isArray(raw)
+    ? raw as Record<string, unknown>
+    : {};
+  return WorkflowPatternInputSchema.parse({
+    ...record,
+    scope: typeof record.scope === "string" ? record.scope : defaults.scope,
+    source: typeof record.source === "string" ? record.source : defaults.source,
+  });
+}
+
+function normalizeCaseMemorySeed(raw: unknown, defaults: {
+  scope?: string;
+  source?: string;
+}): CaseMemoryInput {
+  const record = raw && typeof raw === "object" && !Array.isArray(raw)
+    ? raw as Record<string, unknown>
+    : {};
+  return CaseMemoryInputSchema.parse({
+    ...record,
+    scope: typeof record.scope === "string" ? record.scope : defaults.scope,
+    source: typeof record.source === "string" ? record.source : defaults.source,
+  });
 }
 
 function entryToRetrievalResult(entry: Awaited<ReturnType<MemoryStore["get"]>>): RetrievalResult {
@@ -385,6 +520,486 @@ program
       `Profile  : ${artifact.profile}`,
       `Path     : ${artifact.outputPath}`,
     ].join("\n"));
+  });
+
+const conflictsCommand = program
+  .command("conflicts")
+  .description("查看和裁决 memory promotion conflicts");
+
+conflictsCommand
+  .command("list")
+  .description("列出近期 conflict candidates")
+  .option("-n, --limit <n>", "返回结果数", "20")
+  .option("--status <status>", "状态过滤：open / accepted-incoming / kept-existing")
+  .option("--attention <attention>", `生命周期过滤：${CONFLICT_ATTENTION_LEVELS.join(" / ")}`)
+  .option("--stale", "只看 stale / escalated 的 open conflicts")
+  .option("-k, --canonical-key <canonicalKey>", "按 canonicalKey 过滤")
+  .option("--group-by <mode>", "输出模式：record / cluster", "record")
+  .option("--json", "JSON 格式输出")
+  .action(async (options) => {
+    const limit = parseLimitOption(options.limit, 20, 1, 50);
+    const status = parseConflictStatusOption(options.status) || (
+      options.attention || options.stale ? undefined : "open"
+    );
+    const attention = parseConflictAttention(options.attention);
+    if (options.attention && !attention) {
+      throw new Error(`Invalid attention level: ${options.attention}`);
+    }
+    const conflictStore = new ConflictCandidateStore();
+    const records = filterConflictsByAttention(await conflictStore.listRecent({
+      status,
+      canonicalKey: options.canonicalKey,
+      limit: Math.max(limit * 2, limit),
+    }), attention, Boolean(options.stale)).slice(0, limit);
+    const groupBy = options.groupBy === "cluster" ? "cluster" : "record";
+
+    if (options.json) {
+      if (groupBy === "cluster") {
+        const clusters = clusterConflicts(records);
+        console.log(JSON.stringify({
+          groupBy,
+          clusters,
+          count: clusters.length,
+        }, null, 2));
+      } else {
+        console.log(JSON.stringify({
+          groupBy,
+          conflicts: records.map((record) => ({
+            ...record,
+            lifecycle: summarizeConflictLifecycle(record),
+            advice: summarizeConflictAdvice(record),
+          })),
+          count: records.length,
+        }, null, 2));
+      }
+      return;
+    }
+
+    console.log(groupBy === "cluster" ? formatConflictClusters(clusterConflicts(records)) : formatConflictList(records));
+  });
+
+conflictsCommand
+  .command("show <conflictId>")
+  .description("查看单条 conflict 的完整详情")
+  .option("--json", "JSON 格式输出")
+  .action(async (conflictId: string, options) => {
+    const conflictStore = new ConflictCandidateStore();
+    const record = await conflictStore.getById(conflictId);
+    if (!record) {
+      console.log(`Conflict not found: ${conflictId}`);
+      process.exitCode = 1;
+      return;
+    }
+
+    if (options.json) {
+      console.log(JSON.stringify({
+        ...record,
+        lifecycle: summarizeConflictLifecycle(record),
+        advice: summarizeConflictAdvice(record),
+      }, null, 2));
+      return;
+    }
+
+    console.log(formatConflictRecord(record));
+  });
+
+conflictsCommand
+  .command("audit")
+  .description("生成一份面向终端的 conflict audit 摘要，优先指出 stale / escalated clusters")
+  .option("-n, --limit <n>", "扫描的 conflict 记录数", "100")
+  .option("--top <n>", "展示的 priority cluster 数", "5")
+  .option("--status <status>", "状态过滤：open / accepted-incoming / kept-existing / merged")
+  .option("-k, --canonical-key <canonicalKey>", "按 canonicalKey 过滤")
+  .option("--export", "把 audit 报告导出到文件")
+  .option("--format <format>", "导出格式：md / json", "md")
+  .option("--output <path>", "导出文件路径；默认写到 data/exports")
+  .option("--json", "JSON 格式输出")
+  .action(async (options) => {
+    const limit = parseLimitOption(options.limit, 100, 1, 500);
+    const top = parseLimitOption(options.top, 5, 1, 20);
+    const status = parseConflictStatusOption(options.status);
+    const conflictStore = new ConflictCandidateStore();
+    const records = await conflictStore.listRecent({
+      status,
+      canonicalKey: options.canonicalKey,
+      limit,
+    });
+    const summary = buildConflictAuditSummary(records, top);
+    const exportRequested = Boolean(options.export || options.output);
+
+    if (options.json) {
+      const payload = {
+        generatedAt: new Date().toISOString(),
+        filters: {
+          status: status || "all",
+          canonicalKey: options.canonicalKey || "all",
+          limit,
+          top,
+        },
+        summary,
+      };
+      if (exportRequested) {
+        const format = parseExportFormat(options.format);
+        const outputPath = options.output
+          ? resolve(options.output)
+          : defaultConflictAuditExportPath(format, options.canonicalKey);
+        const rendered = format === "json"
+          ? JSON.stringify(payload, null, 2) + "\n"
+          : formatConflictAuditMarkdown(summary, {
+            generatedAt: payload.generatedAt,
+            limit,
+            top,
+            ...(status ? { status } : {}),
+            ...(options.canonicalKey ? { canonicalKey: options.canonicalKey } : {}),
+          });
+        writeFileSync(outputPath, rendered);
+        console.log(JSON.stringify({ ...payload, export: { format, outputPath } }, null, 2));
+        return;
+      }
+      console.log(JSON.stringify(payload, null, 2));
+      return;
+    }
+
+    const rendered = formatConflictAudit(summary);
+    if (!exportRequested) {
+      console.log(rendered);
+      return;
+    }
+
+    const format = parseExportFormat(options.format);
+    const generatedAt = new Date().toISOString();
+    const outputPath = options.output
+      ? resolve(options.output)
+      : defaultConflictAuditExportPath(format, options.canonicalKey);
+    const exported = format === "json"
+      ? JSON.stringify({
+        generatedAt,
+        filters: {
+          status: status || "all",
+          canonicalKey: options.canonicalKey || "all",
+          limit,
+          top,
+        },
+        summary,
+      }, null, 2) + "\n"
+      : formatConflictAuditMarkdown(summary, {
+        generatedAt,
+        limit,
+        top,
+        ...(status ? { status } : {}),
+        ...(options.canonicalKey ? { canonicalKey: options.canonicalKey } : {}),
+      });
+    writeFileSync(outputPath, exported);
+    console.log(`${rendered}\n\nExported: ${outputPath}`);
+  });
+
+conflictsCommand
+  .command("escalate")
+  .description("预览或应用 conflict aging / escalation policy")
+  .option("--attention <attention>", "仅处理 stale / escalated", "stale")
+  .option("-k, --canonical-key <canonicalKey>", "按 canonicalKey 过滤")
+  .option("-n, --limit <n>", "扫描的 open conflict 数", "100")
+  .option("--top <n>", "最多处理多少条 eligible conflict", "10")
+  .option("--apply", "真正写回 escalation metadata；默认只预览")
+  .option("--notes <notes>", "写回时附带备注")
+  .option("--json", "JSON 格式输出")
+  .action(async (options) => {
+    const attention = options.attention === "escalated"
+      ? "escalated"
+      : options.attention === "stale"
+        ? "stale"
+        : null;
+    if (!attention) {
+      throw new Error("Invalid escalation attention. Use stale or escalated.");
+    }
+
+    const conflictStore = new ConflictCandidateStore();
+    const result = await escalateConflicts({
+      conflictStore,
+    }, {
+      attention,
+      canonicalKey: options.canonicalKey,
+      limit: parseLimitOption(options.limit, 100, 1, 500),
+      top: parseLimitOption(options.top, 10, 1, 20),
+      apply: Boolean(options.apply),
+      notes: options.notes,
+    });
+
+    if (options.json) {
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+
+    console.log(formatConflictEscalation(result));
+  });
+
+conflictsCommand
+  .command("resolve [conflictId]")
+  .description("解决一条或一批 conflict candidates")
+  .option("--keep-existing", "保留现有 durable memory")
+  .option("--accept-incoming", "接受 incoming promoted text")
+  .option("--merge", "合并 existing 与 incoming wording")
+  .option("--merged-text <text>", "merge 时可选覆盖默认 merge suggestion 的文本")
+  .option("--all", "批量处理符合过滤条件的 conflicts")
+  .option("--status <status>", "批量过滤状态：open / accepted-incoming / kept-existing / merged", "open")
+  .option("--attention <attention>", `批量过滤生命周期：${CONFLICT_ATTENTION_LEVELS.join(" / ")}`)
+  .option("--stale", "批量只处理 stale / escalated 的 open conflicts")
+  .option("-k, --canonical-key <canonicalKey>", "批量时按 canonicalKey 过滤")
+  .option("-n, --limit <n>", "批量处理上限", "20")
+  .option("--notes <notes>", "可选备注")
+  .option("--json", "JSON 格式输出")
+  .action(async (conflictId: string | undefined, options) => {
+    const keepExisting = Boolean(options.keepExisting);
+    const acceptIncoming = Boolean(options.acceptIncoming);
+    const merge = Boolean(options.merge);
+    const selectedCount = [keepExisting, acceptIncoming, merge].filter(Boolean).length;
+    if (selectedCount !== 1) {
+      throw new Error("Choose exactly one of --keep-existing, --accept-incoming, or --merge");
+    }
+    if (options.all && conflictId) {
+      throw new Error("Use either a conflictId or --all, not both");
+    }
+    if (!options.all && !conflictId) {
+      throw new Error("Provide a conflictId or use --all");
+    }
+    if (options.mergedText && !merge) {
+      throw new Error("--merged-text can only be used with --merge");
+    }
+    if (options.all && options.mergedText) {
+      throw new Error("--merged-text is only supported when resolving a single conflict");
+    }
+
+    const resolution = keepExisting
+      ? "keep_existing"
+      : acceptIncoming
+        ? "accept_incoming"
+        : "merge";
+    const config = loadConfig();
+    const { store, embedder } = createComponents(config);
+    const conflictStore = new ConflictCandidateStore();
+    const deps = { store, embedder, conflictStore };
+
+    if (options.all) {
+      const limit = parseLimitOption(options.limit, 20, 1, 100);
+      const status = parseConflictStatusOption(options.status) || "open";
+      const attention = parseConflictAttention(options.attention);
+      if (options.attention && !attention) {
+        throw new Error(`Invalid attention level: ${options.attention}`);
+      }
+      const records = filterConflictsByAttention(await conflictStore.listRecent({
+        status,
+        canonicalKey: options.canonicalKey,
+        limit: Math.max(limit * 2, limit),
+      }), attention, Boolean(options.stale)).slice(0, limit);
+
+      const results: Array<{ conflictId: string; status?: string; error?: string }> = [];
+      for (const record of records) {
+        try {
+          const resolved = await resolveConflictCandidate(deps, {
+            conflictId: record.conflictId,
+            resolution,
+            notes: options.notes,
+          });
+          results.push({ conflictId: resolved.conflictId, status: resolved.status });
+        } catch (error) {
+          results.push({ conflictId: record.conflictId, error: errorMessage(error) });
+        }
+      }
+
+      if (options.json) {
+        console.log(JSON.stringify({
+          total: records.length,
+          resolved: results.filter((item) => item.status).length,
+          failed: results.filter((item) => item.error).length,
+          results,
+        }, null, 2));
+        return;
+      }
+
+      const lines = [
+        `Batch resolve: ${records.length} conflict(s)`,
+        `Resolution  : ${resolution}`,
+      ];
+      if (options.canonicalKey) {
+        lines.push(`Canonical   : ${options.canonicalKey}`);
+      }
+      lines.push("");
+      for (const item of results) {
+        lines.push(
+          item.error
+            ? `${item.conflictId.slice(0, 8)}  ERROR  ${item.error}`
+            : `${item.conflictId.slice(0, 8)}  ${item.status}`,
+        );
+      }
+      console.log(lines.join("\n"));
+      return;
+    }
+
+    const result = await resolveConflictCandidate(deps, {
+      conflictId,
+      resolution,
+      ...(options.mergedText ? { mergedText: options.mergedText } : {}),
+      notes: options.notes,
+    });
+
+    if (options.json) {
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+
+    console.log(formatConflictResolution(result));
+  });
+
+program
+  .command("seed-patterns [file]")
+  .description("批量写入 continuity / workflow pattern seeds")
+  .option("-s, --scope <scope>", "默认 scope（仅覆盖 seed 里未显式提供的项）")
+  .option("--source <source>", "默认 source（manual / agent / api）", "agent")
+  .option("--json", "JSON 输出")
+  .action(async (file: string | undefined, options) => {
+    const path = workflowPatternSeedsPath(file);
+    const raw = JSON.parse(readFileSync(path, "utf-8")) as unknown;
+    if (!Array.isArray(raw)) {
+      throw new Error(`Pattern seeds file must be a JSON array: ${path}`);
+    }
+
+    const config = loadConfig();
+    const { store, embedder } = createComponents(config);
+    const conflictStore = new ConflictCandidateStore();
+    const existing = await store.list(undefined, "patterns", 1000, 0);
+    const existingKeys = new Set(
+      existing
+        .map((entry) => {
+          const title = extractWorkflowPatternTitle(entry);
+          return title ? workflowPatternIdentity(title, entry.scope) : "";
+        })
+        .filter(Boolean),
+    );
+
+    const stored: Array<{ title: string; id: string; scope: string }> = [];
+    const skipped: Array<{ title: string; scope: string }> = [];
+
+    for (const seed of raw) {
+      const input = normalizeWorkflowPatternSeed(seed, {
+        scope: options.scope,
+        source: options.source,
+      });
+      const scope = input.scope || `memory:${input.source}`;
+      const key = workflowPatternIdentity(input.title, scope);
+      if (existingKeys.has(key)) {
+        skipped.push({ title: input.title, scope });
+        continue;
+      }
+
+      const record = await persistWorkflowPattern({ store, embedder, conflictStore }, input);
+      existingKeys.add(key);
+      stored.push({ title: record.title, id: record.id, scope: record.resolvedScope });
+    }
+
+    if (options.json) {
+      console.log(JSON.stringify({ path, stored, skipped }, null, 2));
+      return;
+    }
+
+    const lines = [
+      `Pattern seeds: ${path}`,
+      `Stored      : ${stored.length}`,
+      `Skipped     : ${skipped.length}`,
+    ];
+
+    if (stored.length > 0) {
+      lines.push("");
+      lines.push("Stored patterns:");
+      for (const item of stored) {
+        lines.push(`  ${item.id.slice(0, 8)}  ${item.scope}  ${item.title}`);
+      }
+    }
+
+    if (skipped.length > 0) {
+      lines.push("");
+      lines.push("Skipped existing:");
+      for (const item of skipped) {
+        lines.push(`  ${item.scope}  ${item.title}`);
+      }
+    }
+
+    console.log(lines.join("\n"));
+  });
+
+program
+  .command("seed-cases [file]")
+  .description("批量写入 continuity / reusable case seeds")
+  .option("-s, --scope <scope>", "默认 scope（仅覆盖 seed 里未显式提供的项）")
+  .option("--source <source>", "默认 source（manual / agent / api）", "agent")
+  .option("--json", "JSON 输出")
+  .action(async (file: string | undefined, options) => {
+    const path = caseMemorySeedsPath(file);
+    const raw = JSON.parse(readFileSync(path, "utf-8")) as unknown;
+    if (!Array.isArray(raw)) {
+      throw new Error(`Case seeds file must be a JSON array: ${path}`);
+    }
+
+    const config = loadConfig();
+    const { store, embedder } = createComponents(config);
+    const conflictStore = new ConflictCandidateStore();
+    const existing = await store.list(undefined, "cases", 1000, 0);
+    const existingKeys = new Set(
+      existing
+        .map((entry) => {
+          const title = extractCaseMemoryTitle(entry);
+          return title ? caseMemoryIdentity(title, entry.scope) : "";
+        })
+        .filter(Boolean),
+    );
+
+    const stored: Array<{ title: string; id: string; scope: string }> = [];
+    const skipped: Array<{ title: string; scope: string }> = [];
+
+    for (const seed of raw) {
+      const input = normalizeCaseMemorySeed(seed, {
+        scope: options.scope,
+        source: options.source,
+      });
+      const scope = input.scope || `memory:${input.source}`;
+      const key = caseMemoryIdentity(input.title, scope);
+      if (existingKeys.has(key)) {
+        skipped.push({ title: input.title, scope });
+        continue;
+      }
+
+      const record = await persistCaseMemory({ store, embedder, conflictStore }, input);
+      existingKeys.add(key);
+      stored.push({ title: record.title, id: record.id, scope: record.resolvedScope });
+    }
+
+    if (options.json) {
+      console.log(JSON.stringify({ path, stored, skipped }, null, 2));
+      return;
+    }
+
+    const lines = [
+      `Case seeds: ${path}`,
+      `Stored    : ${stored.length}`,
+      `Skipped   : ${skipped.length}`,
+    ];
+
+    if (stored.length > 0) {
+      lines.push("");
+      lines.push("Stored cases:");
+      for (const item of stored) {
+        lines.push(`  ${item.id.slice(0, 8)}  ${item.scope}  ${item.title}`);
+      }
+    }
+
+    if (skipped.length > 0) {
+      lines.push("");
+      lines.push("Skipped existing:");
+      for (const item of skipped) {
+        lines.push(`  ${item.scope}  ${item.title}`);
+      }
+    }
+
+    console.log(lines.join("\n"));
   });
 
 // ─── demo ────────────────────────────────────────────────────────────────────

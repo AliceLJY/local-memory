@@ -16,7 +16,7 @@ import type { Embedder } from "./embedder.js";
 import { chunkDocument, type ChunkerConfig } from "./chunker.js";
 import { isProcessed, markProcessed } from "./tracker.js";
 import type { LLMClient, SmartExtraction } from "./llm-client.js";
-import { CATEGORY_DEFAULT_IMPORTANCE } from "./llm-client.js";
+import { resolveIngestBoundary } from "./memory-boundaries.js";
 
 // ============================================================================
 // Types
@@ -156,7 +156,7 @@ async function smartExtractBatch(
 }
 
 /** Determine initial tier based on category and importance */
-function initialTier(extraction: SmartExtraction): "core" | "working" | "peripheral" {
+function initialTier(extraction: Pick<SmartExtraction, "category" | "importance">): "core" | "working" | "peripheral" {
   // Profile and patterns are inherently important → working
   if (extraction.category === "profile" || extraction.category === "patterns") return "working";
   // Cases (problem→solution) are valuable → working
@@ -165,6 +165,54 @@ function initialTier(extraction: SmartExtraction): "core" | "working" | "periphe
   if (extraction.importance >= 0.8) return "working";
   // Everything else → peripheral
   return "peripheral";
+}
+
+function buildIngestedEntry(params: {
+  source: string;
+  scope: string;
+  text: string;
+  vector: number[];
+  extraction: SmartExtraction;
+  file: string;
+  sessionId?: string;
+  heading?: string;
+}): {
+  text: string;
+  vector: number[];
+  category: string;
+  scope: string;
+  importance: number;
+  metadata: string;
+} {
+  const resolution = resolveIngestBoundary({
+    source: params.source,
+    scope: params.scope,
+    category: params.extraction.category,
+  });
+  const tier = resolution.boundary.layer === "evidence"
+    ? "peripheral"
+    : initialTier({
+        category: resolution.category,
+        importance: params.extraction.importance,
+      });
+
+  return {
+    text: params.text,
+    vector: params.vector,
+    category: resolution.category,
+    scope: params.scope,
+    importance: params.extraction.importance,
+    metadata: JSON.stringify({
+      source: params.source,
+      ...(params.sessionId ? { sessionId: params.sessionId } : {}),
+      file: params.file,
+      ...(params.heading ? { heading: params.heading } : {}),
+      l0: params.extraction.l0,
+      l1: params.extraction.l1,
+      tier,
+      boundary: resolution.boundary,
+    }),
+  };
 }
 
 // ============================================================================
@@ -515,21 +563,15 @@ export async function ingestCodexSessions(
             for (let j = 0; j < dedupedTexts.length; j++) {
               const chunk = dedupedChunks[j];
               const ext = extractions[j];
-              toStore.push({
+              toStore.push(buildIngestedEntry({
+                source: "codex",
+                scope: `codex:${chunk.sessionId.slice(0, 8)}`,
                 text: dedupedTexts[j],
                 vector: dedupedVectors[j],
-                category: ext.category,
-                scope: `codex:${chunk.sessionId.slice(0, 8)}`,
-                importance: ext.importance,
-                metadata: JSON.stringify({
-                  source: "codex",
-                  sessionId: chunk.sessionId,
-                  file: basename(filePath),
-                  l0: ext.l0,
-                  l1: ext.l1,
-                  tier: initialTier(ext),
-                }),
-              });
+                extraction: ext,
+                sessionId: chunk.sessionId,
+                file: basename(filePath),
+              }));
             }
           }
 
@@ -701,21 +743,15 @@ export async function ingestGeminiSessions(
             for (let j = 0; j < dedupedTexts.length; j++) {
               const chunk = dedupedChunks[j];
               const ext = extractions[j];
-              toStore.push({
+              toStore.push(buildIngestedEntry({
+                source: "gemini",
+                scope: `gemini:${chunk.sessionId.slice(0, 8)}`,
                 text: dedupedTexts[j],
                 vector: dedupedVectors[j],
-                category: ext.category,
-                scope: `gemini:${chunk.sessionId.slice(0, 8)}`,
-                importance: ext.importance,
-                metadata: JSON.stringify({
-                  source: "gemini",
-                  sessionId: chunk.sessionId,
-                  file: basename(filePath),
-                  l0: ext.l0,
-                  l1: ext.l1,
-                  tier: initialTier(ext),
-                }),
-              });
+                extraction: ext,
+                sessionId: chunk.sessionId,
+                file: basename(filePath),
+              }));
             }
           }
 
@@ -906,21 +942,15 @@ export async function ingestCCTranscripts(
           for (let j = 0; j < dedupedTexts.length; j++) {
             const chunk = dedupedChunks[j];
             const ext = extractions[j];
-            toStore.push({
+            toStore.push(buildIngestedEntry({
+              source: "cc",
+              scope: `cc:${chunk.sessionId.slice(0, 8)}`,
               text: dedupedTexts[j],
               vector: dedupedVectors[j],
-              category: ext.category,
-              scope: `cc:${chunk.sessionId.slice(0, 8)}`,
-              importance: ext.importance,
-              metadata: JSON.stringify({
-                source: "cc",
-                sessionId: chunk.sessionId,
-                file: file,
-                l0: ext.l0,
-                l1: ext.l1,
-                tier: initialTier(ext),
-              }),
-            });
+              extraction: ext,
+              sessionId: chunk.sessionId,
+              file,
+            }));
           }
 
           if (toStore.length > 0) {
@@ -1026,21 +1056,15 @@ export async function ingestMarkdownFiles(
             const extractions = await smartExtractBatch(dedupedTexts, options.llm);
             for (let j = 0; j < dedupedTexts.length; j++) {
               const ext = extractions[j];
-              toStore.push({
+              toStore.push(buildIngestedEntry({
+                source: scope,
+                scope,
                 text: dedupedTexts[j],
                 vector: dedupedVectors[j],
-                category: ext.category,
-                scope,
-                importance: ext.importance,
-                metadata: JSON.stringify({
-                  source: scope,
-                  file: file,
-                  heading: dedupedSections[j].heading,
-                  l0: ext.l0,
-                  l1: ext.l1,
-                  tier: initialTier(ext),
-                }),
-              });
+                extraction: ext,
+                file,
+                heading: dedupedSections[j].heading,
+              }));
             }
           }
 
@@ -1159,20 +1183,14 @@ export async function ingestGenericText(
 
             for (let j = 0; j < dedupedTexts.length; j++) {
               const ext = extractions[j];
-              toStore.push({
+              toStore.push(buildIngestedEntry({
+                source: scope,
+                scope,
                 text: dedupedTexts[j],
                 vector: dedupedVectors[j],
-                category: ext.category,
-                scope,
-                importance: ext.importance,
-                metadata: JSON.stringify({
-                  source: scope,
-                  file: file,
-                  l0: ext.l0,
-                  l1: ext.l1,
-                  tier: initialTier(ext),
-                }),
-              });
+                extraction: ext,
+                file,
+              }));
             }
 
             if (toStore.length > 0) {

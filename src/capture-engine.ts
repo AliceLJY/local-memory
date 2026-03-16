@@ -1,0 +1,644 @@
+import type { Embedder } from "./embedder.js";
+import {
+  type CaseMemoryInput,
+  CaseMemoryInputSchema,
+  type CaptureMemoryInput,
+  CaptureMemoryInputSchema,
+  type PromoteMemoryInput,
+  PromoteMemoryInputSchema,
+  type StoredCaseMemoryRecord,
+  type StoredPromotedMemoryRecord,
+  type StoredWorkflowPatternRecord,
+  type StoredMemoryRecord,
+  type StoreMemoryInput,
+  StoreMemoryInputSchema,
+  type WorkflowPatternInput,
+  WorkflowPatternInputSchema,
+  type DurableMemoryCategory,
+  DURABLE_MEMORY_CATEGORIES,
+  type WriteDisposition,
+} from "./memory-schema.js";
+import type { MemoryEntry, MemoryStore } from "./store.js";
+import {
+  buildDefaultCanonicalKey,
+  buildStructuredMemoryBoundary,
+  extractBoundaryMetadata,
+  extractCanonicalKey,
+  getConflictPolicyForCategory,
+  isDurableMemoryScope,
+  isTranscriptScope,
+  normalizeCanonicalKey,
+  parseMetadataObject,
+} from "./memory-boundaries.js";
+import { buildConflictCandidateRecord, buildConflictFingerprint, reopenConflictCandidate } from "./conflict-engine.js";
+import type { ConflictCandidateStore } from "./conflict-store.js";
+
+type StoreDeps = Pick<MemoryStore, "store"> & Partial<Pick<MemoryStore, "list" | "update" | "getById" | "get">>;
+type ConflictStoreDeps = Pick<ConflictCandidateStore, "save" | "replace" | "getOpenByFingerprint" | "getLatestByFingerprint">;
+
+interface PersistMemoryDeps {
+  store: StoreDeps;
+  embedder: Pick<Embedder, "embedPassage">;
+  conflictStore?: ConflictStoreDeps;
+}
+
+interface DurableWriteInput {
+  text: string;
+  vector: number[];
+  category: DurableMemoryCategory;
+  scope: string;
+  importance: number;
+  metadata: string;
+  canonicalKey: string;
+  promotedFrom?: string;
+  source: "manual" | "agent" | "api";
+  sourceCategory?: string;
+  sourceBoundary?: ReturnType<typeof extractBoundaryMetadata>;
+}
+
+const CANONICAL_SCAN_LIMIT = 1000;
+const DURABLE_CATEGORY_SET = new Set<string>(DURABLE_MEMORY_CATEGORIES);
+
+function resolveScope(input: { scope?: string; source: string }): string {
+  return input.scope || `memory:${input.source}`;
+}
+
+function normalizeMemoryText(text: string): string {
+  return text.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function resolveCanonicalKey(params: {
+  category: DurableMemoryCategory;
+  text?: string;
+  title?: string;
+  canonicalKey?: string;
+}): string {
+  const explicit = params.canonicalKey ? normalizeCanonicalKey(params.canonicalKey) : "";
+  if (explicit) return explicit;
+  return buildDefaultCanonicalKey({
+    category: params.category,
+    text: params.text,
+    title: params.title,
+  });
+}
+
+function mergeTags(...groups: string[][]): string[] {
+  const merged: string[] = [];
+  const seen = new Set<string>();
+  for (const group of groups) {
+    for (const item of group) {
+      const normalized = item.trim().toLowerCase();
+      if (!normalized || seen.has(normalized)) continue;
+      seen.add(normalized);
+      merged.push(item.trim());
+    }
+  }
+  return merged.slice(0, 8);
+}
+
+function buildStructuredMetadata(params: {
+  source: string;
+  tags: string[];
+  capture: string;
+  category: DurableMemoryCategory;
+  canonicalKey: string;
+  extra?: Record<string, unknown>;
+}): string {
+  return JSON.stringify({
+    source: params.source,
+    tags: params.tags,
+    capture: params.capture,
+    boundary: buildStructuredMemoryBoundary(params.category),
+    canonicalKey: params.canonicalKey,
+    ...params.extra,
+  });
+}
+
+function buildWorkflowPatternText(input: WorkflowPatternInput): string {
+  const lines = [
+    `Workflow pattern: ${input.title}`,
+    `Use when: ${input.trigger}`,
+    "Steps:",
+    ...input.steps.map((step, index) => `${index + 1}. ${step}`),
+  ];
+  if (input.tools.length > 0) {
+    lines.push(`Tools: ${input.tools.join(", ")}`);
+  }
+  if (input.outcome) {
+    lines.push(`Outcome: ${input.outcome}`);
+  }
+  return lines.join("\n");
+}
+
+function buildCaseMemoryText(input: CaseMemoryInput): string {
+  const lines = [
+    `Case: ${input.title}`,
+    `Problem: ${input.problem}`,
+  ];
+  if (input.context) {
+    lines.push(`Context: ${input.context}`);
+  }
+  lines.push("Solution:");
+  lines.push(...input.solutionSteps.map((step, index) => `${index + 1}. ${step}`));
+  if (input.tools.length > 0) {
+    lines.push(`Tools: ${input.tools.join(", ")}`);
+  }
+  if (input.outcome) {
+    lines.push(`Outcome: ${input.outcome}`);
+  }
+  return lines.join("\n");
+}
+
+function toStoredRecord(
+  input: StoreMemoryInput,
+  entry: { id: string; timestamp: number; scope: string },
+  disposition: WriteDisposition,
+  canonicalKey: string,
+  conflictId?: string,
+): StoredMemoryRecord {
+  return {
+    ...input,
+    canonicalKey,
+    resolvedScope: entry.scope,
+    id: entry.id,
+    storedAt: new Date(entry.timestamp).toISOString(),
+    disposition,
+    ...(conflictId ? { conflictId } : {}),
+  };
+}
+
+function ensureDurableCategory(value: string): DurableMemoryCategory {
+  if (!DURABLE_CATEGORY_SET.has(value)) {
+    return "events";
+  }
+  return value as DurableMemoryCategory;
+}
+
+async function findCanonicalMatches(
+  store: StoreDeps,
+  canonicalKey: string,
+): Promise<MemoryEntry[]> {
+  if (!store.list) return [];
+  const entries = await store.list(undefined, undefined, CANONICAL_SCAN_LIMIT, 0);
+  return entries.filter((entry) => {
+    const boundary = extractBoundaryMetadata(entry.metadata);
+    if (boundary?.layer !== "durable") return false;
+    return extractCanonicalKey(entry.metadata) === canonicalKey;
+  });
+}
+
+async function writeDurableEntry(
+  deps: PersistMemoryDeps,
+  params: DurableWriteInput,
+): Promise<{
+  entry: MemoryEntry;
+  disposition: "stored" | "updated" | "deduped" | "promoted" | "conflict";
+  conflictId?: string;
+}> {
+  const matches = await findCanonicalMatches(deps.store, params.canonicalKey);
+  const categoryMatches = matches.filter((entry) => entry.category === params.category);
+  const crossCategoryMatches = matches.filter((entry) => entry.category !== params.category);
+  const normalizedIncoming = normalizeMemoryText(params.text);
+  const exact = categoryMatches.find((entry) => normalizeMemoryText(entry.text) === normalizedIncoming);
+
+  if (crossCategoryMatches.length > 0 && deps.conflictStore) {
+    const latest = [...crossCategoryMatches].sort((a, b) => b.timestamp - a.timestamp)[0];
+    const fingerprint = buildConflictFingerprint({
+      canonicalKey: params.canonicalKey,
+      existingMemoryId: latest.id,
+      incomingText: params.text,
+      sourceMemoryId: params.promotedFrom,
+    });
+    const conflict = await ensureConflictCandidate(deps.conflictStore, {
+      canonicalKey: params.canonicalKey,
+      category: params.category,
+      fingerprint,
+      reason: "canonical_key_conflicts_with_existing_durable",
+      existing: {
+        memoryId: latest.id,
+        text: latest.text,
+        category: latest.category,
+        scope: latest.scope,
+        importance: latest.importance,
+        metadata: latest.metadata || "{}",
+        boundary: extractBoundaryMetadata(latest.metadata),
+        canonicalKey: extractCanonicalKey(latest.metadata) || params.canonicalKey,
+      },
+      incoming: {
+        text: params.text,
+        category: params.category,
+        scope: params.scope,
+        importance: params.importance,
+        metadata: params.metadata,
+        source: params.source,
+        ...(params.promotedFrom ? { sourceMemoryId: params.promotedFrom } : {}),
+        ...(params.sourceCategory ? { sourceCategory: params.sourceCategory } : {}),
+        ...(params.sourceBoundary ? { sourceBoundary: params.sourceBoundary } : {}),
+      },
+    });
+
+    return {
+      entry: latest,
+      disposition: "conflict",
+      conflictId: conflict.conflictId,
+    };
+  }
+
+  if (exact) {
+    return {
+      entry: exact,
+      disposition: params.promotedFrom ? "promoted" : "deduped",
+    };
+  }
+
+  const conflictPolicy = getConflictPolicyForCategory(params.category);
+  if (conflictPolicy === "latest-wins" && categoryMatches.length > 0 && deps.store.update) {
+    const latest = [...categoryMatches].sort((a, b) => b.timestamp - a.timestamp)[0];
+    if (params.promotedFrom && deps.conflictStore) {
+      const fingerprint = buildConflictFingerprint({
+        canonicalKey: params.canonicalKey,
+        existingMemoryId: latest.id,
+        incomingText: params.text,
+        sourceMemoryId: params.promotedFrom,
+      });
+      const conflict = await ensureConflictCandidate(deps.conflictStore, {
+        canonicalKey: params.canonicalKey,
+        category: params.category,
+        fingerprint,
+        reason: "promotion_conflicts_with_existing_durable",
+        existing: {
+          memoryId: latest.id,
+          text: latest.text,
+          category: latest.category,
+          scope: latest.scope,
+          importance: latest.importance,
+          metadata: latest.metadata || "{}",
+          boundary: extractBoundaryMetadata(latest.metadata),
+          canonicalKey: extractCanonicalKey(latest.metadata) || params.canonicalKey,
+        },
+        incoming: {
+          text: params.text,
+          category: params.category,
+          scope: params.scope,
+          importance: params.importance,
+          metadata: params.metadata,
+          source: params.source,
+          sourceMemoryId: params.promotedFrom,
+          sourceCategory: params.sourceCategory,
+          sourceBoundary: params.sourceBoundary,
+        },
+      });
+
+      return {
+        entry: latest,
+        disposition: "conflict",
+        conflictId: conflict.conflictId,
+      };
+    }
+
+    const updated = await deps.store.update(latest.id, {
+      text: params.text,
+      vector: params.vector,
+      importance: params.importance,
+      category: params.category,
+      metadata: params.metadata,
+      timestamp: Date.now(),
+    });
+    if (!updated) {
+      throw new Error(`Failed to update canonical memory ${latest.id}`);
+    }
+    return {
+      entry: updated,
+      disposition: params.promotedFrom ? "promoted" : "updated",
+    };
+  }
+
+  const stored = await deps.store.store({
+    text: params.text,
+    vector: params.vector,
+    category: params.category,
+    scope: params.scope,
+    importance: params.importance,
+    metadata: params.metadata,
+  });
+
+  return {
+    entry: stored,
+    disposition: params.promotedFrom ? "promoted" : "stored",
+  };
+}
+
+async function ensureConflictCandidate(
+  conflictStore: ConflictStoreDeps,
+  input: Parameters<typeof buildConflictCandidateRecord>[0],
+) {
+  const parsed = buildConflictCandidateRecord(input);
+  const open = await conflictStore.getOpenByFingerprint(parsed.fingerprint);
+  if (open) {
+    return open;
+  }
+
+  const latest = await conflictStore.getLatestByFingerprint(parsed.fingerprint);
+  if (latest) {
+    return conflictStore.replace(reopenConflictCandidate({
+      ...latest,
+      category: parsed.category,
+      reason: parsed.reason,
+      existing: parsed.existing,
+      incoming: parsed.incoming,
+      updatedAt: parsed.updatedAt,
+    }));
+  }
+
+  return conflictStore.save(parsed);
+}
+
+function inferPromotedCategory(
+  input: PromoteMemoryInput,
+  sourceEntry: MemoryEntry,
+): DurableMemoryCategory {
+  if (input.category) return input.category;
+
+  const boundary = extractBoundaryMetadata(sourceEntry.metadata);
+  if (boundary?.originalCategory) return boundary.originalCategory;
+
+  return ensureDurableCategory(sourceEntry.category);
+}
+
+function buildStoreMemoryMetadata(input: StoreMemoryInput, canonicalKey: string): string {
+  return buildStructuredMetadata({
+    source: input.source,
+    tags: input.tags,
+    capture: "store_memory_schema_v1",
+    category: input.category,
+    canonicalKey,
+  });
+}
+
+function buildWorkflowPatternMetadata(
+  input: WorkflowPatternInput,
+  tags: string[],
+  canonicalKey: string,
+): string {
+  return buildStructuredMetadata({
+    source: input.source,
+    tags,
+    capture: "workflow_pattern_schema_v1",
+    category: "patterns",
+    canonicalKey,
+    extra: {
+      workflowPattern: {
+        title: input.title,
+        trigger: input.trigger,
+        steps: input.steps,
+        outcome: input.outcome,
+        tools: input.tools,
+      },
+    },
+  });
+}
+
+function buildCaseMemoryMetadata(
+  input: CaseMemoryInput,
+  tags: string[],
+  canonicalKey: string,
+): string {
+  return buildStructuredMetadata({
+    source: input.source,
+    tags,
+    capture: "case_memory_schema_v1",
+    category: "cases",
+    canonicalKey,
+    extra: {
+      caseMemory: {
+        title: input.title,
+        problem: input.problem,
+        context: input.context,
+        solutionSteps: input.solutionSteps,
+        outcome: input.outcome,
+        tools: input.tools,
+      },
+    },
+  });
+}
+
+function buildPromotionMetadata(
+  input: PromoteMemoryInput,
+  canonicalKey: string,
+  category: DurableMemoryCategory,
+  sourceEntry: MemoryEntry,
+): string {
+  const sourceMetadata = parseMetadataObject(sourceEntry.metadata);
+  return buildStructuredMetadata({
+    source: input.source,
+    tags: input.tags,
+    capture: "promote_memory_schema_v1",
+    category,
+    canonicalKey,
+    extra: {
+      promotedFrom: {
+        memoryId: sourceEntry.id,
+        scope: sourceEntry.scope,
+        category: sourceEntry.category,
+        boundary: extractBoundaryMetadata(sourceEntry.metadata),
+        source: sourceMetadata?.source,
+      },
+    },
+  });
+}
+
+export async function persistMemory(
+  deps: PersistMemoryDeps,
+  rawInput: unknown,
+): Promise<StoredMemoryRecord> {
+  const input = StoreMemoryInputSchema.parse(rawInput);
+  const vector = await deps.embedder.embedPassage(input.text);
+  const resolvedScope = resolveScope(input);
+  const canonicalKey = resolveCanonicalKey({
+    category: input.category,
+    text: input.text,
+    canonicalKey: input.canonicalKey,
+  });
+  const { entry, disposition, conflictId } = await writeDurableEntry(deps, {
+    text: input.text,
+    vector,
+    category: input.category,
+    scope: resolvedScope,
+    importance: input.importance,
+    metadata: buildStoreMemoryMetadata(input, canonicalKey),
+    canonicalKey,
+    source: input.source,
+  });
+  return toStoredRecord(input, entry, disposition, canonicalKey, conflictId);
+}
+
+export async function persistWorkflowPattern(
+  deps: PersistMemoryDeps,
+  rawInput: unknown,
+): Promise<StoredWorkflowPatternRecord> {
+  const input = WorkflowPatternInputSchema.parse(rawInput);
+  const resolvedScope = resolveScope(input);
+  const tags = mergeTags(input.tags, ["workflow", "pattern"]);
+  const text = buildWorkflowPatternText(input);
+  const vector = await deps.embedder.embedPassage(text);
+  const canonicalKey = resolveCanonicalKey({
+    category: "patterns",
+    title: input.title,
+    text,
+    canonicalKey: input.canonicalKey,
+  });
+  const { entry, disposition, conflictId } = await writeDurableEntry(deps, {
+    text,
+    vector,
+    category: "patterns",
+    scope: resolvedScope,
+    importance: input.importance,
+    metadata: buildWorkflowPatternMetadata(input, tags, canonicalKey),
+    canonicalKey,
+    source: input.source,
+  });
+
+  return {
+    ...input,
+    tags,
+    canonicalKey,
+    category: "patterns",
+    text,
+    resolvedScope: entry.scope,
+    id: entry.id,
+    storedAt: new Date(entry.timestamp).toISOString(),
+    disposition,
+    ...(conflictId ? { conflictId } : {}),
+  };
+}
+
+export async function persistCaseMemory(
+  deps: PersistMemoryDeps,
+  rawInput: unknown,
+): Promise<StoredCaseMemoryRecord> {
+  const input = CaseMemoryInputSchema.parse(rawInput);
+  const resolvedScope = resolveScope(input);
+  const tags = mergeTags(input.tags, ["case", "solution"]);
+  const text = buildCaseMemoryText(input);
+  const vector = await deps.embedder.embedPassage(text);
+  const canonicalKey = resolveCanonicalKey({
+    category: "cases",
+    title: input.title,
+    text,
+    canonicalKey: input.canonicalKey,
+  });
+  const { entry, disposition, conflictId } = await writeDurableEntry(deps, {
+    text,
+    vector,
+    category: "cases",
+    scope: resolvedScope,
+    importance: input.importance,
+    metadata: buildCaseMemoryMetadata(input, tags, canonicalKey),
+    canonicalKey,
+    source: input.source,
+  });
+
+  return {
+    ...input,
+    tags,
+    canonicalKey,
+    category: "cases",
+    text,
+    resolvedScope: entry.scope,
+    id: entry.id,
+    storedAt: new Date(entry.timestamp).toISOString(),
+    disposition,
+    ...(conflictId ? { conflictId } : {}),
+  };
+}
+
+export async function promoteMemory(
+  deps: PersistMemoryDeps,
+  rawInput: unknown,
+): Promise<StoredPromotedMemoryRecord> {
+  const input = PromoteMemoryInputSchema.parse(rawInput);
+  const sourceEntry = deps.store.get
+    ? await deps.store.get(input.memoryId)
+    : deps.store.getById
+      ? await deps.store.getById(input.memoryId)
+      : null;
+
+  if (!sourceEntry) {
+    throw new Error(`Memory ${input.memoryId} not found`);
+  }
+
+  const boundary = extractBoundaryMetadata(sourceEntry.metadata);
+  const looksDurableWithoutBoundary = !boundary && isDurableMemoryScope(sourceEntry.scope);
+  if ((boundary?.layer && boundary.layer !== "evidence") || (looksDurableWithoutBoundary && !isTranscriptScope(sourceEntry.scope))) {
+    const currentLayer = boundary?.layer || "durable";
+    throw new Error(`Memory ${input.memoryId} is already ${currentLayer}; promote_memory is only for evidence entries.`);
+  }
+
+  const category = inferPromotedCategory(input, sourceEntry);
+  const text = input.text || sourceEntry.text;
+  const canonicalKey = resolveCanonicalKey({
+    category,
+    text,
+    canonicalKey: input.canonicalKey,
+  });
+  const vector = await deps.embedder.embedPassage(text);
+  const resolvedScope = resolveScope(input);
+  const { entry, disposition, conflictId } = await writeDurableEntry(deps, {
+    text,
+    vector,
+    category,
+    scope: resolvedScope,
+    importance: input.importance,
+    metadata: buildPromotionMetadata(input, canonicalKey, category, sourceEntry),
+    canonicalKey,
+    promotedFrom: sourceEntry.id,
+    source: input.source,
+    sourceCategory: sourceEntry.category,
+    sourceBoundary: boundary,
+  });
+
+  return {
+    text,
+    category,
+    importance: input.importance,
+    scope: input.scope,
+    source: input.source,
+    tags: input.tags,
+    canonicalKey,
+    resolvedScope: entry.scope,
+    id: entry.id,
+    storedAt: new Date(entry.timestamp).toISOString(),
+    disposition,
+    sourceMemoryId: sourceEntry.id,
+    sourceCategory: sourceEntry.category,
+    ...(conflictId ? { conflictId } : {}),
+  };
+}
+
+export async function persistMemoryBatch(
+  deps: PersistMemoryDeps,
+  rawInput: unknown,
+): Promise<StoredMemoryRecord[]> {
+  const input = CaptureMemoryInputSchema.parse(rawInput);
+  const normalizedItems = input.memories.map((memory) =>
+    StoreMemoryInputSchema.parse({
+      text: memory.text,
+      category: memory.category,
+      importance: memory.importance ?? input.defaultImportance,
+      scope: memory.scope ?? input.scope,
+      source: memory.source ?? input.source,
+      tags: memory.tags ?? [],
+      canonicalKey: memory.canonicalKey,
+    }),
+  );
+
+  const persisted: StoredMemoryRecord[] = [];
+  for (const memory of normalizedItems) {
+    persisted.push(await persistMemory(deps, memory));
+  }
+  return persisted;
+}
+
+export function normalizeCaptureInput(rawInput: unknown): CaptureMemoryInput {
+  return CaptureMemoryInputSchema.parse(rawInput);
+}

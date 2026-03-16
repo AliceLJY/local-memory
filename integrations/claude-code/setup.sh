@@ -5,14 +5,24 @@
 set -euo pipefail
 
 CLAUDE_JSON="$HOME/.claude.json"
+CLAUDE_MD="$HOME/.claude/CLAUDE.md"
 RECALLNEST_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 MCP_ENTRY="$RECALLNEST_DIR/src/mcp-server.ts"
+RULES_SNIPPET="$RECALLNEST_DIR/integrations/claude-code/claude-md-snippet.md"
+RULES_HELPER="$RECALLNEST_DIR/integrations/shared/install-managed-block.sh"
 
 # Verify mcp-server.ts exists
 if [[ ! -f "$MCP_ENTRY" ]]; then
   echo "ERROR: $MCP_ENTRY not found. Run this from the recallnest repo root."
   exit 1
 fi
+
+if [[ ! -f "$RULES_HELPER" ]]; then
+  echo "ERROR: $RULES_HELPER not found."
+  exit 1
+fi
+
+mkdir -p "$HOME/.claude"
 
 # Create ~/.claude.json if missing
 if [[ ! -f "$CLAUDE_JSON" ]]; then
@@ -42,9 +52,12 @@ else
   echo "Added RecallNest MCP to $CLAUDE_JSON"
 fi
 
+. "$RULES_HELPER"
+install_managed_markdown_block "$RULES_SNIPPET" "$CLAUDE_MD" "recallnest-continuity"
+echo "Installed RecallNest continuity rules in $CLAUDE_MD"
+
 echo ""
 echo "Setup complete. Restart Claude Code to activate."
 echo ""
-echo "Next step: copy the memory rules from"
-echo "  $RECALLNEST_DIR/integrations/claude-code/claude-md-snippet.md"
-echo "into your CLAUDE.md"
+echo "Managed snippet source:"
+echo "  $RULES_SNIPPET"

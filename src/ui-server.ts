@@ -6,6 +6,7 @@ import { join, resolve, sep } from "node:path";
 import type { RetrievalResult } from "./retriever.js";
 import type { MemoryStore } from "./store.js";
 import { distillResults, formatExplainResults, formatSearchResults, selectBriefSeedResults, summarizeResults } from "./memory-output.js";
+import { extractMemoryProvenance } from "./memory-boundaries.js";
 import { archiveDirtyBriefAsset, assetSummaryLine, buildBriefAsset, buildPinAsset, listDirtyBriefAssets, listExportArtifacts, listMemoryAssets, saveBriefAsset, savePinAsset, writeExportArtifact } from "./memory-assets.js";
 import { indexAsset, indexPinnedAsset } from "./asset-sync.js";
 import { createComponentResolver, loadConfig, loadDotEnv } from "./runtime-config.js";
@@ -118,6 +119,10 @@ function getRetrievalPath(result: RetrievalResult): string {
 function serializeResults(results: RetrievalResult[]) {
   return results.map((result) => {
     const metadata = parseMetadata(result.entry.metadata);
+    const provenance = extractMemoryProvenance({
+      scope: result.entry.scope,
+      metadata: result.entry.metadata,
+    });
     return {
       id: result.entry.id,
       shortId: result.entry.id.slice(0, 8),
@@ -130,6 +135,9 @@ function serializeResults(results: RetrievalResult[]) {
       retrievalPath: getRetrievalPath(result),
       text: result.entry.text,
       metadata,
+      boundary: provenance.boundary,
+      canonicalKey: provenance.canonicalKey,
+      promotedFrom: provenance.promotedFrom,
     };
   });
 }

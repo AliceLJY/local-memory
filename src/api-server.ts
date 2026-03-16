@@ -7,9 +7,23 @@
  */
 
 import { createComponentResolver, loadConfig, loadDotEnv } from "./runtime-config.js";
+import { DurableMemoryCategorySchema } from "./memory-schema.js";
+import { persistCaseMemory, persistMemory, persistMemoryBatch, persistWorkflowPattern, promoteMemory } from "./capture-engine.js";
+import { buildSessionCheckpointRecord } from "./session-engine.js";
+import { SessionCheckpointStore } from "./session-store.js";
+import { composeResumeContext } from "./context-composer.js";
+import { extractMemoryProvenance } from "./memory-boundaries.js";
+import { ConflictStatusSchema } from "./conflict-schema.js";
+import { resolveConflictCandidate } from "./conflict-engine.js";
+import { escalateConflicts } from "./conflict-escalation.js";
+import { ConflictCandidateStore } from "./conflict-store.js";
+import { parseConflictAttention, summarizeConflictLifecycle } from "./conflict-lifecycle.js";
+import { buildConflictAuditSummary, clusterConflicts, summarizeConflictAdvice } from "./conflict-advisor.js";
 
 const config = (loadDotEnv(), loadConfig());
 const getComponents = createComponentResolver(config);
+const checkpointStore = new SessionCheckpointStore();
+const conflictStore = new ConflictCandidateStore();
 
 // ============================================================================
 // Helpers
@@ -55,6 +69,27 @@ function parseMetadata(raw?: string): Record<string, unknown> {
   }
 }
 
+function parseDurableMemoryCategory(value: unknown) {
+  if (typeof value !== "string") return undefined;
+  const parsed = DurableMemoryCategorySchema.safeParse(value);
+  return parsed.success ? parsed.data : undefined;
+}
+
+function parseConflictStatus(value: unknown) {
+  if (typeof value !== "string") return undefined;
+  const parsed = ConflictStatusSchema.safeParse(value);
+  return parsed.success ? parsed.data : undefined;
+}
+
+function buildProvenance(scope: string, metadata?: string) {
+  const provenance = extractMemoryProvenance({ scope, metadata });
+  return {
+    boundary: provenance.boundary,
+    canonicalKey: provenance.canonicalKey,
+    promotedFrom: provenance.promotedFrom,
+  };
+}
+
 // ============================================================================
 // Route handlers
 // ============================================================================
@@ -69,7 +104,7 @@ async function handleRecall(request: Request): Promise<Response> {
 
   const limit = clampInt(body.limit, 5, 1, 20);
   const minScore = clampFloat(body.minScore, 0, 0, 1);
-  const category = typeof body.category === "string" ? body.category : undefined;
+  const category = parseDurableMemoryCategory(body.category);
   const profileName = typeof body.profile === "string" ? body.profile : undefined;
 
   const { retriever, profile, store } = getComponents(profileName);
@@ -82,6 +117,7 @@ async function handleRecall(request: Request): Promise<Response> {
   return jsonResponse({
     results: filtered.map((r) => {
       const meta = parseMetadata(r.entry.metadata);
+      const provenance = buildProvenance(r.entry.scope, r.entry.metadata);
       return {
         id: r.entry.id,
         text: r.entry.text,
@@ -91,6 +127,9 @@ async function handleRecall(request: Request): Promise<Response> {
         scope: r.entry.scope,
         score: Math.round(r.score * 1000) / 1000,
         date: new Date(r.entry.timestamp).toISOString().split("T")[0],
+        boundary: provenance.boundary,
+        canonicalKey: provenance.canonicalKey,
+        promotedFrom: provenance.promotedFrom,
       };
     }),
     query,
@@ -102,29 +141,257 @@ async function handleRecall(request: Request): Promise<Response> {
 /** POST /v1/store — store a new memory */
 async function handleStore(request: Request): Promise<Response> {
   const body = await readJson(request);
-  const text = body.text;
-  if (!text || typeof text !== "string") {
-    return errorResponse(400, "text is required");
+  try {
+    const { store, embedder } = getComponents();
+    const stored = await persistMemory({ store, embedder, conflictStore }, body);
+
+    return jsonResponse({
+      id: stored.id,
+      stored: stored.disposition !== "conflict",
+      disposition: stored.disposition,
+      storedAt: stored.storedAt,
+      category: stored.category,
+      scope: stored.resolvedScope,
+      canonicalKey: stored.canonicalKey,
+      conflictId: stored.conflictId,
+    }, 201);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return errorResponse(400, message);
+  }
+}
+
+/** POST /v1/capture — store multiple structured memories in one request */
+async function handleCapture(request: Request): Promise<Response> {
+  const body = await readJson(request);
+  try {
+    const { store, embedder } = getComponents();
+    const stored = await persistMemoryBatch({ store, embedder, conflictStore }, body);
+    return jsonResponse({
+      stored: stored.length,
+      memories: stored.map((memory) => ({
+        id: memory.id,
+        text: memory.text,
+        category: memory.category,
+        scope: memory.resolvedScope,
+        source: memory.source,
+        storedAt: memory.storedAt,
+        disposition: memory.disposition,
+        canonicalKey: memory.canonicalKey,
+        conflictId: memory.conflictId,
+      })),
+    }, 201);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return errorResponse(400, message);
+  }
+}
+
+/** POST /v1/pattern — store a structured workflow pattern as durable memory */
+async function handlePattern(request: Request): Promise<Response> {
+  const body = await readJson(request);
+  try {
+    const { store, embedder } = getComponents();
+    const stored = await persistWorkflowPattern({ store, embedder, conflictStore }, body);
+    return jsonResponse({
+      id: stored.id,
+      stored: stored.disposition !== "conflict",
+      disposition: stored.disposition,
+      category: stored.category,
+      title: stored.title,
+      scope: stored.resolvedScope,
+      tags: stored.tags,
+      storedAt: stored.storedAt,
+      canonicalKey: stored.canonicalKey,
+      conflictId: stored.conflictId,
+    }, 201);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return errorResponse(400, message);
+  }
+}
+
+/** POST /v1/case — store a structured case as durable memory */
+async function handleCase(request: Request): Promise<Response> {
+  const body = await readJson(request);
+  try {
+    const { store, embedder } = getComponents();
+    const stored = await persistCaseMemory({ store, embedder, conflictStore }, body);
+    return jsonResponse({
+      id: stored.id,
+      stored: stored.disposition !== "conflict",
+      disposition: stored.disposition,
+      category: stored.category,
+      title: stored.title,
+      scope: stored.resolvedScope,
+      tags: stored.tags,
+      storedAt: stored.storedAt,
+      canonicalKey: stored.canonicalKey,
+      conflictId: stored.conflictId,
+    }, 201);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return errorResponse(400, message);
+  }
+}
+
+/** POST /v1/promote — promote an evidence memory into durable memory */
+async function handlePromote(request: Request): Promise<Response> {
+  const body = await readJson(request);
+  try {
+    const { store, embedder } = getComponents();
+    const stored = await promoteMemory({ store, embedder, conflictStore }, body);
+    return jsonResponse({
+      id: stored.id,
+      stored: stored.disposition !== "conflict",
+      disposition: stored.disposition,
+      category: stored.category,
+      scope: stored.resolvedScope,
+      sourceMemoryId: stored.sourceMemoryId,
+      sourceCategory: stored.sourceCategory,
+      storedAt: stored.storedAt,
+      canonicalKey: stored.canonicalKey,
+      conflictId: stored.conflictId,
+    }, 201);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return errorResponse(400, message);
+  }
+}
+
+/** GET /v1/conflicts — list recent conflicts or inspect a single conflict */
+async function handleConflicts(request: Request): Promise<Response> {
+  const url = new URL(request.url);
+  const conflictId = url.searchParams.get("conflictId") || undefined;
+  const groupBy = url.searchParams.get("groupBy") === "cluster" ? "cluster" : "record";
+  if (conflictId) {
+    const conflict = await conflictStore.getById(conflictId);
+    return jsonResponse({
+      conflict: conflict
+        ? {
+          ...conflict,
+          lifecycle: summarizeConflictLifecycle(conflict),
+          advice: summarizeConflictAdvice(conflict),
+        }
+        : null,
+    });
   }
 
-  const VALID_CATEGORIES = ["profile", "preferences", "entities", "events", "cases", "patterns"];
-  const rawCategory = typeof body.category === "string" ? body.category : "events";
-  const category = VALID_CATEGORIES.includes(rawCategory) ? rawCategory : "events";
-  const source = typeof body.source === "string" ? body.source : "api";
-  const importance = clampFloat(body.importance, 0.7, 0, 1);
-
-  const { store, embedder } = getComponents();
-  const vector = await embedder.embed(text);
-
-  const entry = await store.store({
-    text,
-    vector,
-    category: category as any,
-    scope: `api:${source}`,
-    importance,
+  const status = parseConflictStatus(url.searchParams.get("status"));
+  const attention = parseConflictAttention(url.searchParams.get("attention"));
+  const canonicalKey = url.searchParams.get("canonicalKey") || undefined;
+  const limit = clampInt(url.searchParams.get("limit"), 20, 1, 50);
+  const conflicts = (await conflictStore.listRecent({ status, canonicalKey, limit: Math.max(limit * 2, limit) }))
+    .map((conflict) => ({
+      ...conflict,
+      lifecycle: summarizeConflictLifecycle(conflict),
+      advice: summarizeConflictAdvice(conflict),
+    }))
+    .filter((conflict) => !attention || conflict.lifecycle.attention === attention)
+    .slice(0, limit);
+  if (groupBy === "cluster") {
+    const clusters = clusterConflicts(conflicts).slice(0, limit);
+    return jsonResponse({
+      groupBy,
+      clusters,
+      count: clusters.length,
+    });
+  }
+  return jsonResponse({
+    groupBy,
+    conflicts,
+    count: conflicts.length,
   });
+}
 
-  return jsonResponse({ id: entry.id, stored: true }, 201);
+/** GET /v1/conflicts/audit — summarize conflict attention and priority clusters */
+async function handleConflictAudit(request: Request): Promise<Response> {
+  const url = new URL(request.url);
+  const status = parseConflictStatus(url.searchParams.get("status"));
+  const canonicalKey = url.searchParams.get("canonicalKey") || undefined;
+  const limit = clampInt(url.searchParams.get("limit"), 100, 1, 500);
+  const top = clampInt(url.searchParams.get("top"), 5, 1, 20);
+  const records = await conflictStore.listRecent({ status, canonicalKey, limit });
+  return jsonResponse(buildConflictAuditSummary(records, top));
+}
+
+/** POST /v1/conflicts/escalate — preview or apply conflict aging / escalation policy */
+async function handleEscalateConflicts(request: Request): Promise<Response> {
+  const body = await readJson(request);
+  try {
+    const result = await escalateConflicts({
+      conflictStore,
+    }, body);
+    return jsonResponse(result);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return errorResponse(400, message);
+  }
+}
+
+/** POST /v1/conflicts/resolve — resolve an open conflict candidate */
+async function handleResolveConflict(request: Request): Promise<Response> {
+  const body = await readJson(request);
+  try {
+    const { store, embedder } = getComponents();
+    const result = await resolveConflictCandidate({
+      store,
+      embedder,
+      conflictStore,
+    }, body);
+    return jsonResponse(result);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return errorResponse(400, message);
+  }
+}
+
+/** POST /v1/checkpoint — persist current session state in the checkpoint store */
+async function handleCheckpoint(request: Request): Promise<Response> {
+  const body = await readJson(request);
+  try {
+    const record = buildSessionCheckpointRecord(body);
+    const stored = await checkpointStore.save(record);
+    return jsonResponse(stored, 201);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return errorResponse(400, message);
+  }
+}
+
+/** GET /v1/checkpoint/latest — fetch the latest checkpoint for a scope or session */
+async function handleLatestCheckpoint(request: Request): Promise<Response> {
+  const url = new URL(request.url);
+  const sessionId = url.searchParams.get("sessionId") || undefined;
+  const scope = url.searchParams.get("scope") || undefined;
+  const latest = await checkpointStore.getLatest({ sessionId, scope });
+  return jsonResponse({
+    checkpoint: latest,
+  });
+}
+
+/** POST /v1/resume — compose startup context for a fresh window */
+async function handleResume(request: Request): Promise<Response> {
+  const body = await readJson(request);
+  try {
+    const profileName = typeof body.profile === "string" ? body.profile : undefined;
+    const { retriever, profile } = getComponents(profileName);
+    const context = await composeResumeContext({
+      retriever,
+      checkpointStore,
+    }, {
+      ...body,
+      profile: profile.name,
+    });
+
+    return jsonResponse({
+      ...context,
+      profile: profile.name,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return errorResponse(400, message);
+  }
 }
 
 /** POST /v1/search — advanced search with full detail */
@@ -137,7 +404,7 @@ async function handleSearch(request: Request): Promise<Response> {
 
   const limit = clampInt(body.limit, 5, 1, 20);
   const minScore = clampFloat(body.minScore, 0, 0, 1);
-  const category = typeof body.category === "string" ? body.category : undefined;
+  const category = parseDurableMemoryCategory(body.category);
   const profileName = typeof body.profile === "string" ? body.profile : undefined;
   const scope = typeof body.scope === "string" ? body.scope : undefined;
 
@@ -154,6 +421,7 @@ async function handleSearch(request: Request): Promise<Response> {
   return jsonResponse({
     results: filtered.map((r) => {
       const metadata = parseMetadata(r.entry.metadata);
+      const provenance = buildProvenance(r.entry.scope, r.entry.metadata);
       return {
         id: r.entry.id,
         text: r.entry.text,
@@ -164,6 +432,9 @@ async function handleSearch(request: Request): Promise<Response> {
         timestamp: r.entry.timestamp,
         date: new Date(r.entry.timestamp).toISOString().split("T")[0],
         metadata,
+        boundary: provenance.boundary,
+        canonicalKey: provenance.canonicalKey,
+        promotedFrom: provenance.promotedFrom,
         sources: r.sources,
       };
     }),
@@ -227,11 +498,22 @@ const server = Bun.serve({
       if (method === "POST") {
         if (pathname === "/v1/recall") return await handleRecall(request);
         if (pathname === "/v1/store") return await handleStore(request);
+        if (pathname === "/v1/capture") return await handleCapture(request);
+        if (pathname === "/v1/pattern") return await handlePattern(request);
+        if (pathname === "/v1/case") return await handleCase(request);
+        if (pathname === "/v1/promote") return await handlePromote(request);
+        if (pathname === "/v1/conflicts/resolve") return await handleResolveConflict(request);
+        if (pathname === "/v1/conflicts/escalate") return await handleEscalateConflicts(request);
+        if (pathname === "/v1/checkpoint") return await handleCheckpoint(request);
+        if (pathname === "/v1/resume") return await handleResume(request);
         if (pathname === "/v1/search") return await handleSearch(request);
       }
 
       // GET endpoints
       if (method === "GET") {
+        if (pathname === "/v1/conflicts/audit") return await handleConflictAudit(request);
+        if (pathname === "/v1/conflicts") return await handleConflicts(request);
+        if (pathname === "/v1/checkpoint/latest") return await handleLatestCheckpoint(request);
         if (pathname === "/v1/stats") return await handleStats();
         if (pathname === "/v1/health") return await handleHealth();
       }

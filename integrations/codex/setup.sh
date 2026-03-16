@@ -5,12 +5,20 @@
 set -euo pipefail
 
 CODEX_CONFIG="$HOME/.codex/config.toml"
+CODEX_AGENTS="$HOME/.codex/AGENTS.md"
 CODEX_DIR="$HOME/.codex"
 RECALLNEST_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 MCP_ENTRY="$RECALLNEST_DIR/src/mcp-server.ts"
+RULES_SNIPPET="$RECALLNEST_DIR/integrations/codex/agents-md-snippet.md"
+RULES_HELPER="$RECALLNEST_DIR/integrations/shared/install-managed-block.sh"
 
 if [[ ! -f "$MCP_ENTRY" ]]; then
   echo "ERROR: $MCP_ENTRY not found. Run this from the recallnest repo root."
+  exit 1
+fi
+
+if [[ ! -f "$RULES_HELPER" ]]; then
+  echo "ERROR: $RULES_HELPER not found."
   exit 1
 fi
 
@@ -36,5 +44,12 @@ EOF
   echo "Added RecallNest MCP to $CODEX_CONFIG"
 fi
 
+. "$RULES_HELPER"
+install_managed_markdown_block "$RULES_SNIPPET" "$CODEX_AGENTS" "recallnest-continuity"
+echo "Installed RecallNest continuity rules in $CODEX_AGENTS"
+
 echo ""
 echo "Setup complete. Restart Codex to activate."
+echo ""
+echo "Managed snippet source:"
+echo "  $RULES_SNIPPET"

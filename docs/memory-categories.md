@@ -6,6 +6,14 @@
 
 RecallNest classifies every memory into one of six categories. Classification happens automatically during ingestion using keyword heuristics and (optionally) LLM-based analysis.
 
+Category is not the same thing as authority.
+
+- Structured writes can author durable memory.
+- Raw transcript ingest is treated as evidence-first input.
+- Stable transcript claims should not override curated or structured memory.
+
+See [memory-boundary-contract.md](./memory-boundary-contract.md) for the layer and authority rules.
+
 | Category | What It Stores | Examples | Consolidation |
 |----------|---------------|----------|---------------|
 | **profile** | Who the user is — role, background, identity | "Data scientist with 5 years experience", "Works at Acme Corp" | Merge (latest wins) |
@@ -66,6 +74,8 @@ During ingestion, RecallNest scans for signal words:
 | Dates, "happened", "decided", "migrated", "shipped" | `events` |
 | "fixed", "debugged", "root cause", "workaround", "error" | `cases` |
 | "pattern", "best practice", "rule", "always do", "anti-pattern" | `patterns` |
+
+Transcript-derived `profile` / `preferences` may still be detected during extraction, but RecallNest can downgrade them to evidence-only storage rather than treating them as durable truth.
 
 ### Manual Override
 

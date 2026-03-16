@@ -11,6 +11,7 @@ import { expandQuery } from "./query-expander.js";
 import type { AccessTracker } from "./access-tracker.js";
 import { weibullDecay, resolveTier } from "./decay-engine.js";
 import { logWarn } from "./stderr-log.js";
+import { extractBoundaryMetadata, isDurableMemoryScope, isTranscriptScope } from "./memory-boundaries.js";
 
 // ============================================================================
 // Types & Configuration
@@ -356,7 +357,8 @@ export class MemoryRetriever {
 
     const boosted = this.applyRecencyBoost(mapped);
     const weighted = this.applyImportanceWeight(boosted);
-    const assetWeighted = this.applyAssetTypeWeight(weighted);
+    const boundaryWeighted = this.applyBoundaryWeight(weighted);
+    const assetWeighted = this.applyAssetTypeWeight(boundaryWeighted);
     const lengthNormalized = this.applyLengthNormalization(assetWeighted);
     const timeDecayed = this.applyTimeDecay(lengthNormalized);
     const hardFiltered = timeDecayed.filter(r => r.score >= this.config.hardMinScore);
@@ -404,10 +406,13 @@ export class MemoryRetriever {
     // Apply importance weighting
     const importanceWeighted = this.applyImportanceWeight(temporalReranked);
 
+    // Prefer higher-authority durable memories over raw evidence when scores are close.
+    const boundaryWeighted = this.applyBoundaryWeight(importanceWeighted);
+
     // Separate pinned assets from synthesized briefs.
     // Pins should be slightly easier to recall; briefs should stay useful
     // without overpowering raw evidence or explicit pins.
-    const assetWeighted = this.applyAssetTypeWeight(importanceWeighted);
+    const assetWeighted = this.applyAssetTypeWeight(boundaryWeighted);
 
     // Apply length normalization (penalize long entries dominating via keyword density)
     const lengthNormalized = this.applyLengthNormalization(assetWeighted);
@@ -716,6 +721,29 @@ export class MemoryRetriever {
       return {
         ...r,
         score: clamp01(r.score * factor, r.score * 0.75),
+      };
+    });
+
+    return weighted.sort((a, b) => b.score - a.score);
+  }
+
+  private applyBoundaryWeight(results: RetrievalResult[]): RetrievalResult[] {
+    const weighted = results.map(r => {
+      const boundary = extractBoundaryMetadata(r.entry.metadata);
+      let factor = 1.0;
+
+      if (boundary?.layer === "durable") {
+        factor = boundary.authority === "structured-memory" ? 1.03 : 1.01;
+      } else if (boundary?.layer === "evidence") {
+        factor = boundary.authority === "transcript-ingest" ? 0.97 : 0.99;
+      } else if (!boundary) {
+        if (isDurableMemoryScope(r.entry.scope)) factor = 1.01;
+        if (isTranscriptScope(r.entry.scope)) factor = 0.99;
+      }
+
+      return {
+        ...r,
+        score: clamp01(r.score * factor, r.score * 0.85),
       };
     });
 

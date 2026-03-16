@@ -1,6 +1,7 @@
 import type { MemoryEntry } from "./store.js";
 import type { RetrievalResult } from "./retriever.js";
 import type { RetrievalProfileName } from "./retrieval-profiles.js";
+import { extractMemoryProvenance } from "./memory-boundaries.js";
 
 interface MemoryMetadata {
   source?: string;
@@ -66,6 +67,41 @@ function getCategoryLabel(result: RetrievalResult): string {
 function getTierLabel(result: RetrievalResult): string {
   const meta = parseMetadata(result.entry);
   return String(meta.tier || "peripheral");
+}
+
+function getProvenanceSummary(result: RetrievalResult): string {
+  const provenance = extractMemoryProvenance({
+    scope: result.entry.scope,
+    metadata: result.entry.metadata,
+  });
+  const boundary = provenance.boundary;
+  const parts = [
+    boundary
+      ? `${boundary.layer}/${boundary.authority}`
+      : result.entry.scope.startsWith("memory:") || result.entry.scope.startsWith("asset:")
+        ? "durable/?"
+        : result.entry.scope.startsWith("cc:") || result.entry.scope.startsWith("codex:") || result.entry.scope.startsWith("gemini:")
+          ? "evidence/?"
+          : "-",
+  ];
+
+  if (boundary?.downgradedFrom) {
+    parts.push(`downgraded:${boundary.downgradedFrom}`);
+  }
+
+  if (provenance.canonicalKey) {
+    parts.push(`key:${provenance.canonicalKey}`);
+  }
+
+  if (provenance.promotedFrom) {
+    const promotedBoundary = provenance.promotedFrom.boundary;
+    const promotedLabel = promotedBoundary
+      ? `${promotedBoundary.layer}/${promotedBoundary.authority}`
+      : "-";
+    parts.push(`promoted:${provenance.promotedFrom.memoryId.slice(0, 8)}<-${promotedLabel}`);
+  }
+
+  return parts.join(" | ");
 }
 
 export function selectBriefSeedResults(results: RetrievalResult[]): RetrievalResult[] {
@@ -228,6 +264,7 @@ export function formatSearchResults(
   for (let i = 0; i < results.length; i++) {
     const row = buildSearchRow(i, context.query, results[i]);
     lines.push(`${row[0]} ${row[1]} ${row[2]} ${row[3]} ${row[4]} ${row[5]} ${row[6]} ${row[7]} ${row[8]} | ${row[9]}`);
+    lines.push(`   prov : ${getProvenanceSummary(results[i])}`);
   }
 
   return lines.join("\n");
@@ -261,6 +298,7 @@ export function formatExplainResults(
     lines.push(`   path    : ${retrieval}`);
     lines.push(`   session : ${session}`);
     lines.push(`   file    : ${file}`);
+    lines.push(`   prov    : ${getProvenanceSummary(result)}`);
     lines.push(`   why     : ${why}`);
     lines.push(`   snippet : ${pickBestSnippet(context.query, result.entry.text)}`);
     lines.push("");

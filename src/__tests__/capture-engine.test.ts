@@ -1,0 +1,654 @@
+import { describe, expect, it } from "bun:test";
+
+import { persistCaseMemory, persistMemory, persistMemoryBatch, persistWorkflowPattern, promoteMemory } from "../capture-engine.js";
+
+function createDeps() {
+  const storedEntries: any[] = [];
+  const conflicts: any[] = [];
+  let seq = 1;
+
+  return {
+    storedEntries,
+    conflicts,
+    deps: {
+      embedder: {
+        async embedPassage(text: string) {
+          return [text.length, 1, 0];
+        },
+      },
+      store: {
+        async store(entry: any) {
+          const stored = {
+            ...entry,
+            id: `00000000-0000-0000-0000-${String(seq).padStart(12, "0")}`,
+            timestamp: 1_700_000_000_000 + seq,
+          };
+          seq += 1;
+          storedEntries.push(stored);
+          return stored;
+        },
+        async list(_scopeFilter?: string[], category?: string, limit = 20, offset = 0) {
+          return storedEntries
+            .filter((entry) => !category || entry.category === category)
+            .slice(offset, offset + limit);
+        },
+        async update(id: string, updates: any) {
+          const index = storedEntries.findIndex((entry) => entry.id === id);
+          if (index < 0) return null;
+          storedEntries[index] = {
+            ...storedEntries[index],
+            ...updates,
+            timestamp: updates.timestamp ?? storedEntries[index].timestamp,
+          };
+          return storedEntries[index];
+        },
+        async getById(id: string) {
+          return storedEntries.find((entry) => entry.id === id) || null;
+        },
+        async get(id: string) {
+          const exact = storedEntries.find((entry) => entry.id === id);
+          if (exact) return exact;
+          const matches = storedEntries.filter((entry) => entry.id.startsWith(id));
+          if (matches.length > 1) {
+            throw new Error(`Ambiguous prefix "${id}" matches ${matches.length} memories. Use a longer prefix or full ID.`);
+          }
+          return matches[0] || null;
+        },
+      },
+      conflictStore: {
+        async save(record: any) {
+          conflicts.push(record);
+          return record;
+        },
+        async replace(record: any) {
+          const index = conflicts.findIndex((item) => item.conflictId === record.conflictId);
+          if (index >= 0) {
+            conflicts[index] = record;
+          } else {
+            conflicts.push(record);
+          }
+          return record;
+        },
+        async getOpenByFingerprint(fingerprint: string) {
+          return conflicts.find((item) => item.status === "open" && item.fingerprint === fingerprint) || null;
+        },
+        async getLatestByFingerprint(fingerprint: string) {
+          return conflicts.find((item) => item.fingerprint === fingerprint) || null;
+        },
+      },
+    },
+  };
+}
+
+describe("persistMemory", () => {
+  it("stores durable memory under memory:* scope by default", async () => {
+    const { deps, storedEntries } = createDeps();
+    const result = await persistMemory(deps as any, {
+      text: "User prefers dark mode",
+      category: "preferences",
+      source: "manual",
+      tags: ["ui"],
+    });
+
+    expect(result.resolvedScope).toBe("memory:manual");
+    expect(result.canonicalKey).toBe("preferences:user-prefers-dark-mode");
+    expect(result.disposition).toBe("stored");
+    expect(storedEntries[0].scope).toBe("memory:manual");
+    expect(JSON.parse(storedEntries[0].metadata)).toEqual({
+      source: "manual",
+      tags: ["ui"],
+      capture: "store_memory_schema_v1",
+      boundary: {
+        layer: "durable",
+        authority: "structured-memory",
+        conflictPolicy: "latest-wins",
+        originalCategory: "preferences",
+        note: "Structured memory writes are the durable source inside RecallNest.",
+      },
+      canonicalKey: "preferences:user-prefers-dark-mode",
+    });
+  });
+
+  it("dedupes an exact canonical durable write instead of storing again", async () => {
+    const { deps, storedEntries } = createDeps();
+    await persistMemory(deps as any, {
+      text: "User prefers dark mode",
+      category: "preferences",
+      source: "manual",
+      canonicalKey: "user.reply.style",
+    });
+
+    const result = await persistMemory(deps as any, {
+      text: "User prefers dark mode",
+      category: "preferences",
+      source: "manual",
+      canonicalKey: "user.reply.style",
+    });
+
+    expect(result.disposition).toBe("deduped");
+    expect(storedEntries).toHaveLength(1);
+  });
+
+  it("updates latest-wins categories when canonicalKey matches and text changes", async () => {
+    const { deps, storedEntries } = createDeps();
+    const first = await persistMemory(deps as any, {
+      text: "User prefers concise replies",
+      category: "preferences",
+      source: "manual",
+      canonicalKey: "user.reply.style",
+    });
+
+    const second = await persistMemory(deps as any, {
+      text: "User prefers concise and direct technical replies",
+      category: "preferences",
+      source: "manual",
+      canonicalKey: "user.reply.style",
+    });
+
+    expect(second.disposition).toBe("updated");
+    expect(second.id).toBe(first.id);
+    expect(storedEntries).toHaveLength(1);
+    expect(storedEntries[0].text).toContain("direct technical replies");
+  });
+
+  it("creates a conflict when the same canonicalKey is reused across durable categories", async () => {
+    const { deps, storedEntries, conflicts } = createDeps();
+    const baseline = await persistMemory(deps as any, {
+      text: "User prefers concise technical replies.",
+      category: "preferences",
+      source: "manual",
+      canonicalKey: "user.reply.style.cross-category",
+    });
+
+    const result = await persistMemory(deps as any, {
+      text: "Reply-style observations imported as an event.",
+      category: "events",
+      source: "manual",
+      canonicalKey: "user.reply.style.cross-category",
+    });
+
+    expect(result.disposition).toBe("conflict");
+    expect(result.id).toBe(baseline.id);
+    expect(typeof result.conflictId).toBe("string");
+    expect(storedEntries).toHaveLength(1);
+    expect(conflicts).toHaveLength(1);
+    expect(conflicts[0]).toMatchObject({
+      conflictId: result.conflictId,
+      reason: "canonical_key_conflicts_with_existing_durable",
+      existing: {
+        memoryId: baseline.id,
+        category: "preferences",
+      },
+      incoming: {
+        category: "events",
+        text: "Reply-style observations imported as an event.",
+      },
+    });
+  });
+});
+
+describe("persistMemoryBatch", () => {
+  it("applies envelope defaults and per-item overrides", async () => {
+    const { deps, storedEntries } = createDeps();
+    const result = await persistMemoryBatch(deps as any, {
+      scope: "agent:codex",
+      source: "agent",
+      defaultImportance: 0.65,
+      memories: [
+        {
+          text: "Project RecallNest is the shared memory layer",
+          category: "entities",
+        },
+        {
+          text: "Use search_memory at task start",
+          category: "patterns",
+          importance: 0.9,
+          scope: "memory:manual",
+          source: "manual",
+          tags: ["workflow", "memory"],
+          canonicalKey: "workflow.start.search",
+        },
+      ],
+    });
+
+    expect(result).toHaveLength(2);
+    expect(storedEntries[0].scope).toBe("agent:codex");
+    expect(storedEntries[0].importance).toBe(0.65);
+    expect(storedEntries[1].scope).toBe("memory:manual");
+    expect(storedEntries[1].importance).toBe(0.9);
+    expect(result[1].canonicalKey).toBe("workflow-start-search");
+    expect(JSON.parse(storedEntries[1].metadata).tags).toEqual(["workflow", "memory"]);
+  });
+});
+
+describe("persistWorkflowPattern", () => {
+  it("stores a structured workflow pattern as durable patterns memory", async () => {
+    const { deps, storedEntries } = createDeps();
+    const result = await persistWorkflowPattern(deps as any, {
+      title: "Cross-window continuity handoff",
+      trigger: "When opening a fresh terminal window for the same project",
+      steps: [
+        "Call resume_context before coding",
+        "Review stable context and latest checkpoint",
+        "Save checkpoint_session before leaving the window",
+      ],
+      outcome: "The next window recovers decisions and next actions faster",
+      tools: ["resume_context", "checkpoint_session"],
+      tags: ["continuity"],
+    });
+
+    expect(result.category).toBe("patterns");
+    expect(result.disposition).toBe("stored");
+    expect(result.canonicalKey).toBe("patterns:cross-window-continuity-handoff");
+    expect(result.resolvedScope).toBe("memory:agent");
+    expect(result.tags).toEqual(["continuity", "workflow", "pattern"]);
+    expect(result.text).toContain("Workflow pattern: Cross-window continuity handoff");
+    expect(result.text).toContain("1. Call resume_context before coding");
+    expect(result.text).toContain("Tools: resume_context, checkpoint_session");
+    expect(storedEntries[0].category).toBe("patterns");
+    expect(JSON.parse(storedEntries[0].metadata)).toEqual({
+      source: "agent",
+      tags: ["continuity", "workflow", "pattern"],
+      capture: "workflow_pattern_schema_v1",
+      boundary: {
+        layer: "durable",
+        authority: "structured-memory",
+        conflictPolicy: "latest-wins",
+        originalCategory: "patterns",
+        note: "Structured memory writes are the durable source inside RecallNest.",
+      },
+      canonicalKey: "patterns:cross-window-continuity-handoff",
+      workflowPattern: {
+        title: "Cross-window continuity handoff",
+        trigger: "When opening a fresh terminal window for the same project",
+        steps: [
+          "Call resume_context before coding",
+          "Review stable context and latest checkpoint",
+          "Save checkpoint_session before leaving the window",
+        ],
+        outcome: "The next window recovers decisions and next actions faster",
+        tools: ["resume_context", "checkpoint_session"],
+      },
+    });
+  });
+});
+
+describe("persistCaseMemory", () => {
+  it("stores a structured case as durable cases memory", async () => {
+    const { deps, storedEntries } = createDeps();
+    const result = await persistCaseMemory(deps as any, {
+      title: "RecallNest sparse startup context cleanup",
+      problem: "resume_context returned noisy transcript fragments instead of a clean project handoff.",
+      context: "A fresh RecallNest window was loading issue chatter and unrelated pins into stable context.",
+      solutionSteps: [
+        "Filter low-signal transcript fragments from stable recall.",
+        "Backfill stable context from checkpoint focus, summary, and decisions.",
+        "Use task focus fallback only when checkpoint-backed continuity is unavailable.",
+      ],
+      outcome: "Fresh windows recover project continuity with cleaner stable context and fewer raw transcript leaks.",
+      tools: ["resume_context", "checkpoint_session"],
+      tags: ["continuity"],
+    });
+
+    expect(result.category).toBe("cases");
+    expect(result.canonicalKey).toBe("cases:recallnest-sparse-startup-context-cleanup");
+    expect(result.resolvedScope).toBe("memory:agent");
+    expect(result.tags).toEqual(["continuity", "case", "solution"]);
+    expect(result.text).toContain("Case: RecallNest sparse startup context cleanup");
+    expect(result.text).toContain("Problem: resume_context returned noisy transcript fragments");
+    expect(result.text).toContain("1. Filter low-signal transcript fragments from stable recall.");
+    expect(storedEntries[0].category).toBe("cases");
+    expect(JSON.parse(storedEntries[0].metadata)).toEqual({
+      source: "agent",
+      tags: ["continuity", "case", "solution"],
+      capture: "case_memory_schema_v1",
+      boundary: {
+        layer: "durable",
+        authority: "structured-memory",
+        conflictPolicy: "append-only",
+        originalCategory: "cases",
+        note: "Structured memory writes are the durable source inside RecallNest.",
+      },
+      canonicalKey: "cases:recallnest-sparse-startup-context-cleanup",
+      caseMemory: {
+        title: "RecallNest sparse startup context cleanup",
+        problem: "resume_context returned noisy transcript fragments instead of a clean project handoff.",
+        context: "A fresh RecallNest window was loading issue chatter and unrelated pins into stable context.",
+        solutionSteps: [
+          "Filter low-signal transcript fragments from stable recall.",
+          "Backfill stable context from checkpoint focus, summary, and decisions.",
+          "Use task focus fallback only when checkpoint-backed continuity is unavailable.",
+        ],
+        outcome: "Fresh windows recover project continuity with cleaner stable context and fewer raw transcript leaks.",
+        tools: ["resume_context", "checkpoint_session"],
+      },
+    });
+  });
+});
+
+describe("promoteMemory", () => {
+  it("promotes an evidence transcript entry into durable memory with provenance", async () => {
+    const { deps, storedEntries } = createDeps();
+    const source = await deps.store.store({
+      text: "[用户] 用户偏好短句直说。\n\n[助手] 后续回复保持简洁。",
+      vector: [1, 2, 3],
+      category: "events",
+      scope: "cc:session1",
+      importance: 0.5,
+      metadata: JSON.stringify({
+        source: "cc",
+        boundary: {
+          layer: "evidence",
+          authority: "transcript-ingest",
+          conflictPolicy: "append-only",
+          originalCategory: "preferences",
+        },
+      }),
+    });
+
+    const promoted = await promoteMemory(deps as any, {
+      memoryId: source.id,
+      text: "User prefers concise, direct replies.",
+      category: "preferences",
+      canonicalKey: "user.reply.style",
+      tags: ["writing"],
+    });
+
+    expect(promoted.disposition).toBe("promoted");
+    expect(promoted.sourceMemoryId).toBe(source.id);
+    expect(promoted.sourceCategory).toBe("events");
+    expect(promoted.canonicalKey).toBe("user-reply-style");
+    expect(storedEntries).toHaveLength(2);
+    expect(JSON.parse(storedEntries[1].metadata)).toEqual({
+      source: "agent",
+      tags: ["writing"],
+      capture: "promote_memory_schema_v1",
+      boundary: {
+        layer: "durable",
+        authority: "structured-memory",
+        conflictPolicy: "latest-wins",
+        originalCategory: "preferences",
+        note: "Structured memory writes are the durable source inside RecallNest.",
+      },
+      canonicalKey: "user-reply-style",
+      promotedFrom: {
+        memoryId: source.id,
+        scope: "cc:session1",
+        category: "events",
+        boundary: {
+          layer: "evidence",
+          authority: "transcript-ingest",
+          conflictPolicy: "append-only",
+          originalCategory: "preferences",
+        },
+        source: "cc",
+      },
+    });
+  });
+
+  it("accepts a unique source memory prefix for promotion", async () => {
+    const { deps } = createDeps();
+    const source = await deps.store.store({
+      text: "[用户] 用户偏好短句直说。",
+      vector: [1, 2, 3],
+      category: "events",
+      scope: "cc:session-prefix",
+      importance: 0.5,
+      metadata: JSON.stringify({
+        source: "cc",
+        boundary: {
+          layer: "evidence",
+          authority: "transcript-ingest",
+          conflictPolicy: "append-only",
+          originalCategory: "preferences",
+        },
+      }),
+    });
+
+    const promoted = await promoteMemory(deps as any, {
+      memoryId: source.id.slice(0, 8),
+      text: "User prefers concise, direct replies.",
+      category: "preferences",
+      canonicalKey: "user.reply.style.prefix",
+      tags: ["writing"],
+    });
+
+    expect(promoted.disposition).toBe("promoted");
+    expect(promoted.sourceMemoryId).toBe(source.id);
+    expect(promoted.canonicalKey).toBe("user-reply-style-prefix");
+  });
+
+  it("rejects promoting an already-durable memory", async () => {
+    const { deps } = createDeps();
+    const durable = await deps.store.store({
+      text: "User prefers direct replies.",
+      vector: [1, 2, 3],
+      category: "preferences",
+      scope: "memory:agent",
+      importance: 0.8,
+      metadata: JSON.stringify({
+        source: "agent",
+        boundary: {
+          layer: "durable",
+          authority: "structured-memory",
+          conflictPolicy: "latest-wins",
+          originalCategory: "preferences",
+        },
+      }),
+    });
+
+    await expect(promoteMemory(deps as any, {
+      memoryId: durable.id,
+    })).rejects.toThrow("already durable");
+  });
+
+  it("creates a conflict candidate instead of silently overwriting durable memory", async () => {
+    const { deps, storedEntries, conflicts } = createDeps();
+    const source = await deps.store.store({
+      text: "[用户] 文章得更口语化，但不能太飘。",
+      vector: [1, 2, 3],
+      category: "events",
+      scope: "cc:session2",
+      importance: 0.55,
+      metadata: JSON.stringify({
+        source: "cc",
+        boundary: {
+          layer: "evidence",
+          authority: "transcript-ingest",
+          conflictPolicy: "append-only",
+          originalCategory: "preferences",
+        },
+      }),
+    });
+    const durable = await deps.store.store({
+      text: "User prefers concise, direct replies.",
+      vector: [4, 5, 6],
+      category: "preferences",
+      scope: "memory:agent",
+      importance: 0.9,
+      metadata: JSON.stringify({
+        source: "agent",
+        canonicalKey: "user-reply-style",
+        boundary: {
+          layer: "durable",
+          authority: "structured-memory",
+          conflictPolicy: "latest-wins",
+          originalCategory: "preferences",
+        },
+      }),
+    });
+
+    const promoted = await promoteMemory(deps as any, {
+      memoryId: source.id,
+      text: "User prefers colloquial writing that stays grounded and non-salesy.",
+      category: "preferences",
+      canonicalKey: "user.reply.style",
+      tags: ["writing"],
+    });
+
+    expect(promoted.disposition).toBe("conflict");
+    expect(promoted.id).toBe(durable.id);
+    expect(typeof promoted.conflictId).toBe("string");
+    expect(storedEntries).toHaveLength(2);
+    expect(storedEntries[1].text).toBe("User prefers concise, direct replies.");
+    expect(conflicts).toHaveLength(1);
+    expect(conflicts[0]).toMatchObject({
+      conflictId: promoted.conflictId,
+      canonicalKey: "user-reply-style",
+      reason: "promotion_conflicts_with_existing_durable",
+      status: "open",
+      existing: {
+        memoryId: durable.id,
+        text: "User prefers concise, direct replies.",
+      },
+      incoming: {
+        sourceMemoryId: source.id,
+        text: "User prefers colloquial writing that stays grounded and non-salesy.",
+      },
+    });
+
+    const repeated = await promoteMemory(deps as any, {
+      memoryId: source.id,
+      text: "User prefers colloquial writing that stays grounded and non-salesy.",
+      category: "preferences",
+      canonicalKey: "user.reply.style",
+      tags: ["writing"],
+    });
+
+    expect(repeated.disposition).toBe("conflict");
+    expect(repeated.conflictId).toBe(promoted.conflictId);
+    expect(conflicts).toHaveLength(1);
+  });
+
+  it("reopens the same conflict record when the same resolved conflict happens again", async () => {
+    const { deps, conflicts } = createDeps();
+    const source = await deps.store.store({
+      text: "[用户] 文章得更口语化，但不能太飘。",
+      vector: [1, 2, 3],
+      category: "events",
+      scope: "cc:session-reopen",
+      importance: 0.55,
+      metadata: JSON.stringify({
+        source: "cc",
+        boundary: {
+          layer: "evidence",
+          authority: "transcript-ingest",
+          conflictPolicy: "append-only",
+          originalCategory: "preferences",
+        },
+      }),
+    });
+    await deps.store.store({
+      text: "User prefers concise, direct replies.",
+      vector: [4, 5, 6],
+      category: "preferences",
+      scope: "memory:agent",
+      importance: 0.9,
+      metadata: JSON.stringify({
+        source: "agent",
+        canonicalKey: "user-reply-style-reopen",
+        boundary: {
+          layer: "durable",
+          authority: "structured-memory",
+          conflictPolicy: "latest-wins",
+          originalCategory: "preferences",
+        },
+      }),
+    });
+
+    const first = await promoteMemory(deps as any, {
+      memoryId: source.id,
+      text: "User prefers colloquial writing that stays grounded and non-salesy.",
+      category: "preferences",
+      canonicalKey: "user.reply.style.reopen",
+      tags: ["writing"],
+    });
+
+    await deps.conflictStore.replace({
+      ...conflicts[0],
+      status: "kept-existing",
+      updatedAt: "2026-03-16T10:00:00.000Z",
+      resolvedAt: "2026-03-16T10:00:00.000Z",
+      resolutionNotes: "Previous review kept the existing durable memory.",
+    });
+
+    const reopened = await promoteMemory(deps as any, {
+      memoryId: source.id,
+      text: "User prefers colloquial writing that stays grounded and non-salesy.",
+      category: "preferences",
+      canonicalKey: "user.reply.style.reopen",
+      tags: ["writing"],
+    });
+
+    expect(reopened.disposition).toBe("conflict");
+    expect(reopened.conflictId).toBe(first.conflictId);
+    expect(conflicts).toHaveLength(1);
+    expect(conflicts[0]?.status).toBe("open");
+    expect(conflicts[0]?.reopenCount).toBe(1);
+    expect(typeof conflicts[0]?.lastReopenedAt).toBe("string");
+    expect(conflicts[0]?.resolvedAt).toBeUndefined();
+    expect(conflicts[0]?.resolutionNotes).toBeUndefined();
+  });
+
+  it("blocks inferred cross-category promotions under the same canonicalKey", async () => {
+    const { deps, storedEntries, conflicts } = createDeps();
+    const durable = await deps.store.store({
+      text: "User prefers concise, direct replies.",
+      vector: [4, 5, 6],
+      category: "preferences",
+      scope: "memory:agent",
+      importance: 0.9,
+      metadata: JSON.stringify({
+        source: "agent",
+        canonicalKey: "acceptance-writing-tone-category-check",
+        boundary: {
+          layer: "durable",
+          authority: "structured-memory",
+          conflictPolicy: "latest-wins",
+          originalCategory: "preferences",
+        },
+      }),
+    });
+    const source = await deps.store.store({
+      text: "[用户] 语气别太端着，口语化点。",
+      vector: [1, 2, 3],
+      category: "fact",
+      scope: "cc:session-category-mismatch",
+      importance: 0.55,
+      metadata: JSON.stringify({
+        source: "cc",
+        boundary: {
+          layer: "evidence",
+          authority: "transcript-ingest",
+          conflictPolicy: "append-only",
+        },
+      }),
+    });
+
+    const promoted = await promoteMemory(deps as any, {
+      memoryId: source.id,
+      canonicalKey: "acceptance-writing-tone-category-check",
+      scope: "memory:acceptance",
+      source: "agent",
+      tags: ["acceptance-test"],
+    });
+
+    expect(promoted.disposition).toBe("conflict");
+    expect(promoted.id).toBe(durable.id);
+    expect(typeof promoted.conflictId).toBe("string");
+    expect(conflicts).toHaveLength(1);
+    expect(conflicts[0]).toMatchObject({
+      conflictId: promoted.conflictId,
+      reason: "canonical_key_conflicts_with_existing_durable",
+      existing: {
+        memoryId: durable.id,
+        category: "preferences",
+      },
+      incoming: {
+        category: "events",
+        sourceMemoryId: source.id,
+      },
+    });
+    expect(storedEntries).toHaveLength(2);
+  });
+});

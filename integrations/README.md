@@ -10,11 +10,11 @@ Best for AI coding assistants that support Model Context Protocol natively.
 
 | Tool | Setup | What it does |
 |------|-------|-------------|
-| [Claude Code](claude-code/) | `setup.sh` adds MCP to `~/.claude.json` | Memory search via `search_memory` tool |
-| [Gemini CLI](gemini-cli/) | `setup.sh` adds MCP to `~/.gemini/settings.json` | Same MCP tools, shared index |
-| [Codex](codex/) | `setup.sh` adds MCP to `~/.codex/config.toml` | Same MCP tools, shared index |
+| [Claude Code](claude-code/) | `setup.sh` adds MCP to `~/.claude.json` and installs rules in `~/.claude/CLAUDE.md` | Proactive continuity plus shared recall |
+| [Gemini CLI](gemini-cli/) | `setup.sh` adds MCP to `~/.gemini/settings.json` and installs rules in `~/.gemini/GEMINI.md` | Same MCP tools, shared index, continuity prompts |
+| [Codex](codex/) | `setup.sh` adds MCP to `~/.codex/config.toml` and installs rules in `~/.codex/AGENTS.md` | Same MCP tools, shared index, continuity prompts |
 
-All three share the same LanceDB index — memories ingested by one are searchable by all.
+All three share the same LanceDB index, and all three setup scripts now install a managed RecallNest continuity block so fresh windows are instructed to call `resume_context` and `checkpoint_session` at the right times.
 
 ## HTTP API (for agent frameworks)
 

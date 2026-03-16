@@ -7,6 +7,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, accessSync, constants, mkdirSync, realpathSync, lstatSync } from "node:fs";
 import { dirname } from "node:path";
 import { logWarn } from "./stderr-log.js";
+import type { DurableMemoryCategory } from "./memory-schema.js";
 
 // ============================================================================
 // Types
@@ -28,7 +29,7 @@ import { logWarn } from "./stderr-log.js";
  * Legacy categories kept for backward compatibility.
  */
 export type MemoryCategory =
-  | "profile" | "preferences" | "entities" | "events" | "cases" | "patterns"
+  | DurableMemoryCategory
   | "preference" | "fact" | "decision" | "entity" | "other";
 
 export interface MemoryEntry {
@@ -713,7 +714,7 @@ export class MemoryStore {
 
   async update(
     id: string,
-    updates: { text?: string; vector?: number[]; importance?: number; category?: MemoryEntry["category"]; metadata?: string },
+    updates: { text?: string; vector?: number[]; importance?: number; category?: MemoryEntry["category"]; metadata?: string; timestamp?: number },
     scopeFilter?: string[]
   ): Promise<MemoryEntry | null> {
     await this.ensureInitialized();
@@ -759,7 +760,7 @@ export class MemoryStore {
       category: updates.category ?? (row.category as MemoryEntry["category"]),
       scope: rowScope,
       importance: updates.importance ?? Number(row.importance),
-      timestamp: Number(row.timestamp), // preserve original
+      timestamp: updates.timestamp ?? Number(row.timestamp),
       metadata: updates.metadata ?? ((row.metadata as string) || "{}"),
     };
 

@@ -2,6 +2,14 @@
 
 > 架构总览：RecallNest 的分层设计，从接入层到存储层。
 
+边界说明：
+
+- structured capture 写 durable memory
+- checkpoint store 写 session state
+- raw ingest 写 evidence
+
+See [memory-boundary-contract.md](./memory-boundary-contract.md).
+
 ## System Architecture
 
 ```
