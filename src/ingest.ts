@@ -17,7 +17,12 @@ import { chunkDocument, type ChunkerConfig } from "./chunker.js";
 import { isProcessed, markProcessed } from "./tracker.js";
 import type { LLMClient, SmartExtraction } from "./llm-client.js";
 import { resolveIngestBoundary } from "./memory-boundaries.js";
-import { parseBrandItemPreference } from "./preference-slots.js";
+import {
+  inferReplyStylePreferenceSlot,
+  inferToolChoicePreferenceSlot,
+  parseBrandItemPreference,
+  samePreferenceSlot,
+} from "./preference-slots.js";
 
 // ============================================================================
 // Types
@@ -102,6 +107,60 @@ function shouldForceCreateAtomicPreference(
     : { shouldForceCreate: false };
 }
 
+function shouldForceCreateReplyStylePreference(
+  incomingText: string,
+  existingTexts: string[],
+): AtomicPreferenceGuardDecision {
+  const incoming = inferReplyStylePreferenceSlot(incomingText);
+  if (!incoming) {
+    return { shouldForceCreate: false };
+  }
+
+  let matchedText: string | undefined;
+
+  for (const existingText of existingTexts) {
+    const existing = inferReplyStylePreferenceSlot(existingText);
+    if (!existing) continue;
+
+    if (samePreferenceSlot(existing, incoming)) {
+      return { shouldForceCreate: false };
+    }
+
+    matchedText = existingText;
+  }
+
+  return matchedText
+    ? { shouldForceCreate: true, matchedText }
+    : { shouldForceCreate: false };
+}
+
+function shouldForceCreateToolChoicePreference(
+  incomingText: string,
+  existingTexts: string[],
+): AtomicPreferenceGuardDecision {
+  const incoming = inferToolChoicePreferenceSlot(incomingText);
+  if (!incoming) {
+    return { shouldForceCreate: false };
+  }
+
+  let matchedText: string | undefined;
+
+  for (const existingText of existingTexts) {
+    const existing = inferToolChoicePreferenceSlot(existingText);
+    if (!existing) continue;
+
+    if (samePreferenceSlot(existing, incoming)) {
+      return { shouldForceCreate: false };
+    }
+
+    matchedText = existingText;
+  }
+
+  return matchedText
+    ? { shouldForceCreate: true, matchedText }
+    : { shouldForceCreate: false };
+}
+
 export async function dedupCheck(
   store: MemoryStore,
   vector: number[],
@@ -129,6 +188,28 @@ export async function dedupCheck(
       return {
         action: "store",
         existingText: atomicPreferenceGuard.matchedText,
+      };
+    }
+
+    const replyStyleGuard = shouldForceCreateReplyStylePreference(
+      text,
+      results.map((result) => result.entry.text),
+    );
+    if (replyStyleGuard.shouldForceCreate) {
+      return {
+        action: "store",
+        existingText: replyStyleGuard.matchedText,
+      };
+    }
+
+    const toolChoiceGuard = shouldForceCreateToolChoicePreference(
+      text,
+      results.map((result) => result.entry.text),
+    );
+    if (toolChoiceGuard.shouldForceCreate) {
+      return {
+        action: "store",
+        existingText: toolChoiceGuard.matchedText,
       };
     }
 

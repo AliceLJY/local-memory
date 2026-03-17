@@ -12,6 +12,9 @@ interface MemoryMetadata {
     type?: string;
     brand?: string;
     item?: string;
+    traits?: string[];
+    preferredTool?: string;
+    avoidedTool?: string;
   };
   [key: string]: unknown;
 }
@@ -107,6 +110,19 @@ function getProvenanceSummary(result: RetrievalResult): string {
     parts.push(`promoted:${provenance.promotedFrom.memoryId.slice(0, 8)}<-${promotedLabel}`);
   }
 
+  const hasObservationHistory =
+    provenance.provenanceHistoryCount > 1 ||
+    provenance.provenanceHistory.some((item) => typeof item.observedAt === "string");
+  if (hasObservationHistory) {
+    parts.push(`history:${provenance.provenanceHistoryCount}`);
+    const latestObservation = [...provenance.provenanceHistory]
+      .reverse()
+      .find((item) => typeof item.observedAt === "string");
+    if (latestObservation?.observedAt) {
+      parts.push(`observed:${latestObservation.memoryId.slice(0, 8)}@${latestObservation.observedAt.slice(0, 10)}`);
+    }
+  }
+
   const preferenceSlot = meta.preferenceSlot;
   if (
     preferenceSlot?.type === "brand-item" &&
@@ -114,6 +130,18 @@ function getProvenanceSummary(result: RetrievalResult): string {
     typeof preferenceSlot.item === "string"
   ) {
     parts.push(`slot:${preferenceSlot.type}:${preferenceSlot.brand}:${preferenceSlot.item}`);
+  } else if (
+    preferenceSlot?.type === "reply-style" &&
+    Array.isArray(preferenceSlot.traits) &&
+    preferenceSlot.traits.length > 0
+  ) {
+    parts.push(`slot:${preferenceSlot.type}:${preferenceSlot.traits.join(":")}`);
+  } else if (
+    preferenceSlot?.type === "tool-choice" &&
+    typeof preferenceSlot.preferredTool === "string" &&
+    typeof preferenceSlot.avoidedTool === "string"
+  ) {
+    parts.push(`slot:${preferenceSlot.type}:${preferenceSlot.preferredTool}:over:${preferenceSlot.avoidedTool}`);
   }
 
   return parts.join(" | ");

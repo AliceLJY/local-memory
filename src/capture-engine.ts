@@ -24,6 +24,8 @@ import {
   buildStructuredMemoryBoundary,
   extractBoundaryMetadata,
   extractCanonicalKey,
+  extractPromotedFrom,
+  extractProvenanceHistory,
   getConflictPolicyForCategory,
   isDurableMemoryScope,
   isTranscriptScope,
@@ -32,7 +34,14 @@ import {
 } from "./memory-boundaries.js";
 import { buildConflictCandidateRecord, buildConflictFingerprint, reopenConflictCandidate } from "./conflict-engine.js";
 import type { ConflictCandidateStore } from "./conflict-store.js";
-import { inferAtomicBrandItemPreferenceSlot, type AtomicBrandItemPreferenceSlot } from "./preference-slots.js";
+import {
+  inferPreferenceSlot,
+  samePreferenceSlot,
+  type AtomicBrandItemPreferenceSlot,
+  type PreferenceSlot,
+  type ReplyStylePreferenceSlot,
+  type ToolChoicePreferenceSlot,
+} from "./preference-slots.js";
 
 type StoreDeps = Pick<MemoryStore, "store"> & Partial<Pick<MemoryStore, "list" | "update" | "getById" | "get">>;
 type ConflictStoreDeps = Pick<ConflictCandidateStore, "save" | "replace" | "getOpenByFingerprint" | "getLatestByFingerprint">;
@@ -58,6 +67,7 @@ interface DurableWriteInput {
 }
 
 const CANONICAL_SCAN_LIMIT = 1000;
+const PROVENANCE_HISTORY_LIMIT = 20;
 const DURABLE_CATEGORY_SET = new Set<string>(DURABLE_MEMORY_CATEGORIES);
 
 function resolveScope(input: { scope?: string; source: string }): string {
@@ -120,7 +130,7 @@ function buildPreferenceSlotExtra(
   text: string,
 ): Record<string, unknown> | undefined {
   if (category !== "preferences") return undefined;
-  const slot = inferAtomicBrandItemPreferenceSlot(text);
+  const slot = inferPreferenceSlot(text);
   return slot ? { preferenceSlot: slot } : undefined;
 }
 
@@ -129,7 +139,7 @@ function mergeExtra(...extras: Array<Record<string, unknown> | undefined>): Reco
   return Object.keys(merged).length > 0 ? merged : undefined;
 }
 
-function extractPreferenceSlot(metadata?: string): AtomicBrandItemPreferenceSlot | null {
+function extractPreferenceSlot(metadata?: string): PreferenceSlot | null {
   const parsed = parseMetadataObject(metadata);
   const slot = parsed?.preferenceSlot;
   if (!slot || typeof slot !== "object") return null;
@@ -147,32 +157,77 @@ function extractPreferenceSlot(metadata?: string): AtomicBrandItemPreferenceSlot
     };
   }
 
+  if (
+    record.type === "reply-style" &&
+    Array.isArray(record.traits)
+  ) {
+    const traits = record.traits
+      .filter((value): value is string => typeof value === "string")
+      .map((value) => value.trim().toLowerCase())
+      .filter(Boolean);
+    if (traits.length === 0) return null;
+    return {
+      type: "reply-style",
+      traits: Array.from(new Set(traits)).sort(),
+    } satisfies ReplyStylePreferenceSlot;
+  }
+
+  if (
+    record.type === "tool-choice" &&
+    typeof record.preferredTool === "string" &&
+    typeof record.avoidedTool === "string"
+  ) {
+    const preferredTool = record.preferredTool.trim().toLowerCase();
+    const avoidedTool = record.avoidedTool.trim().toLowerCase();
+    if (!preferredTool || !avoidedTool || preferredTool === avoidedTool) return null;
+    return {
+      type: "tool-choice",
+      preferredTool,
+      avoidedTool,
+    } satisfies ToolChoicePreferenceSlot;
+  }
+
   return null;
 }
 
-function parsePreferenceSlotFromCanonicalKey(canonicalKey?: string | null): AtomicBrandItemPreferenceSlot | null {
-  if (!canonicalKey || !canonicalKey.startsWith("preferences:brand-item:")) return null;
-  const [, , brand, ...rest] = canonicalKey.split(":");
-  const item = rest.join(":");
-  if (!brand || !item) return null;
-  return {
-    type: "brand-item",
-    brand,
-    item,
-  };
-}
+function parsePreferenceSlotFromCanonicalKey(canonicalKey?: string | null): PreferenceSlot | null {
+  if (!canonicalKey || !canonicalKey.startsWith("preferences:")) return null;
 
-function samePreferenceSlot(
-  left: AtomicBrandItemPreferenceSlot | null,
-  right: AtomicBrandItemPreferenceSlot | null,
-): boolean {
-  return Boolean(
-    left &&
-    right &&
-    left.type === right.type &&
-    left.brand === right.brand &&
-    left.item === right.item,
-  );
+  if (canonicalKey.startsWith("preferences:brand-item:")) {
+    const [, , brand, ...rest] = canonicalKey.split(":");
+    const item = rest.join(":");
+    if (!brand || !item) return null;
+    return {
+      type: "brand-item",
+      brand,
+      item,
+    } satisfies AtomicBrandItemPreferenceSlot;
+  }
+
+  if (canonicalKey.startsWith("preferences:reply-style:")) {
+    const [, , ...traits] = canonicalKey.split(":");
+    const normalizedTraits = traits
+      .map((value) => value.trim().toLowerCase())
+      .filter(Boolean);
+    if (normalizedTraits.length === 0) return null;
+    return {
+      type: "reply-style",
+      traits: Array.from(new Set(normalizedTraits)).sort(),
+    } satisfies ReplyStylePreferenceSlot;
+  }
+
+  if (canonicalKey.startsWith("preferences:tool-choice:")) {
+    const [, , preferredTool, marker, ...rest] = canonicalKey.split(":");
+    const avoidedTool = rest.join(":").trim().toLowerCase();
+    if (marker !== "over" || !preferredTool || !avoidedTool) return null;
+    return {
+      type: "tool-choice",
+      preferredTool: preferredTool.trim().toLowerCase(),
+      avoidedTool,
+    } satisfies ToolChoicePreferenceSlot;
+  }
+
+  return null;
 }
 
 function shouldAutoCollapsePromotionConflict(
@@ -185,15 +240,85 @@ function shouldAutoCollapsePromotionConflict(
 
   const incomingSlot =
     extractPreferenceSlot(params.metadata) ||
-    inferAtomicBrandItemPreferenceSlot(params.text) ||
+    inferPreferenceSlot(params.text) ||
     parsePreferenceSlotFromCanonicalKey(params.canonicalKey);
 
   const existingSlot =
     extractPreferenceSlot(existing.metadata) ||
-    inferAtomicBrandItemPreferenceSlot(existing.text) ||
+    inferPreferenceSlot(existing.text) ||
     parsePreferenceSlotFromCanonicalKey(extractCanonicalKey(existing.metadata));
 
   return samePreferenceSlot(existingSlot, incomingSlot);
+}
+
+function mergePromotionObservationMetadata(
+  existingMetadata: string | undefined,
+  incomingMetadata: string,
+  observedAt: string,
+): {
+  metadata: string;
+  changed: boolean;
+} {
+  const parsed = parseMetadataObject(existingMetadata) ?? {};
+  const incomingObservation = extractPromotedFrom(incomingMetadata);
+  if (!incomingObservation) {
+    return {
+      metadata: existingMetadata || JSON.stringify(parsed),
+      changed: false,
+    };
+  }
+
+  const mergedHistory = [...extractProvenanceHistory(existingMetadata)];
+  const existingIndex = mergedHistory.findIndex((item) => item.memoryId === incomingObservation.memoryId);
+
+  if (existingIndex >= 0) {
+    const current = mergedHistory[existingIndex];
+    mergedHistory[existingIndex] = {
+      ...incomingObservation,
+      ...current,
+      observedAt: current?.observedAt || observedAt,
+    };
+  } else {
+    mergedHistory.push({
+      ...incomingObservation,
+      observedAt,
+    });
+  }
+
+  const nextMetadata = JSON.stringify({
+    ...parsed,
+    provenanceHistory: mergedHistory.slice(-PROVENANCE_HISTORY_LIMIT),
+    provenanceHistoryCount: mergedHistory.length,
+  });
+
+  return {
+    metadata: nextMetadata,
+    changed: nextMetadata !== (existingMetadata || "{}"),
+  };
+}
+
+async function appendPromotionObservationToExistingEntry(
+  store: StoreDeps,
+  existing: MemoryEntry,
+  incomingMetadata: string,
+): Promise<MemoryEntry> {
+  if (!store.update) return existing;
+
+  const timestamp = Date.now();
+  const observedAt = new Date(timestamp).toISOString();
+  const merged = mergePromotionObservationMetadata(existing.metadata, incomingMetadata, observedAt);
+  if (!merged.changed) {
+    return existing;
+  }
+
+  const updated = await store.update(existing.id, {
+    metadata: merged.metadata,
+    timestamp,
+  });
+  if (!updated) {
+    throw new Error(`Failed to append promotion provenance to durable memory ${existing.id}`);
+  }
+  return updated;
 }
 
 function buildWorkflowPatternText(input: WorkflowPatternInput): string {
@@ -327,8 +452,11 @@ async function writeDurableEntry(
   }
 
   if (exact) {
+    const entry = params.promotedFrom
+      ? await appendPromotionObservationToExistingEntry(deps.store, exact, params.metadata)
+      : exact;
     return {
-      entry: exact,
+      entry,
       disposition: params.promotedFrom ? "promoted" : "deduped",
     };
   }
@@ -336,53 +464,56 @@ async function writeDurableEntry(
   const conflictPolicy = getConflictPolicyForCategory(params.category);
   if (conflictPolicy === "latest-wins" && categoryMatches.length > 0 && deps.store.update) {
     const latest = [...categoryMatches].sort((a, b) => b.timestamp - a.timestamp)[0];
-    if (params.promotedFrom && deps.conflictStore) {
+    if (params.promotedFrom) {
       if (shouldAutoCollapsePromotionConflict(params, latest)) {
+        const entry = await appendPromotionObservationToExistingEntry(deps.store, latest, params.metadata);
         return {
-          entry: latest,
+          entry,
           disposition: "promoted",
         };
       }
 
-      const fingerprint = buildConflictFingerprint({
-        canonicalKey: params.canonicalKey,
-        existingMemoryId: latest.id,
-        incomingText: params.text,
-        sourceMemoryId: params.promotedFrom,
-      });
-      const conflict = await ensureConflictCandidate(deps.conflictStore, {
-        canonicalKey: params.canonicalKey,
-        category: params.category,
-        fingerprint,
-        reason: "promotion_conflicts_with_existing_durable",
-        existing: {
-          memoryId: latest.id,
-          text: latest.text,
-          category: latest.category,
-          scope: latest.scope,
-          importance: latest.importance,
-          metadata: latest.metadata || "{}",
-          boundary: extractBoundaryMetadata(latest.metadata),
-          canonicalKey: extractCanonicalKey(latest.metadata) || params.canonicalKey,
-        },
-        incoming: {
-          text: params.text,
-          category: params.category,
-          scope: params.scope,
-          importance: params.importance,
-          metadata: params.metadata,
-          source: params.source,
+      if (deps.conflictStore) {
+        const fingerprint = buildConflictFingerprint({
+          canonicalKey: params.canonicalKey,
+          existingMemoryId: latest.id,
+          incomingText: params.text,
           sourceMemoryId: params.promotedFrom,
-          sourceCategory: params.sourceCategory,
-          sourceBoundary: params.sourceBoundary,
-        },
-      });
+        });
+        const conflict = await ensureConflictCandidate(deps.conflictStore, {
+          canonicalKey: params.canonicalKey,
+          category: params.category,
+          fingerprint,
+          reason: "promotion_conflicts_with_existing_durable",
+          existing: {
+            memoryId: latest.id,
+            text: latest.text,
+            category: latest.category,
+            scope: latest.scope,
+            importance: latest.importance,
+            metadata: latest.metadata || "{}",
+            boundary: extractBoundaryMetadata(latest.metadata),
+            canonicalKey: extractCanonicalKey(latest.metadata) || params.canonicalKey,
+          },
+          incoming: {
+            text: params.text,
+            category: params.category,
+            scope: params.scope,
+            importance: params.importance,
+            metadata: params.metadata,
+            source: params.source,
+            sourceMemoryId: params.promotedFrom,
+            sourceCategory: params.sourceCategory,
+            sourceBoundary: params.sourceBoundary,
+          },
+        });
 
-      return {
-        entry: latest,
-        disposition: "conflict",
-        conflictId: conflict.conflictId,
-      };
+        return {
+          entry: latest,
+          disposition: "conflict",
+          conflictId: conflict.conflictId,
+        };
+      }
     }
 
     const updated = await deps.store.update(latest.id, {

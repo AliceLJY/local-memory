@@ -3,10 +3,13 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 
-import type { ResumeContextResponse } from "./session-schema.js";
+import { buildSessionCheckpointRecord } from "./session-engine.js";
+import type { ResumeContextResponse, SessionCheckpointRecord } from "./session-schema.js";
 import { composeResumeContext } from "./context-composer.js";
 import { createComponentResolver, loadConfig, loadDotEnv } from "./runtime-config.js";
-import { SessionCheckpointStore } from "./session-store.js";
+import { buildWorkflowObservationRecord } from "./workflow-observation-engine.js";
+import type { WorkflowObservationInput } from "./workflow-observation-schema.js";
+import { WorkflowObservationStore } from "./workflow-observation-store.js";
 
 export type ProfileName = "default" | "writing" | "debug" | "fact-check";
 export type EvalMode = "retrieval" | "continuity";
@@ -32,6 +35,18 @@ export interface ContinuityEvalCase {
   sessionId?: string;
   limitPerSection?: number;
   includeLatestCheckpoint?: boolean;
+  checkpoint?: {
+    sessionId?: string;
+    scope?: string;
+    summary: string;
+    task?: string;
+    decisions?: string[];
+    openLoops?: string[];
+    nextActions?: string[];
+    entities?: string[];
+    files?: string[];
+    updatedAt?: string;
+  };
   expectStableAny?: string[];
   expectStableAll?: string[];
   expectPatternsAny?: string[];
@@ -89,12 +104,32 @@ interface EvalArgs {
   casesPath?: string;
   outputPath?: string;
   jsonMode: boolean;
+  recordObservations: boolean;
+  observationScope?: string;
+  observationSource?: string;
+}
+
+interface EvalCheckpointLookup {
+  getLatest(query?: { sessionId?: string; scope?: string }): Promise<SessionCheckpointRecord | null>;
+}
+
+export function buildContinuityEvalRequest(evalCase: ContinuityEvalCase) {
+  return {
+    task: evalCase.task,
+    scope: evalCase.scope,
+    sessionId: evalCase.sessionId,
+    profile: evalCase.profile,
+    limitPerSection: evalCase.limitPerSection,
+    includeLatestCheckpoint: evalCase.includeLatestCheckpoint,
+  };
 }
 
 function parseArgs(args: string[]): EvalArgs {
   const outputIdx = args.indexOf("--output");
   const casesIdx = args.indexOf("--cases");
   const modeIdx = args.indexOf("--mode");
+  const observationScopeIdx = args.indexOf("--observation-scope");
+  const observationSourceIdx = args.indexOf("--observation-source");
   const modeRaw = modeIdx >= 0 ? args[modeIdx + 1] : "retrieval";
   const mode = modeRaw === "continuity" ? "continuity" : "retrieval";
 
@@ -103,6 +138,9 @@ function parseArgs(args: string[]): EvalArgs {
     casesPath: casesIdx >= 0 ? args[casesIdx + 1] : undefined,
     outputPath: outputIdx >= 0 ? resolve(args[outputIdx + 1]) : undefined,
     jsonMode: args.includes("--json"),
+    recordObservations: args.includes("--record-observations"),
+    observationScope: observationScopeIdx >= 0 ? args[observationScopeIdx + 1] : undefined,
+    observationSource: observationSourceIdx >= 0 ? args[observationSourceIdx + 1] : undefined,
   };
 }
 
@@ -250,10 +288,105 @@ function formatPercent(value: number): string {
   return `${(value * 100).toFixed(1)}%`;
 }
 
+function missingExpectationLabels(evalCase: ContinuityEvalCase, report: ContinuityCaseReport): string[] {
+  const missing: string[] = [];
+  if ((evalCase.expectStableAny || []).length > report.matchedStableAny.length) missing.push("stable");
+  if ((evalCase.expectStableAll || []).length > report.matchedStableAll.length) missing.push("stable-all");
+  if ((evalCase.expectPatternsAny || []).length > report.matchedPatternsAny.length) missing.push("patterns");
+  if ((evalCase.expectCasesAny || []).length > report.matchedCasesAny.length) missing.push("cases");
+  if ((evalCase.expectCheckpointAny || []).length > report.matchedCheckpointAny.length) missing.push("checkpoint");
+  return missing;
+}
+
+export function buildContinuityEvalObservationInput(
+  evalCase: ContinuityEvalCase,
+  report: ContinuityCaseReport,
+  options: { scope?: string; source?: string } = {},
+): WorkflowObservationInput {
+  const missingLabels = missingExpectationLabels(evalCase, report);
+  const signal = report.passed
+    ? "eval-pass"
+    : report.forbiddenMatches.length > 0
+      ? "forbidden-match"
+      : missingLabels[0]
+        ? `missing-${missingLabels[0]}`
+        : "low-continuity-score";
+
+  const summary = report.passed
+    ? `Continuity eval case ${evalCase.name} passed at ${formatPercent(report.score)}.`
+    : `Continuity eval case ${evalCase.name} failed at ${formatPercent(report.score)}${missingLabels.length > 0 ? ` (${missingLabels.join(", ")})` : ""}.`;
+
+  return {
+    workflowId: "resume_context",
+    outcome: report.passed ? "success" : "failure",
+    summary,
+    scope: options.scope || evalCase.scope || "eval:continuity",
+    source: options.source || "eval",
+    signal,
+    task: `continuity eval: ${evalCase.name}`,
+    tags: [
+      "continuity-eval",
+      evalCase.profile || "default",
+      report.passed ? "pass" : "fail",
+    ],
+    tools: ["resume_context"],
+  };
+}
+
 function summarizeReports(reports: EvalReport[]): { passed: number; average: number } {
   const passed = reports.filter((item) => item.passed).length;
   const average = reports.reduce((sum, item) => sum + item.score, 0) / Math.max(reports.length, 1);
   return { passed, average };
+}
+
+function sortNewestFirst(records: SessionCheckpointRecord[]): SessionCheckpointRecord[] {
+  return [...records].sort((a, b) => {
+    const timeDiff = Date.parse(b.updatedAt) - Date.parse(a.updatedAt);
+    if (timeDiff !== 0) return timeDiff;
+    return b.checkpointId.localeCompare(a.checkpointId);
+  });
+}
+
+function buildEvalCheckpointRecord(
+  evalCase: ContinuityEvalCase,
+  index: number,
+): SessionCheckpointRecord | null {
+  if (!evalCase.checkpoint) return null;
+
+  const fallbackSessionId = evalCase.sessionId || `eval-${evalCase.name}-${index + 1}`;
+  const record = buildSessionCheckpointRecord({
+    sessionId: evalCase.checkpoint.sessionId || fallbackSessionId,
+    scope: evalCase.checkpoint.scope || evalCase.scope,
+    summary: evalCase.checkpoint.summary,
+    task: evalCase.checkpoint.task,
+    decisions: evalCase.checkpoint.decisions || [],
+    openLoops: evalCase.checkpoint.openLoops || [],
+    nextActions: evalCase.checkpoint.nextActions || [],
+    entities: evalCase.checkpoint.entities || [],
+    files: evalCase.checkpoint.files || [],
+    updatedAt: evalCase.checkpoint.updatedAt || "2026-03-16T00:00:00.000Z",
+  });
+  return record;
+}
+
+export function createContinuityEvalCheckpointStore(
+  cases: ContinuityEvalCase[],
+): EvalCheckpointLookup {
+  const records = cases
+    .map((evalCase, index) => buildEvalCheckpointRecord(evalCase, index))
+    .filter((record): record is SessionCheckpointRecord => Boolean(record));
+
+  return {
+    async getLatest(query = {}) {
+      const filtered = records.filter((record) => {
+        if (query.sessionId && record.sessionId !== query.sessionId) return false;
+        if (query.scope && record.resolvedScope !== query.scope) return false;
+        return true;
+      });
+      const [latest] = sortNewestFirst(filtered);
+      return latest || null;
+    },
+  };
 }
 
 function markdownRetrievalReport(reports: RetrievalCaseReport[]): string {
@@ -366,10 +499,12 @@ async function runRetrievalEval(
 
 async function runContinuityEval(
   cases: ContinuityEvalCase[],
+  options: { recordObservations?: boolean; observationScope?: string; observationSource?: string } = {},
 ): Promise<ContinuityCaseReport[]> {
   const config = loadConfig();
   const getComponents = createComponentResolver(config);
-  const checkpointStore = new SessionCheckpointStore();
+  const checkpointStore = createContinuityEvalCheckpointStore(cases);
+  const observationStore = options.recordObservations ? new WorkflowObservationStore() : null;
   const reports: ContinuityCaseReport[] = [];
 
   for (const evalCase of cases) {
@@ -378,14 +513,17 @@ async function runContinuityEval(
     const response = await composeResumeContext({
       retriever,
       checkpointStore,
-    }, {
-      task: evalCase.task,
-      scope: evalCase.scope,
-      sessionId: evalCase.sessionId,
-      limitPerSection: evalCase.limitPerSection,
-      includeLatestCheckpoint: evalCase.includeLatestCheckpoint,
-    });
-    reports.push(scoreContinuityCase(evalCase, response));
+    }, buildContinuityEvalRequest(evalCase));
+    const report = scoreContinuityCase(evalCase, response);
+    reports.push(report);
+    if (observationStore) {
+      await observationStore.save(buildWorkflowObservationRecord(
+        buildContinuityEvalObservationInput(evalCase, report, {
+          scope: options.observationScope,
+          source: options.observationSource,
+        }),
+      ));
+    }
   }
 
   return reports;
@@ -403,7 +541,11 @@ async function main() {
 
   if (args.mode === "continuity") {
     const cases = loadCases<ContinuityEvalCase>("continuity", args.casesPath);
-    const reports = await runContinuityEval(cases);
+    const reports = await runContinuityEval(cases, {
+      recordObservations: args.recordObservations,
+      observationScope: args.observationScope,
+      observationSource: args.observationSource,
+    });
     if (args.jsonMode) {
       const payload = JSON.stringify({
         mode: "continuity",

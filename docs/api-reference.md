@@ -6,6 +6,8 @@ Base URL: `http://localhost:4318`
 
 All endpoints accept and return JSON. Set `Content-Type: application/json` for POST requests.
 
+Workflow observation endpoints use a dedicated append-only store under `data/workflow-observations`. They do not write into the regular memory index or durable memory categories.
+
 ---
 
 ## Health Check
@@ -137,7 +139,11 @@ Store a new durable memory entry.
 
 If the same `canonicalKey` is already occupied by a different durable category, RecallNest returns `disposition = "conflict"` plus a `conflictId` instead of silently creating a second durable owner.
 
-For atomic brand-item preferences such as `我喜欢吃麦当劳的麦辣鸡翅`, RecallNest now derives a slot-aware key like `preferences:brand-item:麦当劳:麦辣鸡翅` instead of collapsing everything into a broader same-topic key.
+For slot-aware preferences, RecallNest now derives structured keys instead of collapsing everything into a broader same-topic key. Examples:
+
+- atomic brand-item preference: `我喜欢吃麦当劳的麦辣鸡翅` -> `preferences:brand-item:麦当劳:麦辣鸡翅`
+- reply-style preference: `User prefers concise, direct replies.` -> `preferences:reply-style:concise:direct`
+- tool-choice preference: `Uses Bun over Node.` -> `preferences:tool-choice:bun:over:node`
 
 ---
 
@@ -371,9 +377,9 @@ Promote an evidence memory into durable memory.
 
 When a promotion would overwrite an existing durable memory with the same `canonicalKey`, RecallNest now creates an open conflict candidate instead of silently applying `latest-wins`.
 
-The same slot-aware key inference also applies during promotion when `category = "preferences"` and the text is an atomic brand-item preference.
+The same slot-aware key inference also applies during promotion when `category = "preferences"` and the text resolves to a supported preference slot such as an atomic brand-item preference, a reply-style preference, or a tool-choice preference.
 
-If the promotion resolves to the same atomic preference slot as the existing durable owner, RecallNest now collapses it onto that owner instead of opening a conflict. This currently applies to slot-aware brand-item preference keys such as `preferences:brand-item:麦当劳:麦辣鸡翅`.
+If the promotion resolves to the same preference slot as the existing durable owner, RecallNest now collapses it onto that owner instead of opening a conflict. This currently applies to slot-aware brand-item keys such as `preferences:brand-item:麦当劳:麦辣鸡翅`, reply-style keys such as `preferences:reply-style:concise:direct`, and tool-choice keys such as `preferences:tool-choice:bun:over:node`.
 
 ```json
 {
@@ -722,6 +728,9 @@ Store a session checkpoint outside the durable memory index.
 | `files` | string[] | no | `[]` | Relevant files or paths |
 | `updatedAt` | string | no | `now()` | Optional ISO timestamp override |
 
+RecallNest sanitizes repo-state text such as `git status`, modified-file lists, and untracked-file notes out of saved checkpoint content. Verify volatile repo state locally in the next window instead of relying on checkpoint text.
+Managed MCP / HTTP checkpoint calls now also append a dedicated workflow observation automatically: normal saves record `success`, while repo-state sanitization records `corrected` with signal `repo-state-sanitized`.
+
 **Response:**
 
 ```json
@@ -749,6 +758,8 @@ POST /v1/resume
 Compose startup context for a fresh window by combining stable durable memory, relevant patterns and cases, plus the latest checkpoint for a session or scope.
 
 > 为新窗口编排上下文：返回的是组合后的连续性上下文，不是原始检索结果堆积。
+
+Managed MCP / HTTP resume calls now also append a dedicated `resume_context` workflow observation with source `managed`; this stays in the workflow observation store and does not enter durable recall.
 
 **Request:**
 
@@ -841,6 +852,182 @@ If nothing matches:
 
 ---
 
+## Workflow Observe
+
+```
+POST /v1/workflow-observe
+```
+
+Store one append-only workflow observation outside durable memory.
+
+> 记录 workflow observation：适合追踪 `resume_context`、`checkpoint_session` 等 primitive 是成功、失败、被纠正，还是被漏掉。
+
+**Request:**
+
+```json
+{
+  "workflowId": "resume_context",
+  "outcome": "missed",
+  "summary": "Fresh window skipped continuity recovery before repo exploration.",
+  "scope": "project:recallnest",
+  "source": "smoke",
+  "signal": "missed-startup-trigger",
+  "task": "headless continuity smoke",
+  "tags": ["continuity"],
+  "tools": ["resume_context"]
+}
+```
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `workflowId` | string | yes | — | Workflow primitive id such as `resume_context` |
+| `outcome` | string | no | `"success"` | One of: `success`, `failure`, `corrected`, `missed` |
+| `summary` | string | yes | — | Short description of what happened |
+| `scope` | string | no | `"global"` | Optional scope such as `project:recallnest` |
+| `source` | string | no | `"manual"` | Source label such as `agent`, `managed`, `smoke`, `eval`, `manual` |
+| `signal` | string | no | — | Optional failure/correction signal tag |
+| `task` | string | no | — | Optional related task |
+| `tags` | string[] | no | `[]` | Optional tags |
+| `tools` | string[] | no | `[]` | Optional tools involved |
+| `recordedAt` | string | no | `now()` | Optional ISO timestamp override |
+
+**Response:**
+
+```json
+{
+  "observationId": "resume_context-missed-2026-03-17T03-00-00-000Z",
+  "workflowId": "resume_context",
+  "outcome": "missed",
+  "summary": "Fresh window skipped continuity recovery before repo exploration.",
+  "scope": "project:recallnest",
+  "resolvedScope": "project:recallnest",
+  "source": "smoke",
+  "signal": "missed-startup-trigger",
+  "task": "headless continuity smoke",
+  "tags": ["continuity"],
+  "tools": ["resume_context"],
+  "recordedAt": "2026-03-17T03:00:00.000Z"
+}
+```
+
+---
+
+## Workflow Health
+
+```
+GET /v1/workflow-health
+GET /v1/workflow-health?workflowId=resume_context&scope=project:recallnest
+```
+
+Inspect one workflow primitive or return a dashboard of degraded workflows.
+
+> 查看 workflow 健康度：支持单个 workflow 的 7 天 / 30 天汇总，也支持全局 dashboard。
+
+Query params:
+
+| Param | Required | Description |
+|-------|----------|-------------|
+| `workflowId` | no | Optional workflow primitive id |
+| `scope` | no | Optional scope filter |
+| `limit` | no | Dashboard max rows, default `10` |
+
+**Workflow response:**
+
+```json
+{
+  "workflowId": "resume_context",
+  "scope": "project:recallnest",
+  "status": "watch",
+  "summary": "3 observations in the last 30d, success rate 33.3%, 2 issue observations.",
+  "latestObservationAt": "2026-03-17T03:00:00.000Z",
+  "windows": [
+    {
+      "days": 7,
+      "total": 2,
+      "successes": 1,
+      "failures": 0,
+      "corrected": 1,
+      "missed": 0,
+      "issueCount": 1,
+      "successRate": 0.5,
+      "issueRate": 0.5,
+      "latestAt": "2026-03-17T03:00:00.000Z",
+      "topSignals": [
+        { "signal": "user-correction", "count": 1 }
+      ]
+    }
+  ]
+}
+```
+
+**Dashboard response:**
+
+```json
+{
+  "dashboard": [
+    {
+      "workflowId": "checkpoint_session",
+      "scope": "project:recallnest",
+      "status": "critical",
+      "total": 1,
+      "issueCount": 1,
+      "successRate": 0,
+      "latestObservationAt": "2026-03-17T04:00:00.000Z",
+      "summary": "1 observations in the last 30d, success rate 0.0%, 1 issue observations."
+    }
+  ]
+}
+```
+
+---
+
+## Workflow Evidence
+
+```
+GET /v1/workflow-evidence?workflowId=checkpoint_session&scope=project:recallnest&limit=5
+```
+
+Build an evidence pack for one workflow primitive from recent issue observations.
+
+> 生成 workflow evidence pack：把最近问题 observation、top signals 和修复建议打包出来，方便做规则、prompt、测试收口。
+
+Query params:
+
+| Param | Required | Description |
+|-------|----------|-------------|
+| `workflowId` | yes | Workflow primitive id |
+| `scope` | no | Optional scope filter |
+| `limit` | no | Max recent issue observations, default `5` |
+
+**Response:**
+
+```json
+{
+  "workflowId": "checkpoint_session",
+  "scope": "project:recallnest",
+  "generatedAt": "2026-03-17T10:10:00.000Z",
+  "summary": "1 issue observations in the last 30d for checkpoint_session.",
+  "topSignals": [
+    { "signal": "repo-state-contamination", "count": 1 }
+  ],
+  "recentIssues": [
+    {
+      "observationId": "checkpoint_session-failure-2026-03-17T04-00-00-000Z",
+      "outcome": "failure",
+      "summary": "Checkpoint still carried repo-state text before the product-side guard landed.",
+      "signal": "repo-state-contamination",
+      "recordedAt": "2026-03-17T04:00:00.000Z",
+      "task": "headless continuity smoke"
+    }
+  ],
+  "suggestions": [
+    "Keep volatile repo-state text out of saved checkpoints and handoff summaries unless this window verified it."
+  ]
+}
+```
+
+---
+
 ## Search (Advanced)
 
 ```
@@ -910,6 +1097,8 @@ Derived provenance fields:
 | `boundary` | object \| null | Parsed boundary metadata: `layer`, `authority`, `conflictPolicy`, and optional `originalCategory` / `downgradedFrom` |
 | `canonicalKey` | string \| null | Stable dedupe/update key if the memory has one |
 | `promotedFrom` | object \| null | Present when a durable memory was explicitly promoted from evidence; includes source `memoryId`, `scope`, `category`, `source`, and source `boundary` |
+| `provenanceHistory` | array | Observed evidence trail for the durable memory. Falls back to `[promotedFrom]` when no explicit history has been materialized yet |
+| `provenanceHistoryCount` | number | Total provenance-history observations tracked for the durable memory |
 
 ---
 

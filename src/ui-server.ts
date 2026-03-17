@@ -138,6 +138,8 @@ function serializeResults(results: RetrievalResult[]) {
       boundary: provenance.boundary,
       canonicalKey: provenance.canonicalKey,
       promotedFrom: provenance.promotedFrom,
+      provenanceHistory: provenance.provenanceHistory,
+      provenanceHistoryCount: provenance.provenanceHistoryCount,
     };
   });
 }

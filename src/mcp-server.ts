@@ -18,7 +18,7 @@ import { indexAsset, indexPinnedAsset } from "./asset-sync.js";
 import { createComponentResolver, loadConfig, loadDotEnv } from "./runtime-config.js";
 import { DurableMemoryCategorySchema, StoreMemorySourceSchema } from "./memory-schema.js";
 import { persistCaseMemory, persistMemory, persistWorkflowPattern, promoteMemory } from "./capture-engine.js";
-import { buildSessionCheckpointRecord } from "./session-engine.js";
+import { buildSessionCheckpointResult } from "./session-engine.js";
 import { SessionCheckpointStore } from "./session-store.js";
 import { composeResumeContext } from "./context-composer.js";
 import { formatCheckpointSaved, formatCheckpointSummary, formatResumeContext } from "./session-output.js";
@@ -29,6 +29,11 @@ import { ConflictCandidateStore } from "./conflict-store.js";
 import { formatConflictAudit, formatConflictClusters, formatConflictEscalation, formatConflictList, formatConflictRecord, formatConflictResolution } from "./conflict-output.js";
 import { CONFLICT_ATTENTION_LEVELS, summarizeConflictLifecycle } from "./conflict-lifecycle.js";
 import { buildConflictAuditSummary, clusterConflicts } from "./conflict-advisor.js";
+import { WorkflowObservationOutcomeSchema } from "./workflow-observation-schema.js";
+import { buildWorkflowEvidence, buildWorkflowObservationRecord, inspectWorkflowDashboard, inspectWorkflowHealth } from "./workflow-observation-engine.js";
+import { formatWorkflowEvidencePack, formatWorkflowHealthDashboard, formatWorkflowHealthReport, formatWorkflowObservationSaved } from "./workflow-observation-output.js";
+import { WorkflowObservationStore } from "./workflow-observation-store.js";
+import { buildManagedCheckpointObservation, buildManagedResumeObservation } from "./workflow-observation-managed.js";
 
 function entryToRetrievalResult(entry: Awaited<ReturnType<MemoryStore["get"]>>): RetrievalResult {
   if (!entry) {
@@ -43,6 +48,15 @@ function entryToRetrievalResult(entry: Awaited<ReturnType<MemoryStore["get"]>>):
   };
 }
 
+async function saveManagedObservation(observation: Parameters<typeof buildWorkflowObservationRecord>[0]): Promise<void> {
+  try {
+    const record = buildWorkflowObservationRecord(observation);
+    await workflowObservationStore.save(record);
+  } catch (error) {
+    console.error("[RecallNest MCP] Failed to persist managed workflow observation:", error);
+  }
+}
+
 // ============================================================================
 // MCP Server
 // ============================================================================
@@ -53,11 +67,92 @@ const getComponents = createComponentResolver(config);
 const { store } = getComponents();
 const checkpointStore = new SessionCheckpointStore();
 const conflictStore = new ConflictCandidateStore();
+const workflowObservationStore = new WorkflowObservationStore();
 
 const server = new McpServer({
   name: "recallnest",
   version: "1.3.0",
 });
+
+server.tool(
+  "workflow_observe",
+  "Store an append-only workflow observation for self-evolution. Use this to record whether a continuity primitive or reusable workflow succeeded, failed, was corrected by the user, or was missed entirely.",
+  {
+    workflowId: z.string().min(1).max(120).describe("Workflow primitive id, such as resume_context or checkpoint_session"),
+    outcome: WorkflowObservationOutcomeSchema.default("success").describe("success | failure | corrected | missed"),
+    summary: z.string().min(1).max(400).describe("Short description of what happened"),
+    scope: z.string().min(1).max(160).optional().describe("Optional scope such as project:recallnest"),
+    source: z.string().min(1).max(40).default("agent").describe("Source label such as agent, smoke, eval, or manual"),
+    signal: z.string().min(1).max(120).optional().describe("Optional failure/correction signal tag"),
+    task: z.string().min(1).max(240).optional().describe("Optional related task"),
+    tags: z.array(z.string().min(1).max(40)).max(8).default([]).describe("Optional tags"),
+    tools: z.array(z.string().min(1).max(60)).max(6).default([]).describe("Optional tools involved"),
+  },
+  async ({ workflowId, outcome, summary, scope, source, signal, task, tags, tools }) => {
+    const record = buildWorkflowObservationRecord({
+      workflowId,
+      outcome,
+      summary,
+      scope,
+      source,
+      signal,
+      task,
+      tags,
+      tools,
+    });
+    const stored = await workflowObservationStore.save(record);
+    return {
+      content: [{
+        type: "text" as const,
+        text: formatWorkflowObservationSaved(stored),
+      }],
+    };
+  },
+);
+
+server.tool(
+  "workflow_health",
+  "Inspect workflow observation health. With workflowId, return a 7d/30d health report; without workflowId, return a dashboard of the most degraded workflows.",
+  {
+    workflowId: z.string().min(1).max(120).optional().describe("Optional workflow primitive id"),
+    scope: z.string().min(1).max(160).optional().describe("Optional scope filter"),
+    limit: z.number().int().min(1).max(30).default(10).describe("Dashboard result limit when workflowId is omitted"),
+  },
+  async ({ workflowId, scope, limit }) => {
+    const text = workflowId
+      ? formatWorkflowHealthReport(await inspectWorkflowHealth(workflowObservationStore, { workflowId, scope }))
+      : formatWorkflowHealthDashboard(await inspectWorkflowDashboard(workflowObservationStore, { scope, limit }), scope);
+    return {
+      content: [{
+        type: "text" as const,
+        text,
+      }],
+    };
+  },
+);
+
+server.tool(
+  "workflow_evidence",
+  "Generate an evidence pack for a workflow primitive, including recent issue observations, top signals, and suggested next actions.",
+  {
+    workflowId: z.string().min(1).max(120).describe("Workflow primitive id"),
+    scope: z.string().min(1).max(160).optional().describe("Optional scope filter"),
+    limit: z.number().int().min(1).max(20).default(5).describe("Max recent issue observations to include"),
+  },
+  async ({ workflowId, scope, limit }) => {
+    const pack = await buildWorkflowEvidence(workflowObservationStore, {
+      workflowId,
+      scope,
+      limit,
+    });
+    return {
+      content: [{
+        type: "text" as const,
+        text: formatWorkflowEvidencePack(pack),
+      }],
+    };
+  },
+);
 
 server.tool(
   "store_memory",
@@ -390,7 +485,7 @@ server.tool(
     updatedAt: z.string().datetime().optional().describe("Optional override; defaults to now"),
   },
   async ({ sessionId, scope, summary, task, decisions, openLoops, nextActions, entities, files, updatedAt }) => {
-    const record = buildSessionCheckpointRecord({
+    const result = buildSessionCheckpointResult({
       sessionId,
       scope,
       summary,
@@ -402,7 +497,11 @@ server.tool(
       files,
       ...(updatedAt ? { updatedAt } : {}),
     });
-    const storedRecord = await checkpointStore.save(record);
+    const storedRecord = await checkpointStore.save(result.record);
+    await saveManagedObservation(buildManagedCheckpointObservation({
+      ...result,
+      record: storedRecord,
+    }));
     return {
       content: [{
         type: "text" as const,
@@ -454,6 +553,11 @@ server.tool(
       includeLatestCheckpoint,
       profile: profile.name,
     });
+    await saveManagedObservation(buildManagedResumeObservation({
+      task,
+      scope,
+      sessionId,
+    }, context));
 
     return {
       content: [{

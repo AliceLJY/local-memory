@@ -11,6 +11,7 @@ Category is not the same thing as authority.
 - Structured writes can author durable memory.
 - Raw transcript ingest is treated as evidence-first input.
 - Stable transcript claims should not override curated or structured memory.
+- Workflow observations are not a seventh memory category; they live in a separate observation store and never become durable recall by default.
 
 See [memory-boundary-contract.md](./memory-boundary-contract.md) for the layer and authority rules.
 
@@ -56,7 +57,7 @@ Not all memories age the same way:
 
 Merge-type categories (profile, preferences, entities, patterns) benefit from periodic consolidation — combining 5 similar entries into 1 refined one.
 
-For `preferences`, merge should be slot-aware, not topic-wide. Rewordings of the same preference can collapse, but concrete item/object preferences under the same brand or theme should stay as separate facts.
+For `preferences`, merge should be slot-aware, not topic-wide. Rewordings of the same preference can collapse, but concrete item/object preferences under the same brand or theme should stay as separate facts, and higher-value slots such as reply style or tool choice should keep their own stable owners.
 
 Append-type categories (events, cases) keep distinct entries but remove exact duplicates.
 

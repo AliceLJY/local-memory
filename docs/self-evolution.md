@@ -1,6 +1,6 @@
-# Self-Evolution: How RecallNest Memories Grow and Prune Themselves
+# Self-Evolution: How RecallNest Memories and Workflows Evolve
 
-> 自我进化原理：RecallNest 的记忆不只是存进去就不管了，它会自己整合、衰减、上浮、检测缺口。
+> 自我进化原理：RecallNest 不只让记忆自己整合、衰减、上浮，也开始观察 workflow 什么时候做对、什么时候做错。
 
 ## Overview
 
@@ -17,6 +17,31 @@ memory  auto-     curve     or lose    similar       Working ↔
         assigned  over      it"        entries       Peripheral
                   time
 ```
+
+---
+
+## Workflow Observation Loop
+
+RecallNest now separates self-evolution signals from regular memory.
+
+Instead of turning every workflow failure into another `events` row, RecallNest records workflow observations in a dedicated append-only store:
+
+```
+Observe → Inspect → Health → Evidence → Fix / Test
+   │         │         │         │          │
+   ▼         ▼         ▼         ▼          ▼
+ record   aggregate  degrade   package   repair the
+ success/ 7d / 30d   or stay   top       workflow,
+ failure   health    healthy   signals   then observe again
+```
+
+- **`workflow_observe`** records whether `resume_context`, `checkpoint_session`, or another workflow primitive succeeded, failed, was corrected, or was missed
+- **`workflow_health`** aggregates recent observations into a health report or degraded-workflow dashboard
+- **`workflow_evidence`** packages recent issue observations and suggestions so tests, rules, and prompts can be tightened
+- these records live outside the 6 memory categories and are not composed into `resume_context`
+- managed MCP / HTTP continuity calls now append `resume_context` / `checkpoint_session` observations automatically, and checkpoint repo-state sanitization is recorded as `corrected`
+
+That boundary is deliberate: self-evolution needs operational telemetry, not more noisy durable memory.
 
 ---
 
@@ -104,7 +129,7 @@ Over time, you accumulate many memories about the same topic. Consolidation merg
 4. For **append** categories: remove exact duplicates, keep distinct entries
 5. Update access counts (merged entry inherits the sum)
 
-`preferences` needs one extra guard: do not collapse same-brand, different-item preferences into one topic-level memory. A summary can exist, but it should not replace the atomic preference facts.
+`preferences` needs one extra guard: do not collapse same-brand, different-item preferences into one topic-level memory. A summary can exist, but it should not replace the atomic preference facts. The same idea now also applies to slot-aware reply-style and tool-choice preferences.
 
 ### Safety
 

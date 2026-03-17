@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { buildSessionCheckpointRecord, resolveCheckpointScope } from "../session-engine.js";
+import { buildSessionCheckpointRecord, buildSessionCheckpointResult, resolveCheckpointScope } from "../session-engine.js";
 import { formatCheckpointSaved, formatCheckpointSummary, formatResumeContext } from "../session-output.js";
 import { SessionCheckpointStore } from "../session-store.js";
 
@@ -80,5 +80,39 @@ describe("session checkpoint output", () => {
     expect(output).toContain("Response mode: recall-only");
     expect(output).toContain("Guidance: Recall-only mode");
     expect(output).toContain("Stable context:");
+  });
+
+  it("sanitizes repo-state text out of checkpoint content", () => {
+    const result = buildSessionCheckpointResult({
+      sessionId: "session-repo-state",
+      summary: "Only resumed context in this window. git status shows many modified files.",
+      task: "Handle git status follow-up",
+      decisions: ["Keep repo-state out of checkpoints."],
+      openLoops: ["git status shows many uncommitted changes that still need review"],
+      nextActions: ["Process modified files after checking git status locally"],
+    });
+    const { record } = result;
+
+    expect(record.summary).toBe("Checkpoint captured current task state without repo-state details.");
+    expect(record.task).toBeUndefined();
+    expect(record.decisions).toEqual(["Keep repo-state out of checkpoints."]);
+    expect(record.openLoops).toEqual(["Current repo state still needs local verification if it matters for the next task."]);
+    expect(record.nextActions).toEqual(["Verify current repo state locally if it matters for the next task."]);
+    expect(result.sanitization.changed).toBe(true);
+    expect(result.sanitization.changedFields).toEqual(["summary", "task", "openLoops", "nextActions"]);
+  });
+
+  it("does not mark sanitization when checkpoint content is already clean", () => {
+    const result = buildSessionCheckpointResult({
+      sessionId: "session-clean",
+      summary: "Continue wiring workflow observations into managed continuity.",
+      task: "Hook managed continuity observations",
+      decisions: ["Keep observations out of durable memory."],
+      openLoops: ["Need to update the managed snippets."],
+      nextActions: ["Add MCP and HTTP auto-observation coverage."],
+    });
+
+    expect(result.sanitization.changed).toBe(false);
+    expect(result.sanitization.changedFields).toEqual([]);
   });
 });

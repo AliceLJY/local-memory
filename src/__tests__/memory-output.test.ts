@@ -47,6 +47,28 @@ describe("memory output", () => {
             originalCategory: "preferences",
           },
         },
+        provenanceHistory: [
+          {
+            memoryId: "feedface-0000-0000-0000-000000000001",
+            scope: "cc:session1",
+            category: "events",
+            source: "cc",
+          },
+          {
+            memoryId: "deadbeef-0000-0000-0000-000000000002",
+            scope: "cc:session2",
+            category: "events",
+            source: "cc",
+            observedAt: "2026-03-17T04:30:00.000Z",
+            boundary: {
+              layer: "evidence",
+              authority: "transcript-ingest",
+              conflictPolicy: "append-only",
+              originalCategory: "preferences",
+            },
+          },
+        ],
+        provenanceHistoryCount: 2,
         preferenceSlot: {
           type: "brand-item",
           brand: "麦当劳",
@@ -61,6 +83,8 @@ describe("memory output", () => {
     expect(output).toContain("prov : durable/structured-memory");
     expect(output).toContain("key:user-reply-style");
     expect(output).toContain("promoted:feedface<-evidence/transcript-ingest");
+    expect(output).toContain("history:2");
+    expect(output).toContain("observed:deadbeef@2026-03-17");
     expect(output).toContain("slot:brand-item:麦当劳:麦辣鸡翅");
   });
 
@@ -83,5 +107,54 @@ describe("memory output", () => {
 
     expect(output).toContain("prov    : evidence/transcript-ingest");
     expect(output).toContain("downgraded:preferences");
+  });
+
+  it("renders reply-style slots in provenance summaries", () => {
+    const output = formatSearchResults([
+      buildResult("abcd1234-0000-0000-0000-000000000002", {
+        source: "agent",
+        canonicalKey: "preferences:reply-style:concise:direct",
+        boundary: {
+          layer: "durable",
+          authority: "structured-memory",
+          conflictPolicy: "latest-wins",
+          originalCategory: "preferences",
+        },
+        preferenceSlot: {
+          type: "reply-style",
+          traits: ["concise", "direct"],
+        },
+      }),
+    ], {
+      query: "reply style",
+      profile: "default",
+    });
+
+    expect(output).toContain("slot:reply-style:concise:direct");
+  });
+
+  it("renders tool-choice slots in provenance summaries", () => {
+    const output = formatSearchResults([
+      buildResult("abcd1234-0000-0000-0000-000000000003", {
+        source: "agent",
+        canonicalKey: "preferences:tool-choice:bun:over:node",
+        boundary: {
+          layer: "durable",
+          authority: "structured-memory",
+          conflictPolicy: "latest-wins",
+          originalCategory: "preferences",
+        },
+        preferenceSlot: {
+          type: "tool-choice",
+          preferredTool: "bun",
+          avoidedTool: "node",
+        },
+      }),
+    ], {
+      query: "tool choice",
+      profile: "default",
+    });
+
+    expect(output).toContain("slot:tool-choice:bun:over:node");
   });
 });

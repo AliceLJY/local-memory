@@ -86,4 +86,60 @@ describe("dedupCheck", () => {
     expect(result.action).toBe("skip");
     expect(result.existingText).toBe("我喜欢吃麦当劳的麦辣鸡翅");
   });
+
+  it("stores a new reply-style preference instead of collapsing different style traits into one topic", async () => {
+    let llmCalls = 0;
+    const store = {
+      async vectorSearch() {
+        return [
+          buildSearchResult("User prefers concise, direct replies.", 0.91),
+        ];
+      },
+    };
+    const llm = {
+      async dedupDecision() {
+        llmCalls += 1;
+        return { action: "SKIP" as const, reason: "same topic" };
+      },
+    };
+
+    const result = await dedupCheck(
+      store as any,
+      [1, 0, 0],
+      "User prefers colloquial, grounded replies.",
+      llm as any,
+    );
+
+    expect(result.action).toBe("store");
+    expect(result.existingText).toBe("User prefers concise, direct replies.");
+    expect(llmCalls).toBe(0);
+  });
+
+  it("stores a new tool-choice preference instead of collapsing different tool choices into one topic", async () => {
+    let llmCalls = 0;
+    const store = {
+      async vectorSearch() {
+        return [
+          buildSearchResult("Uses Bun over Node.", 0.91),
+        ];
+      },
+    };
+    const llm = {
+      async dedupDecision() {
+        llmCalls += 1;
+        return { action: "SKIP" as const, reason: "same topic" };
+      },
+    };
+
+    const result = await dedupCheck(
+      store as any,
+      [1, 0, 0],
+      "Prefers rg over grep.",
+      llm as any,
+    );
+
+    expect(result.action).toBe("store");
+    expect(result.existingText).toBe("Uses Bun over Node.");
+    expect(llmCalls).toBe(0);
+  });
 });

@@ -1,5 +1,5 @@
 import type { DurableMemoryCategory } from "./memory-schema.js";
-import { inferAtomicBrandItemPreferenceSlot } from "./preference-slots.js";
+import { inferPreferenceSlot } from "./preference-slots.js";
 
 export const MEMORY_LAYERS = [
   "canonical",
@@ -43,10 +43,16 @@ export interface PromotedFromMetadata {
   boundary?: MemoryBoundaryMetadata | null;
 }
 
+export interface ProvenanceHistoryMetadata extends PromotedFromMetadata {
+  observedAt?: string;
+}
+
 export interface MemoryProvenance {
   boundary: MemoryBoundaryMetadata | null;
   canonicalKey: string | null;
   promotedFrom: PromotedFromMetadata | null;
+  provenanceHistory: ProvenanceHistoryMetadata[];
+  provenanceHistoryCount: number;
 }
 
 export interface IngestBoundaryResolution {
@@ -110,14 +116,15 @@ export function buildDefaultCanonicalKey(params: {
   title?: string;
 }): string {
   if (params.category === "preferences") {
-    const slot = inferAtomicBrandItemPreferenceSlot(params.text || params.title || "");
+    const slot = inferPreferenceSlot(params.text || params.title || "");
     if (slot) {
-      return truncateCanonicalKey([
-        params.category,
-        slot.type,
-        slot.brand,
-        slot.item,
-      ]);
+      return truncateCanonicalKey(
+        slot.type === "brand-item"
+          ? [params.category, slot.type, slot.brand, slot.item]
+          : slot.type === "reply-style"
+            ? [params.category, slot.type, ...slot.traits]
+            : [params.category, slot.type, slot.preferredTool, "over", slot.avoidedTool],
+      );
     }
   }
 
@@ -240,22 +247,60 @@ export function extractBoundaryMetadata(metadata?: string): MemoryBoundaryMetada
   return coerceBoundaryMetadata(parsed?.boundary);
 }
 
-export function extractPromotedFrom(metadata?: string): PromotedFromMetadata | null {
-  const parsed = parseMetadataObject(metadata);
-  const promotedFrom = parsed?.promotedFrom;
-  if (!promotedFrom || typeof promotedFrom !== "object") return null;
+function coercePromotedFromMetadata(candidate: unknown): PromotedFromMetadata | null {
+  if (!candidate || typeof candidate !== "object") return null;
 
-  const candidate = promotedFrom as Record<string, unknown>;
-  const memoryId = typeof candidate.memoryId === "string" ? candidate.memoryId.trim() : "";
+  const record = candidate as Record<string, unknown>;
+  const memoryId = typeof record.memoryId === "string" ? record.memoryId.trim() : "";
   if (!memoryId) return null;
 
   return {
     memoryId,
-    ...(typeof candidate.scope === "string" ? { scope: candidate.scope } : {}),
-    ...(typeof candidate.category === "string" ? { category: candidate.category } : {}),
-    ...(typeof candidate.source === "string" ? { source: candidate.source } : {}),
-    boundary: coerceBoundaryMetadata(candidate.boundary),
+    ...(typeof record.scope === "string" ? { scope: record.scope } : {}),
+    ...(typeof record.category === "string" ? { category: record.category } : {}),
+    ...(typeof record.source === "string" ? { source: record.source } : {}),
+    boundary: coerceBoundaryMetadata(record.boundary),
   };
+}
+
+function coerceProvenanceHistoryMetadata(candidate: unknown): ProvenanceHistoryMetadata | null {
+  const promotedFrom = coercePromotedFromMetadata(candidate);
+  if (!promotedFrom || typeof candidate !== "object") return null;
+
+  const record = candidate as Record<string, unknown>;
+  return {
+    ...promotedFrom,
+    ...(typeof record.observedAt === "string" ? { observedAt: record.observedAt } : {}),
+  };
+}
+
+export function extractPromotedFrom(metadata?: string): PromotedFromMetadata | null {
+  const parsed = parseMetadataObject(metadata);
+  return coercePromotedFromMetadata(parsed?.promotedFrom);
+}
+
+export function extractProvenanceHistory(metadata?: string): ProvenanceHistoryMetadata[] {
+  const parsed = parseMetadataObject(metadata);
+  const rawHistory = Array.isArray(parsed?.provenanceHistory) ? parsed.provenanceHistory : [];
+  const history = rawHistory
+    .map((candidate) => coerceProvenanceHistoryMetadata(candidate))
+    .filter((candidate): candidate is ProvenanceHistoryMetadata => Boolean(candidate));
+
+  if (history.length > 0) {
+    return history;
+  }
+
+  const promotedFrom = coerceProvenanceHistoryMetadata(parsed?.promotedFrom);
+  return promotedFrom ? [promotedFrom] : [];
+}
+
+export function extractProvenanceHistoryCount(metadata?: string): number {
+  const parsed = parseMetadataObject(metadata);
+  const candidate = parsed?.provenanceHistoryCount;
+  if (typeof candidate === "number" && Number.isFinite(candidate) && candidate >= 0) {
+    return Math.floor(candidate);
+  }
+  return extractProvenanceHistory(metadata).length;
 }
 
 export function extractMemoryProvenance(params: {
@@ -266,6 +311,8 @@ export function extractMemoryProvenance(params: {
     boundary: extractBoundaryMetadata(params.metadata),
     canonicalKey: extractCanonicalKey(params.metadata),
     promotedFrom: extractPromotedFrom(params.metadata),
+    provenanceHistory: extractProvenanceHistory(params.metadata),
+    provenanceHistoryCount: extractProvenanceHistoryCount(params.metadata),
   };
 }
 

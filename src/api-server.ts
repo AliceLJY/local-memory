@@ -9,7 +9,7 @@
 import { createComponentResolver, loadConfig, loadDotEnv } from "./runtime-config.js";
 import { DurableMemoryCategorySchema } from "./memory-schema.js";
 import { persistCaseMemory, persistMemory, persistMemoryBatch, persistWorkflowPattern, promoteMemory } from "./capture-engine.js";
-import { buildSessionCheckpointRecord } from "./session-engine.js";
+import { buildSessionCheckpointResult } from "./session-engine.js";
 import { SessionCheckpointStore } from "./session-store.js";
 import { composeResumeContext } from "./context-composer.js";
 import { extractMemoryProvenance } from "./memory-boundaries.js";
@@ -19,11 +19,15 @@ import { escalateConflicts } from "./conflict-escalation.js";
 import { ConflictCandidateStore } from "./conflict-store.js";
 import { parseConflictAttention, summarizeConflictLifecycle } from "./conflict-lifecycle.js";
 import { buildConflictAuditSummary, clusterConflicts, summarizeConflictAdvice } from "./conflict-advisor.js";
+import { buildWorkflowEvidence, buildWorkflowObservationRecord, inspectWorkflowDashboard, inspectWorkflowHealth } from "./workflow-observation-engine.js";
+import { WorkflowObservationStore } from "./workflow-observation-store.js";
+import { buildManagedCheckpointObservation, buildManagedResumeObservation } from "./workflow-observation-managed.js";
 
 const config = (loadDotEnv(), loadConfig());
 const getComponents = createComponentResolver(config);
 const checkpointStore = new SessionCheckpointStore();
 const conflictStore = new ConflictCandidateStore();
+const workflowObservationStore = new WorkflowObservationStore();
 
 // ============================================================================
 // Helpers
@@ -87,7 +91,18 @@ function buildProvenance(scope: string, metadata?: string) {
     boundary: provenance.boundary,
     canonicalKey: provenance.canonicalKey,
     promotedFrom: provenance.promotedFrom,
+    provenanceHistory: provenance.provenanceHistory,
+    provenanceHistoryCount: provenance.provenanceHistoryCount,
   };
+}
+
+async function saveManagedObservation(observation: Parameters<typeof buildWorkflowObservationRecord>[0]): Promise<void> {
+  try {
+    const record = buildWorkflowObservationRecord(observation);
+    await workflowObservationStore.save(record);
+  } catch (error) {
+    console.error("[API] Failed to persist managed workflow observation:", error);
+  }
 }
 
 // ============================================================================
@@ -350,13 +365,58 @@ async function handleResolveConflict(request: Request): Promise<Response> {
 async function handleCheckpoint(request: Request): Promise<Response> {
   const body = await readJson(request);
   try {
-    const record = buildSessionCheckpointRecord(body);
-    const stored = await checkpointStore.save(record);
+    const result = buildSessionCheckpointResult(body);
+    const stored = await checkpointStore.save(result.record);
+    await saveManagedObservation(buildManagedCheckpointObservation({
+      ...result,
+      record: stored,
+    }));
     return jsonResponse(stored, 201);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return errorResponse(400, message);
   }
+}
+
+/** POST /v1/workflow-observe — persist a workflow observation outside durable memory */
+async function handleWorkflowObserve(request: Request): Promise<Response> {
+  const body = await readJson(request);
+  try {
+    const record = buildWorkflowObservationRecord(body);
+    const stored = await workflowObservationStore.save(record);
+    return jsonResponse(stored, 201);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return errorResponse(400, message);
+  }
+}
+
+/** GET /v1/workflow-health — inspect one workflow or return a dashboard */
+async function handleWorkflowHealth(request: Request): Promise<Response> {
+  const url = new URL(request.url);
+  const workflowId = url.searchParams.get("workflowId") || undefined;
+  const scope = url.searchParams.get("scope") || undefined;
+  const limit = clampInt(url.searchParams.get("limit"), 10, 1, 30);
+
+  if (workflowId) {
+    return jsonResponse(await inspectWorkflowHealth(workflowObservationStore, { workflowId, scope }));
+  }
+
+  return jsonResponse({
+    dashboard: await inspectWorkflowDashboard(workflowObservationStore, { scope, limit }),
+  });
+}
+
+/** GET /v1/workflow-evidence — build an evidence pack for a workflow primitive */
+async function handleWorkflowEvidence(request: Request): Promise<Response> {
+  const url = new URL(request.url);
+  const workflowId = url.searchParams.get("workflowId") || undefined;
+  if (!workflowId) {
+    return errorResponse(400, "workflowId is required");
+  }
+  const scope = url.searchParams.get("scope") || undefined;
+  const limit = clampInt(url.searchParams.get("limit"), 5, 1, 20);
+  return jsonResponse(await buildWorkflowEvidence(workflowObservationStore, { workflowId, scope, limit }));
 }
 
 /** GET /v1/checkpoint/latest — fetch the latest checkpoint for a scope or session */
@@ -383,6 +443,11 @@ async function handleResume(request: Request): Promise<Response> {
       ...body,
       profile: profile.name,
     });
+    await saveManagedObservation(buildManagedResumeObservation({
+      task: typeof body.task === "string" ? body.task : undefined,
+      scope: typeof body.scope === "string" ? body.scope : undefined,
+      sessionId: typeof body.sessionId === "string" ? body.sessionId : undefined,
+    }, context));
 
     return jsonResponse({
       ...context,
@@ -505,6 +570,7 @@ const server = Bun.serve({
         if (pathname === "/v1/conflicts/resolve") return await handleResolveConflict(request);
         if (pathname === "/v1/conflicts/escalate") return await handleEscalateConflicts(request);
         if (pathname === "/v1/checkpoint") return await handleCheckpoint(request);
+        if (pathname === "/v1/workflow-observe") return await handleWorkflowObserve(request);
         if (pathname === "/v1/resume") return await handleResume(request);
         if (pathname === "/v1/search") return await handleSearch(request);
       }
@@ -514,6 +580,8 @@ const server = Bun.serve({
         if (pathname === "/v1/conflicts/audit") return await handleConflictAudit(request);
         if (pathname === "/v1/conflicts") return await handleConflicts(request);
         if (pathname === "/v1/checkpoint/latest") return await handleLatestCheckpoint(request);
+        if (pathname === "/v1/workflow-health") return await handleWorkflowHealth(request);
+        if (pathname === "/v1/workflow-evidence") return await handleWorkflowEvidence(request);
         if (pathname === "/v1/stats") return await handleStats();
         if (pathname === "/v1/health") return await handleHealth();
       }

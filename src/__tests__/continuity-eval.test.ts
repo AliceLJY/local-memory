@@ -1,9 +1,28 @@
 import { describe, expect, it } from "bun:test";
 
-import { scoreContinuityCase } from "../eval.js";
+import { buildContinuityEvalObservationInput, buildContinuityEvalRequest, createContinuityEvalCheckpointStore, scoreContinuityCase } from "../eval.js";
 import type { ResumeContextResponse } from "../session-schema.js";
 
 describe("scoreContinuityCase", () => {
+  it("forwards profile and continuity fields into resume_context eval requests", () => {
+    expect(buildContinuityEvalRequest({
+      name: "writing_sparse",
+      task: "不要让我重复前情，接着写",
+      profile: "writing",
+      scope: "project:recallnest",
+      sessionId: "session-1",
+      limitPerSection: 4,
+      includeLatestCheckpoint: true,
+    })).toEqual({
+      task: "不要让我重复前情，接着写",
+      scope: "project:recallnest",
+      sessionId: "session-1",
+      profile: "writing",
+      limitPerSection: 4,
+      includeLatestCheckpoint: true,
+    });
+  });
+
   it("scores a continuity response using section-specific expectations", () => {
     const response: ResumeContextResponse = {
       summary: "Loaded stable context with a latest checkpoint for RecallNest continuity work.",
@@ -61,5 +80,115 @@ describe("scoreContinuityCase", () => {
     expect(report.passed).toBe(false);
     expect(report.forbiddenMatches).toEqual(["unrelated"]);
     expect(report.score).toBeLessThan(0.8);
+  });
+
+  it("uses only case-defined checkpoint fixtures instead of live checkpoint state", async () => {
+    const checkpointStore = createContinuityEvalCheckpointStore([
+      {
+        name: "checkpoint_case",
+        scope: "recallnest",
+        includeLatestCheckpoint: true,
+        checkpoint: {
+          sessionId: "eval-session-1",
+          scope: "recallnest",
+          summary: "RecallNest Phase 3/4 checkpoint fixture with resume_context and store_memory.",
+          task: "Continue RecallNest continuity work",
+          decisions: ["Keep checkpoints out of the durable index"],
+          updatedAt: "2026-03-16T06:00:00.000Z",
+        },
+      },
+    ]);
+
+    const byScope = await checkpointStore.getLatest({ scope: "recallnest" });
+    const bySession = await checkpointStore.getLatest({ sessionId: "eval-session-1" });
+    const missing = await checkpointStore.getLatest({ scope: "other-project" });
+
+    expect(byScope).toMatchObject({
+      sessionId: "eval-session-1",
+      resolvedScope: "recallnest",
+      summary: "RecallNest Phase 3/4 checkpoint fixture with resume_context and store_memory.",
+    });
+    expect(bySession?.resolvedScope).toBe("recallnest");
+    expect(missing).toBeNull();
+  });
+
+  it("builds workflow observations for continuity eval results without using regular memory", () => {
+    const passed = buildContinuityEvalObservationInput({
+      name: "continuity_pass",
+      profile: "debug",
+      scope: "project:recallnest",
+    }, {
+      mode: "continuity",
+      name: "continuity_pass",
+      task: "continue RecallNest work",
+      profile: "debug",
+      score: 0.94,
+      passed: true,
+      stableCount: 2,
+      patternCount: 1,
+      caseCount: 1,
+      hasCheckpoint: true,
+      matchedStableAny: [],
+      matchedStableAll: [],
+      matchedPatternsAny: [],
+      matchedCasesAny: [],
+      matchedCheckpointAny: [],
+      forbiddenMatches: [],
+      stablePreview: [],
+      patternPreview: [],
+      casePreview: [],
+      checkpointSummary: "ok",
+    });
+
+    expect(passed).toMatchObject({
+      workflowId: "resume_context",
+      outcome: "success",
+      scope: "project:recallnest",
+      source: "eval",
+      signal: "eval-pass",
+      task: "continuity eval: continuity_pass",
+      tools: ["resume_context"],
+    });
+
+    const failed = buildContinuityEvalObservationInput({
+      name: "continuity_fail",
+      expectPatternsAny: ["search_memory"],
+      expectCheckpointAny: ["checkpoint"],
+    }, {
+      mode: "continuity",
+      name: "continuity_fail",
+      task: "continue",
+      profile: "default",
+      score: 0.42,
+      passed: false,
+      stableCount: 0,
+      patternCount: 0,
+      caseCount: 0,
+      hasCheckpoint: false,
+      matchedStableAny: [],
+      matchedStableAll: [],
+      matchedPatternsAny: [],
+      matchedCasesAny: [],
+      matchedCheckpointAny: [],
+      forbiddenMatches: [],
+      stablePreview: [],
+      patternPreview: [],
+      casePreview: [],
+      checkpointSummary: "-",
+    }, {
+      scope: "eval:continuity",
+      source: "eval",
+    });
+
+    expect(failed).toMatchObject({
+      workflowId: "resume_context",
+      outcome: "failure",
+      scope: "eval:continuity",
+      source: "eval",
+      signal: "missing-patterns",
+      task: "continuity eval: continuity_fail",
+      tools: ["resume_context"],
+    });
+    expect(failed.summary).toContain("failed");
   });
 });

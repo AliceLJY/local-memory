@@ -12,7 +12,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Bun](https://img.shields.io/badge/Runtime-Bun-f9f1e1?logo=bun)](https://bun.sh)
 [![LanceDB](https://img.shields.io/badge/LanceDB-Vector+FTS-orange)](https://lancedb.com)
-[![MCP](https://img.shields.io/badge/MCP-19_tools-blue)](https://modelcontextprotocol.io)
+[![MCP](https://img.shields.io/badge/MCP-25_tools-blue)](https://modelcontextprotocol.io)
 
 [English](README.md) | **简体中文** | [Roadmap](ROADMAP.md)
 
@@ -61,6 +61,7 @@
 | **一键接入** | 集成脚本同时安装 MCP 和 continuity 规则 |
 | **混合检索** | 向量 + BM25 + 重排序 + Weibull 衰减 + 分层提升 |
 | **会话连续性** | `checkpoint_session` + `resume_context` 跨窗口恢复 |
+| **Workflow Observation** | 专门的 append-only 工作流观测层，不混入普通 memory |
 | **结构化资产** | Pin、Brief、Distill —— 不只是原始日志 |
 | **显式升级** | Evidence → Durable Memory，带冲突守卫和合并决议 |
 | **6 类记忆** | profile、preferences、entities、events、cases、patterns |
@@ -118,8 +119,7 @@ bash integrations/codex/setup.sh
 
 ```bash
 bun run src/cli.ts ingest --source all
-bun run seed:patterns
-bun run seed:cases
+bun run seed:continuity
 bun run src/cli.ts doctor
 ```
 
@@ -142,7 +142,7 @@ bun run src/cli.ts doctor
 │                      集成层                               │
 │  ┌─────────────────────┐  ┌────────────────────────────┐ │
 │  │  MCP Server         │  │  HTTP API Server           │ │
-│  │  19 个工具           │  │  16 个端点                  │ │
+│  │  25 个工具           │  │  19 个端点                  │ │
 │  └─────────┬───────────┘  └──────────┬─────────────────┘ │
 └────────────┼─────────────────────────┼───────────────────┘
              └──────────┬──────────────┘
@@ -215,8 +215,19 @@ RecallNest 提供两条接入路径：
 跨窗口工作流的核心能力：
 
 - **`checkpoint_session`** —— 快照当前工作状态（决策、未完成项、下一步）
+- **repo-state 守卫** —— 保存 checkpoint 前会清洗 `git status` / modified-file 文本，避免易变 repo 状态污染后续 handoff
 - **`resume_context`** —— 从 checkpoint + 长期记忆 + pin 编排启动上下文
 - **托管规则** —— 集成脚本自动安装 continuity 规则，新窗口自动触发 `resume_context`
+
+### Workflow Observation
+
+RecallNest 现在把 workflow observation 放在专门的 append-only store，而不是硬塞进普通记忆索引：
+
+- **`workflow_observe`** —— 记录 `resume_context`、`checkpoint_session` 等 workflow primitive 是成功、失败、被纠正，还是被漏掉
+- **`workflow_health`** —— 汇总单个 workflow 的 7 天 / 30 天健康度，或输出退化 workflow dashboard
+- **`workflow_evidence`** —— 打包最近 issue observation、top signals 和后续建议，方便做规则或测试收口
+
+这些记录默认落在 `data/workflow-observations`，不属于那 6 类 memory，也不会被 `resume_context` 当成 stable recall 回注。
 
 ### 记忆升级与冲突决议
 
@@ -252,10 +263,13 @@ RecallNest 提供两条接入路径：
 ---
 
 <details>
-<summary><strong>MCP 工具（19 个）</strong></summary>
+<summary><strong>MCP 工具（25 个）</strong></summary>
 
 | 工具 | 说明 |
 |------|------|
+| `workflow_observe` | 记录一条 append-only workflow observation，不写进普通 memory |
+| `workflow_health` | 查看单个 workflow 的健康度，或输出退化 workflow dashboard |
+| `workflow_evidence` | 为某个 workflow primitive 生成 evidence pack |
 | `store_memory` | 存一条可跨窗口复用的长期记忆 |
 | `store_workflow_pattern` | 把可复用工作流存成 durable `patterns` 记忆 |
 | `store_case` | 把可复用问题-解决方案存成 durable `cases` 记忆 |
@@ -272,14 +286,17 @@ RecallNest 提供两条接入路径：
 | `distill_memory` | 把结果提炼成简报 |
 | `brief_memory` | 创建结构化 brief 并回写索引 |
 | `pin_memory` | 把记忆提升成 pinned asset |
+| `export_memory` | 把 distill 结果导出到磁盘 |
 | `list_pins` | 列出 pinned 记忆 |
 | `list_assets` | 列出所有结构化资产 |
+| `list_dirty_briefs` | 预览旧规则生成的 dirty brief 资产 |
+| `clean_dirty_briefs` | 归档 dirty brief 并清理其索引行 |
 | `memory_stats` | 查看索引统计 |
 
 </details>
 
 <details>
-<summary><strong>HTTP API（16 个端点）</strong></summary>
+<summary><strong>HTTP API（19 个端点）</strong></summary>
 
 基础地址：`http://localhost:4318`
 
@@ -296,7 +313,10 @@ RecallNest 提供两条接入路径：
 | `/v1/conflicts/escalate` | POST | 预览或应用冲突升级元数据 |
 | `/v1/conflicts/resolve` | POST | 解决一条冲突候选项（保留 / 接受 / 合并） |
 | `/v1/checkpoint` | POST | 写入当前工作状态的 checkpoint |
+| `/v1/workflow-observe` | POST | 把 workflow observation 写到独立 store，不混入 durable memory |
 | `/v1/checkpoint/latest` | GET | 按 session 或 scope 取最新 checkpoint |
+| `/v1/workflow-health` | GET | 查看 workflow 健康度，或返回退化 workflow dashboard |
+| `/v1/workflow-evidence` | GET | 从最近 issue observation 生成 workflow evidence pack |
 | `/v1/resume` | POST | 为新窗口编排启动上下文 |
 | `/v1/search` | POST | 高级搜索，返回完整元数据 |
 | `/v1/stats` | GET | 查看记忆统计 |
@@ -315,6 +335,11 @@ bun run src/cli.ts search "你的查询"
 bun run src/cli.ts explain "你的查询" --profile debug
 bun run src/cli.ts distill "主题" --profile writing
 bun run src/cli.ts stats
+
+# Workflow observation
+bun run src/cli.ts workflow-observe resume_context "Fresh window skipped continuity recovery." --outcome missed --scope project:recallnest
+bun run src/cli.ts workflow-health resume_context --scope project:recallnest
+bun run src/cli.ts workflow-evidence checkpoint_session --scope project:recallnest
 
 # 冲突管理
 bun run src/cli.ts conflicts list

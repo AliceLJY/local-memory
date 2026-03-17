@@ -14,6 +14,7 @@
 - For recall-only questions, stay constrained to the recalled items. Do not expand one recalled preference into a full doctrine, banned-word list, or writing system unless those details were also recalled or the user explicitly asks for expansion.
 - If recalled context is sparse, say what you do remember and what is still uncertain. Do not invent extra rules to sound complete.
 - If `resume_context` is not enough and you need a specific fact, follow up with `search_memory` using 2-3 key nouns or verbs instead of full sentences.
+- If the user explicitly corrects a continuity miss, such as saying you should have resumed context first or should have saved a checkpoint before stopping, fix the workflow first and then call `workflow_observe` with outcome `corrected` so the miss is tracked outside durable memory.
 - Before leaving a window with unfinished or resumable work, call `checkpoint_session` and capture the current summary, decisions, open loops, next actions, and relevant entities.
 - Use `store_memory` when you learn durable profile, preference, entity, or case knowledge that should survive across future windows.
 - Use `store_workflow_pattern` when you discover a reusable multi-step workflow that should become durable `patterns` memory.

@@ -25,6 +25,9 @@
     "demo": "bun run src/cli.ts demo",
     "seed:patterns": "bun run src/cli.ts seed-patterns",
     "seed:cases": "bun run src/cli.ts seed-cases",
+    "seed:memories": "bun run src/cli.ts seed-memories",
+    "seed:continuity": "bun run seed:patterns && bun run seed:cases && bun run seed:memories",
+    "smoke:claude-continuity": "bash integrations/claude-code/smoke-continuity.sh",
     "ui": "bun run src/ui-server.ts",
     "api": "bun run src/api-server.ts"
   },

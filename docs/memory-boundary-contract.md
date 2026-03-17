@@ -11,6 +11,7 @@ RecallNest now distinguishes between:
 - `canonical`: stable facts maintained in curated docs outside the raw memory index
 - `durable`: reusable structured memory that RecallNest is allowed to recall across windows
 - `session`: current task state captured by `checkpoint_session`
+- `observation`: append-only workflow health records used for self-evolution, not for stable recall
 - `evidence`: raw transcripts and unstructured ingest that are useful as hints, but not authority
 
 The core rule is:
@@ -19,13 +20,14 @@ The core rule is:
 
 ---
 
-## The Four Layers
+## The Five Layers
 
 | Layer | What it stores | Authority write path | Can be mirrored into LanceDB? | Conflict policy |
 |-------|----------------|----------------------|-------------------------------|-----------------|
 | `canonical` | Stable identity, user profile, long-lived project rules | Curated docs such as `USER.md`, `PROJECT.md`, hand-maintained notes | Yes, as read-only mirrors | Manual review / canonical wins |
 | `durable` | Reusable `profile`, `preferences`, `entities`, `cases`, `patterns`, `events` | Structured writes such as `store_memory`, `store_case`, `store_workflow_pattern` | Yes | Category-specific: merge or append |
 | `session` | Current objective, summary, decisions, open loops, next actions | `checkpoint_session` | No, not as durable memory | Latest checkpoint wins |
+| `observation` | Workflow success/failure/correction/missed records for self-evolution | `workflow_observe`, `POST /v1/workflow-observe`, `recallnest workflow-observe` | No | Append-only |
 | `evidence` | Raw transcripts, loose snippets, import artifacts, candidate facts | `ingest.ts` and other unstructured importers | Already stored in the main index, but treated as low-trust evidence | Never overrides higher layers |
 
 ---
@@ -59,7 +61,20 @@ That means:
 - `resume_context` may read the latest checkpoint
 - durable memory and checkpoints are combined at read time, not merged into one store
 
-### 3. Transcript ingest is evidence, not authority
+### 3. Workflow observation stays in its own store
+
+Workflow observations are operational records, not regular memory.
+
+That means:
+
+- `workflow_observe` writes append-only records to a dedicated observation store
+- observations are not one of the six memory categories
+- observations do not get promoted into stable recall by default
+- `workflow_health` and `workflow_evidence` read the observation store directly instead of searching LanceDB memory
+
+This boundary matters because self-evolution signals should not pollute `resume_context`.
+
+### 4. Transcript ingest is evidence, not authority
 
 Raw conversations from:
 
@@ -76,13 +91,14 @@ Current enforcement:
 - `resume_context` does not use transcript/evidence records as stable context
 - evidence only becomes durable through explicit structured write or `promote_memory`
 
-### 4. Durable beats evidence at read time
+### 5. Durable beats evidence at read time
 
 When RecallNest composes startup context:
 
 - `canonical` beats `durable`
 - `durable` beats `evidence`
 - `session` is composed alongside them, not flattened into durable memory
+- `observation` is excluded from startup context unless a caller explicitly asks for workflow health/evidence
 
 If durable `cases` or `patterns` exist, they should be preferred over raw transcript fragments.
 
@@ -99,6 +115,8 @@ If durable `cases` or `patterns` exist, they should be preferred over raw transc
 | `cases` | `store_case` | Yes | Transcript debug stories can exist as evidence, but durable cases should be explicit |
 | `patterns` | `store_workflow_pattern` or structured `store_memory` | Yes | Reusable workflows should be promoted deliberately |
 
+Workflow observations are intentionally outside this table. They are not a seventh memory category.
+
 ---
 
 ## Conflict Policy
@@ -114,7 +132,7 @@ Cross-layer conflicts must not silently overwrite higher-authority data.
 Current implementation detail:
 
 - if an evidence promotion targets a `latest-wins` durable category and the same `canonicalKey` already exists with different text, RecallNest creates an open conflict candidate instead of silently overwriting the durable record
-- narrow exception: if the occupied durable memory and the incoming promotion resolve to the same atomic preference slot (currently brand-item preferences such as `preferences:brand-item:<brand>:<item>`), RecallNest collapses the promotion onto the existing durable owner instead of opening a conflict
+- narrow exception: if the occupied durable memory and the incoming promotion resolve to the same preference slot (currently brand-item preferences such as `preferences:brand-item:<brand>:<item>`, reply-style preferences such as `preferences:reply-style:concise:direct`, or tool-choice preferences such as `preferences:tool-choice:bun:over:node`), RecallNest collapses the promotion onto the existing durable owner instead of opening a conflict
 - if a durable write reuses an existing `canonicalKey` under a different durable category, RecallNest creates an open conflict candidate instead of silently creating a second durable owner
 - conflicts can then be resolved explicitly by keeping the existing durable memory or accepting the incoming promoted text
 - if the exact same conflict fingerprint appears again after a previous review, RecallNest reopens the existing conflict record instead of creating a duplicate review item
@@ -156,7 +174,8 @@ Promotion rules:
 
 - source memory must be evidence or transcript-derived
 - target durable memory gets a new durable boundary
-- promoted record keeps provenance via `promotedFrom.memoryId`
+- promoted record keeps first-hop provenance via `promotedFrom.memoryId`
+- same-slot auto-collapse and repeated exact promotions append observation trail under `provenanceHistory[*]` without silently overwriting durable wording
 - optional `text` lets the caller replace raw transcript wording with a clean durable statement
 - if the promoted text disagrees with an existing durable record for the same `canonicalKey`, RecallNest stores an open conflict candidate instead of silently overwriting the durable record
 - if the promotion would reuse a `canonicalKey` that is already owned by another durable category, RecallNest stores an open conflict candidate instead of creating a second durable owner
@@ -189,6 +208,8 @@ Current implementation:
 - [conflict-store.ts](../src/conflict-store.ts): persists conflict candidates outside the main LanceDB index
 - [context-composer.ts](../src/context-composer.ts): startup continuity ignores evidence-only stable recall
 - [memory-boundaries.ts](../src/memory-boundaries.ts): shared boundary resolution and read guards
+- [workflow-observation-store.ts](../src/workflow-observation-store.ts): persists dedicated append-only workflow observations outside regular memory
+- [workflow-observation-engine.ts](../src/workflow-observation-engine.ts): computes workflow health reports and evidence packs without touching durable recall
 
 ---
 
@@ -199,6 +220,7 @@ This contract is intentionally conservative:
 - transcript recall can still help search and debugging
 - structured memory is how facts graduate into durable continuity
 - checkpoints carry active work state
+- workflow observations can guide repair and evaluation, but they do not become stable context automatically
 - startup continuity should prefer fewer high-trust facts over more noisy fragments
 
 That tradeoff is deliberate. A smaller but cleaner memory layer is more useful than a larger index with no ownership rules.

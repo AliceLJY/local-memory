@@ -7,6 +7,9 @@
 ```bash
 # One-click setup (idempotent, safe to re-run)
 bash integrations/claude-code/setup.sh
+
+# Seed the canonical continuity baseline into your local memory store
+bun run seed:continuity
 ```
 
 This does two things:
@@ -43,7 +46,10 @@ The installed rules tell Claude Code to:
 
 - call `resume_context` at the start of fresh windows or continuity-sensitive tasks
 - use `search_memory` only as a follow-up when a specific detail is needed
+- treat repo-state text recalled through `resume_context` as unverified handoff context until current-window repo tools confirm it
 - save `checkpoint_session` before leaving resumable work
+- avoid writing `git status` / modified-file claims into `checkpoint_session` unless the repo was inspected in the current window
+- never copy unverified repo-state text into `checkpoint_session`, even if it is labeled as recalled or unverified
 - promote durable facts with `store_memory` and reusable workflows with `store_workflow_pattern`
 
 ## Manual Setup
@@ -78,11 +84,48 @@ Restart Claude Code, then ask: "resume my context for RecallNest continuity work
 
 If `resume_context` or `search_memory` is called and returns results, you're set.
 
+## Headless Smoke Test
+
+If you want a non-interactive acceptance check, run:
+
+```bash
+bun run smoke:claude-continuity
+```
+
+What it does:
+
+- runs `claude -p` in fresh-window style prompts
+- pre-allows `resume_context` / `checkpoint_session` so `dontAsk` mode can still use RecallNest MCP tools
+- prints `[smoke]` phase markers so the slower checkpoint case is visible while it runs
+- saves raw `stream-json` artifacts under `/tmp/recallnest-claude-smoke-*`
+- fails if `Read` / `Bash` / `Grep` / `Glob` show up before `resume_context`
+- records `workflow_observe` success / missed / failure signals into the dedicated observation store by default
+
+Outside smoke, normal managed continuity usage now records workflow observations too:
+
+- MCP / HTTP `resume_context` calls append a `managed` success observation automatically
+- MCP / HTTP `checkpoint_session` calls append a `managed` success observation automatically
+- if `checkpoint_session` had to sanitize repo-state text, the automatic observation is `corrected` with signal `repo-state-sanitized`
+- if the user explicitly corrects a continuity miss, the managed snippet now tells the agent to call `workflow_observe` after fixing the flow
+
+Requirements:
+
+- `claude` CLI is installed and already authenticated
+- RecallNest MCP is installed via `setup.sh`
+- your local memory store has baseline continuity data, usually via `bun run seed:continuity`
+
+This smoke test validates tool order and checkpoint writes. Treat any free-text repo-state claims in Claude's reply as unverified unless the saved JSONL also shows matching repo tools.
+If the warning points at `resume_context`, the likely source is an older checkpoint that already contained speculative repo-state text; write a fresh checkpoint after verifying the repo if you want to flush that inherited handoff.
+RecallNest now sanitizes repo-state text out of saved `checkpoint_session` output, so a raw checkpoint request that still mentions `git status` stays a warning, while a saved checkpoint that still contains repo-state text remains a failure.
+The checkpoint case is usually slower than the continue case because Claude needs to finish both `resume_context` and `checkpoint_session`; the phase markers make that visible so a 30-90s run does not look like a hung process.
+Set `RECALLNEST_RECORD_WORKFLOW_OBSERVATIONS=0` if you want to skip writing smoke observations, or override the default scope with `RECALLNEST_CC_SMOKE_SCOPE=project:your-scope`.
+
 ## Troubleshooting
 
 | Issue | Fix |
 |-------|-----|
 | `search_memory` or `resume_context` not found | Restart CC after editing `~/.claude.json` |
-| Empty results | Run `bun run ingest` to index your conversations first |
+| Empty results | Run `bun run ingest --source all`, then `bun run seed:continuity` to load the canonical continuity baseline |
 | Fresh windows still feel stateless | Check that `~/.claude/CLAUDE.md` contains the `recallnest-continuity` managed block |
+| `lm doctor` warns that continuity baseline is missing | Run `bun run seed:continuity` from the RecallNest repo root |
 | MCP connection error | Check that `bun` is in your PATH and RecallNest path is correct |

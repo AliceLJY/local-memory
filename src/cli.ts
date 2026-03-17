@@ -27,10 +27,12 @@ import {
   ingestMarkdownFiles,
 } from "./ingest.js";
 import { runDoctor, formatDoctorResults } from "./doctor.js";
-import { persistCaseMemory, persistWorkflowPattern } from "./capture-engine.js";
+import { persistCaseMemory, persistMemory, persistWorkflowPattern } from "./capture-engine.js";
 import {
   CaseMemoryInputSchema,
   type CaseMemoryInput,
+  StoreMemoryInputSchema,
+  type StoreMemoryInput,
   WorkflowPatternInputSchema,
   type WorkflowPatternInput,
 } from "./memory-schema.js";
@@ -42,6 +44,10 @@ import { ConflictCandidateStore } from "./conflict-store.js";
 import { formatConflictAudit, formatConflictAuditMarkdown, formatConflictClusters, formatConflictEscalation, formatConflictList, formatConflictRecord, formatConflictResolution } from "./conflict-output.js";
 import { CONFLICT_ATTENTION_LEVELS, parseConflictAttention, summarizeConflictLifecycle } from "./conflict-lifecycle.js";
 import { buildConflictAuditSummary, clusterConflicts, summarizeConflictAdvice } from "./conflict-advisor.js";
+import { WorkflowObservationOutcomeSchema } from "./workflow-observation-schema.js";
+import { buildWorkflowEvidence, buildWorkflowObservationRecord, inspectWorkflowDashboard, inspectWorkflowHealth } from "./workflow-observation-engine.js";
+import { formatWorkflowEvidencePack, formatWorkflowHealthDashboard, formatWorkflowHealthReport, formatWorkflowObservationSaved } from "./workflow-observation-output.js";
+import { WorkflowObservationStore } from "./workflow-observation-store.js";
 
 /**
  * Auto-detect Claude Code transcript directory.
@@ -172,6 +178,13 @@ function parseExportFormat(value: string | undefined, fallback: "md" | "json" = 
   throw new Error(`Invalid export format: ${value}`);
 }
 
+function splitCsvOption(value?: string): string[] {
+  return String(value || "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
 function defaultConflictAuditExportPath(format: "md" | "json", canonicalKey?: string): string {
   const timestamp = new Date().toISOString().replace(/[:]/g, "-").replace(/\..+/, "");
   const stem = canonicalKey
@@ -220,6 +233,12 @@ function caseMemorySeedsPath(file?: string): string {
     : resolve(import.meta.dir, "../eval/continuity/case-seeds.json");
 }
 
+function memorySeedsPath(file?: string): string {
+  return file
+    ? resolve(file)
+    : resolve(import.meta.dir, "../eval/continuity/memory-seeds.json");
+}
+
 function parseMetadata(raw?: string): Record<string, unknown> {
   try {
     return JSON.parse(raw || "{}") as Record<string, unknown>;
@@ -258,6 +277,25 @@ function caseMemoryIdentity(title: string, scope: string): string {
   return `${scope.toLowerCase()}::${title.trim().toLowerCase()}`;
 }
 
+function normalizeSeedIdentityValue(value?: string): string {
+  return String(value || "").replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function extractStoreMemoryCanonicalKey(entry: MemoryEntry): string {
+  const metadata = parseMetadata(entry.metadata);
+  return typeof metadata.canonicalKey === "string" ? metadata.canonicalKey.trim() : "";
+}
+
+function storeMemoryIdentity(params: {
+  category: string;
+  scope: string;
+  text: string;
+  canonicalKey?: string;
+}): string {
+  const identity = normalizeSeedIdentityValue(params.canonicalKey) || normalizeSeedIdentityValue(params.text);
+  return `${params.scope.toLowerCase()}::${params.category.toLowerCase()}::${identity}`;
+}
+
 function normalizeWorkflowPatternSeed(raw: unknown, defaults: {
   scope?: string;
   source?: string;
@@ -284,6 +322,25 @@ function normalizeCaseMemorySeed(raw: unknown, defaults: {
     scope: typeof record.scope === "string" ? record.scope : defaults.scope,
     source: typeof record.source === "string" ? record.source : defaults.source,
   });
+}
+
+function normalizeStoreMemorySeed(raw: unknown, defaults: {
+  scope?: string;
+  source?: string;
+}): StoreMemoryInput {
+  const record = raw && typeof raw === "object" && !Array.isArray(raw)
+    ? raw as Record<string, unknown>
+    : {};
+  return StoreMemoryInputSchema.parse({
+    ...record,
+    scope: typeof record.scope === "string" ? record.scope : defaults.scope,
+    source: typeof record.source === "string" ? record.source : defaults.source,
+  });
+}
+
+function seedTextPreview(text: string, maxLen = 72): string {
+  const compact = text.replace(/\s+/g, " ").trim();
+  return compact.length <= maxLen ? compact : `${compact.slice(0, maxLen - 3).trimEnd()}...`;
 }
 
 function entryToRetrievalResult(entry: Awaited<ReturnType<MemoryStore["get"]>>): RetrievalResult {
@@ -1002,6 +1059,94 @@ program
     console.log(lines.join("\n"));
   });
 
+program
+  .command("seed-memories [file]")
+  .description("批量写入 durable project / continuity memory seeds")
+  .option("-s, --scope <scope>", "默认 scope（仅覆盖 seed 里未显式提供的项）")
+  .option("--source <source>", "默认 source（manual / agent / api）", "agent")
+  .option("--json", "JSON 输出")
+  .action(async (file: string | undefined, options) => {
+    const path = memorySeedsPath(file);
+    const raw = JSON.parse(readFileSync(path, "utf-8")) as unknown;
+    if (!Array.isArray(raw)) {
+      throw new Error(`Memory seeds file must be a JSON array: ${path}`);
+    }
+
+    const config = loadConfig();
+    const { store, embedder } = createComponents(config);
+    const conflictStore = new ConflictCandidateStore();
+    const existing = await store.list(undefined, undefined, 2000, 0);
+    const existingKeys = new Set(
+      existing
+        .map((entry) => storeMemoryIdentity({
+          category: entry.category,
+          scope: entry.scope,
+          text: entry.text,
+          canonicalKey: extractStoreMemoryCanonicalKey(entry),
+        }))
+        .filter(Boolean),
+    );
+
+    const stored: Array<{ category: string; id: string; scope: string; text: string }> = [];
+    const skipped: Array<{ category: string; scope: string; text: string }> = [];
+
+    for (const seed of raw) {
+      const input = normalizeStoreMemorySeed(seed, {
+        scope: options.scope,
+        source: options.source,
+      });
+      const scope = input.scope || `memory:${input.source}`;
+      const key = storeMemoryIdentity(input);
+      if (existingKeys.has(key)) {
+        skipped.push({ category: input.category, scope, text: input.text });
+        continue;
+      }
+
+      const record = await persistMemory({ store, embedder, conflictStore }, input);
+      existingKeys.add(storeMemoryIdentity({
+        category: input.category,
+        scope: record.resolvedScope,
+        text: input.text,
+        canonicalKey: record.canonicalKey,
+      }));
+      stored.push({
+        category: record.category,
+        id: record.id,
+        scope: record.resolvedScope,
+        text: record.text,
+      });
+    }
+
+    if (options.json) {
+      console.log(JSON.stringify({ path, stored, skipped }, null, 2));
+      return;
+    }
+
+    const lines = [
+      `Memory seeds: ${path}`,
+      `Stored      : ${stored.length}`,
+      `Skipped     : ${skipped.length}`,
+    ];
+
+    if (stored.length > 0) {
+      lines.push("");
+      lines.push("Stored memories:");
+      for (const item of stored) {
+        lines.push(`  ${item.id.slice(0, 8)}  ${item.scope}  [${item.category}] ${seedTextPreview(item.text)}`);
+      }
+    }
+
+    if (skipped.length > 0) {
+      lines.push("");
+      lines.push("Skipped existing:");
+      for (const item of skipped) {
+        lines.push(`  ${item.scope}  [${item.category}] ${seedTextPreview(item.text)}`);
+      }
+    }
+
+    console.log(lines.join("\n"));
+  });
+
 // ─── demo ────────────────────────────────────────────────────────────────────
 
 program
@@ -1314,6 +1459,94 @@ program
   });
 
 // ─── doctor ──────────────────────────────────────────────────────────────────
+
+program
+  .command("workflow-observe")
+  .description("记录一条 workflow primitive observation，作为自进化观测层的 append-only 输入")
+  .argument("<workflowId>", "workflow primitive id，如 resume_context / checkpoint_session")
+  .argument("<summary>", "本次 observation 的简短说明")
+  .option("--outcome <outcome>", "success | failure | corrected | missed", "success")
+  .option("--scope <scope>", "可选 scope，如 project:recallnest")
+  .option("--source <source>", "来源标签", "manual")
+  .option("--signal <signal>", "失败/纠正信号标签")
+  .option("--task <task>", "相关任务")
+  .option("--tags <tags>", "逗号分隔 tags")
+  .option("--tools <tools>", "逗号分隔 tools")
+  .option("--json", "输出 JSON")
+  .action(async (workflowId, summary, options) => {
+    const store = new WorkflowObservationStore();
+    const record = buildWorkflowObservationRecord({
+      workflowId,
+      summary,
+      outcome: WorkflowObservationOutcomeSchema.parse(options.outcome),
+      scope: options.scope,
+      source: options.source,
+      signal: options.signal,
+      task: options.task,
+      tags: splitCsvOption(options.tags),
+      tools: splitCsvOption(options.tools),
+    });
+    const stored = await store.save(record);
+    if (options.json) {
+      console.log(JSON.stringify(stored, null, 2));
+      return;
+    }
+    console.log(formatWorkflowObservationSaved(stored));
+  });
+
+program
+  .command("workflow-health")
+  .description("查看 workflow primitive 的健康度；不带 workflowId 时输出全局 dashboard")
+  .argument("[workflowId]", "可选 workflow primitive id")
+  .option("--scope <scope>", "可选 scope")
+  .option("--limit <n>", "dashboard 返回数量上限")
+  .option("--json", "输出 JSON")
+  .action(async (workflowId, options) => {
+    const store = new WorkflowObservationStore();
+    if (workflowId) {
+      const report = await inspectWorkflowHealth(store, {
+        workflowId,
+        scope: options.scope,
+      });
+      if (options.json) {
+        console.log(JSON.stringify(report, null, 2));
+        return;
+      }
+      console.log(formatWorkflowHealthReport(report));
+      return;
+    }
+
+    const dashboard = await inspectWorkflowDashboard(store, {
+      scope: options.scope,
+      limit: parseLimitOption(options.limit, 10, 1, 30),
+    });
+    if (options.json) {
+      console.log(JSON.stringify(dashboard, null, 2));
+      return;
+    }
+    console.log(formatWorkflowHealthDashboard(dashboard, options.scope));
+  });
+
+program
+  .command("workflow-evidence")
+  .description("为某个 workflow primitive 生成 evidence pack，方便后续做规则/测试收口")
+  .argument("<workflowId>", "workflow primitive id")
+  .option("--scope <scope>", "可选 scope")
+  .option("--limit <n>", "最近 issue observation 数量上限")
+  .option("--json", "输出 JSON")
+  .action(async (workflowId, options) => {
+    const store = new WorkflowObservationStore();
+    const pack = await buildWorkflowEvidence(store, {
+      workflowId,
+      scope: options.scope,
+      limit: parseLimitOption(options.limit, 5, 1, 20),
+    });
+    if (options.json) {
+      console.log(JSON.stringify(pack, null, 2));
+      return;
+    }
+    console.log(formatWorkflowEvidencePack(pack));
+  });
 
 program
   .command("doctor")

@@ -12,7 +12,7 @@ A local-first memory system backed by LanceDB that turns scattered conversation 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Bun](https://img.shields.io/badge/Runtime-Bun-f9f1e1?logo=bun)](https://bun.sh)
 [![LanceDB](https://img.shields.io/badge/LanceDB-Vector+FTS-orange)](https://lancedb.com)
-[![MCP](https://img.shields.io/badge/MCP-19_tools-blue)](https://modelcontextprotocol.io)
+[![MCP](https://img.shields.io/badge/MCP-25_tools-blue)](https://modelcontextprotocol.io)
 
 **English** | [简体中文](README_CN.md) | [Roadmap](ROADMAP.md)
 
@@ -61,6 +61,7 @@ That's the difference: **one memory shared across terminals**, with context that
 | **One-Click Setup** | Integration scripts install MCP access and continuity rules |
 | **Hybrid Retrieval** | Vector + BM25 + reranking + Weibull decay + tier promotion |
 | **Session Continuity** | `checkpoint_session` + `resume_context` for cross-window recovery |
+| **Workflow Observation** | Dedicated append-only workflow health records, outside regular memory |
 | **Structured Assets** | Pins, briefs, and distilled summaries — not just raw logs |
 | **Smart Promotion** | Evidence → durable memory with conflict guards and merge resolution |
 | **6 Categories** | profile, preferences, entities, events, cases, patterns |
@@ -118,8 +119,7 @@ Each script installs MCP access and managed continuity rules, so `resume_context
 
 ```bash
 bun run src/cli.ts ingest --source all
-bun run seed:patterns
-bun run seed:cases
+bun run seed:continuity
 bun run src/cli.ts doctor
 ```
 
@@ -142,7 +142,7 @@ bun run src/cli.ts doctor
 │                   Integration Layer                       │
 │  ┌─────────────────────┐  ┌────────────────────────────┐ │
 │  │  MCP Server         │  │  HTTP API Server           │ │
-│  │  19 tools           │  │  16 endpoints              │ │
+│  │  25 tools           │  │  19 endpoints              │ │
 │  └─────────┬───────────┘  └──────────┬─────────────────┘ │
 └────────────┼─────────────────────────┼───────────────────┘
              └──────────┬──────────────┘
@@ -216,8 +216,20 @@ Query → BM25 FTS ──┘
 The killer feature for multi-window workflows:
 
 - **`checkpoint_session`** — snapshot current work state (decisions, open loops, next actions)
+- **Repo-state guard** — saved checkpoints strip `git status` / modified-file text so volatile repo state does not contaminate later handoffs
 - **`resume_context`** — compose startup context from checkpoints + durable memory + pins
 - **Managed rules** — integration scripts install continuity rules so `resume_context` fires automatically
+
+### Workflow Observation
+
+RecallNest now keeps workflow observations in a dedicated append-only store instead of stuffing them into the regular memory index:
+
+- **`workflow_observe`** — record whether `resume_context`, `checkpoint_session`, or another workflow primitive succeeded, failed, was corrected, or was missed
+- **`workflow_health`** — aggregate 7d / 30d health for one workflow or show a degraded-workflow dashboard
+- **`workflow_evidence`** — package recent issue observations, top signals, and suggested next actions for debugging
+
+These records live under `data/workflow-observations`, not in the 6 memory categories, and they are never composed into `resume_context` as stable recall.
+Managed MCP / HTTP continuity calls now append observations automatically for `resume_context` and `checkpoint_session`, while repo-state sanitization is recorded as a `corrected` checkpoint observation instead of polluting durable memory.
 
 ### Memory Promotion & Conflict Resolution
 
@@ -253,10 +265,13 @@ Details: [`docs/memory-categories.md`](docs/memory-categories.md)
 ---
 
 <details>
-<summary><strong>MCP Tools (19 tools)</strong></summary>
+<summary><strong>MCP Tools (25 tools)</strong></summary>
 
 | Tool | Description |
 |------|-------------|
+| `workflow_observe` | Store an append-only workflow observation outside regular memory |
+| `workflow_health` | Inspect workflow observation health or show a degraded-workflow dashboard |
+| `workflow_evidence` | Build an evidence pack for a workflow primitive |
 | `store_memory` | Store a durable memory for future windows |
 | `store_workflow_pattern` | Store a reusable workflow as durable `patterns` memory |
 | `store_case` | Store a reusable problem-solution pair as durable `cases` memory |
@@ -273,14 +288,17 @@ Details: [`docs/memory-categories.md`](docs/memory-categories.md)
 | `distill_memory` | Distill results into a compact briefing |
 | `brief_memory` | Create a structured brief and re-index it |
 | `pin_memory` | Promote a memory into a pinned asset |
+| `export_memory` | Export a distilled memory briefing to disk |
 | `list_pins` | List pinned memories |
 | `list_assets` | List all structured assets |
+| `list_dirty_briefs` | Preview outdated brief assets created before the cleanup rules |
+| `clean_dirty_briefs` | Archive dirty brief assets and remove their indexed rows |
 | `memory_stats` | Show index statistics |
 
 </details>
 
 <details>
-<summary><strong>HTTP API (16 endpoints)</strong></summary>
+<summary><strong>HTTP API (19 endpoints)</strong></summary>
 
 Base URL: `http://localhost:4318`
 
@@ -297,7 +315,10 @@ Base URL: `http://localhost:4318`
 | `/v1/conflicts/escalate` | POST | Preview or apply conflict escalation metadata |
 | `/v1/conflicts/resolve` | POST | Resolve a stored conflict candidate (keep / accept / merge) |
 | `/v1/checkpoint` | POST | Store the current work checkpoint |
+| `/v1/workflow-observe` | POST | Store a workflow observation outside durable memory |
 | `/v1/checkpoint/latest` | GET | Fetch the latest checkpoint by session or scope |
+| `/v1/workflow-health` | GET | Inspect workflow health or return a degraded-workflow dashboard |
+| `/v1/workflow-evidence` | GET | Build a workflow evidence pack from recent issue observations |
 | `/v1/resume` | POST | Compose startup context for a fresh window |
 | `/v1/search` | POST | Advanced search with full metadata |
 | `/v1/stats` | GET | Memory statistics |
@@ -316,6 +337,11 @@ bun run src/cli.ts search "your query"
 bun run src/cli.ts explain "your query" --profile debug
 bun run src/cli.ts distill "topic" --profile writing
 bun run src/cli.ts stats
+
+# Workflow observation
+bun run src/cli.ts workflow-observe resume_context "Fresh window skipped continuity recovery." --outcome missed --scope project:recallnest
+bun run src/cli.ts workflow-health resume_context --scope project:recallnest
+bun run src/cli.ts workflow-evidence checkpoint_session --scope project:recallnest
 
 # Conflict management
 bun run src/cli.ts conflicts list

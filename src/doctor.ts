@@ -10,18 +10,39 @@
  *   6. Existing index stats (if any)
  */
 
-import { existsSync, accessSync, constants } from "node:fs";
+import { existsSync, accessSync, constants, readFileSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { homedir } from "node:os";
 import { loadConfig, expandHome, resolveEnv, findConfigPath, loadDotEnv } from "./runtime-config.js";
 import { createEmbedder, type EmbeddingConfig } from "./embedder.js";
-import { MemoryStore, validateStoragePath } from "./store.js";
+import { extractCanonicalKey, normalizeCanonicalKey } from "./memory-boundaries.js";
+import {
+  CaseMemoryInputSchema,
+  type CaseMemoryInput,
+  StoreMemoryInputSchema,
+  type StoreMemoryInput,
+  WorkflowPatternInputSchema,
+  type WorkflowPatternInput,
+} from "./memory-schema.js";
+import { MemoryStore, type MemoryEntry, validateStoragePath } from "./store.js";
 
 interface CheckResult {
   name: string;
   status: "pass" | "fail" | "warn";
   message: string;
   fix?: string;
+}
+
+interface ContinuityBaselineSeeds {
+  patterns: WorkflowPatternInput[];
+  cases: CaseMemoryInput[];
+  memories: StoreMemoryInput[];
+}
+
+interface ContinuityBaselineAssessment {
+  expected: { patterns: number; cases: number; memories: number };
+  found: { patterns: number; cases: number; memories: number };
+  missing: { patterns: string[]; cases: string[]; memories: string[] };
 }
 
 function pass(name: string, message: string): CheckResult {
@@ -34,6 +55,193 @@ function fail(name: string, message: string, fix?: string): CheckResult {
 
 function warn(name: string, message: string, fix?: string): CheckResult {
   return { name, status: "warn", message, fix };
+}
+
+function workflowPatternSeedsPath(): string {
+  return resolve(import.meta.dir, "../eval/continuity/pattern-seeds.json");
+}
+
+function caseMemorySeedsPath(): string {
+  return resolve(import.meta.dir, "../eval/continuity/case-seeds.json");
+}
+
+function memorySeedsPath(): string {
+  return resolve(import.meta.dir, "../eval/continuity/memory-seeds.json");
+}
+
+function parseMetadata(raw?: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(raw || "{}");
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function normalizeIdentityValue(value?: string): string {
+  return String(value || "").replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function resolveSeedScope(scope?: string, source?: string): string {
+  return scope || `memory:${source || "agent"}`;
+}
+
+function workflowPatternIdentity(title: string, scope: string): string {
+  return `${scope.toLowerCase()}::${normalizeIdentityValue(title)}`;
+}
+
+function caseMemoryIdentity(title: string, scope: string): string {
+  return `${scope.toLowerCase()}::${normalizeIdentityValue(title)}`;
+}
+
+function storeMemoryIdentity(params: {
+  category: string;
+  scope: string;
+  text: string;
+  canonicalKey?: string;
+}): string {
+  const identity = params.canonicalKey
+    ? normalizeCanonicalKey(params.canonicalKey)
+    : normalizeIdentityValue(params.text);
+  return `${params.scope.toLowerCase()}::${params.category.toLowerCase()}::${identity}`;
+}
+
+function extractWorkflowPatternTitle(entry: MemoryEntry): string {
+  const metadata = parseMetadata(entry.metadata);
+  const workflowPattern = metadata.workflowPattern;
+  if (workflowPattern && typeof workflowPattern === "object" && typeof (workflowPattern as any).title === "string") {
+    return String((workflowPattern as any).title).trim();
+  }
+  const match = entry.text.match(/^Workflow pattern:\s*(.+)$/im);
+  return match?.[1]?.trim() || "";
+}
+
+function extractCaseMemoryTitle(entry: MemoryEntry): string {
+  const metadata = parseMetadata(entry.metadata);
+  const caseMemory = metadata.caseMemory;
+  if (caseMemory && typeof caseMemory === "object" && typeof (caseMemory as any).title === "string") {
+    return String((caseMemory as any).title).trim();
+  }
+  const match = entry.text.match(/^Case:\s*(.+)$/im);
+  return match?.[1]?.trim() || "";
+}
+
+function normalizeWorkflowPatternSeed(raw: unknown): WorkflowPatternInput {
+  const record = raw && typeof raw === "object" && !Array.isArray(raw)
+    ? raw as Record<string, unknown>
+    : {};
+  return WorkflowPatternInputSchema.parse({
+    ...record,
+    source: typeof record.source === "string" ? record.source : "agent",
+  });
+}
+
+function normalizeCaseMemorySeed(raw: unknown): CaseMemoryInput {
+  const record = raw && typeof raw === "object" && !Array.isArray(raw)
+    ? raw as Record<string, unknown>
+    : {};
+  return CaseMemoryInputSchema.parse({
+    ...record,
+    source: typeof record.source === "string" ? record.source : "agent",
+  });
+}
+
+function normalizeStoreMemorySeed(raw: unknown): StoreMemoryInput {
+  const record = raw && typeof raw === "object" && !Array.isArray(raw)
+    ? raw as Record<string, unknown>
+    : {};
+  return StoreMemoryInputSchema.parse({
+    ...record,
+    source: typeof record.source === "string" ? record.source : "agent",
+  });
+}
+
+export function loadContinuityBaselineSeeds(): ContinuityBaselineSeeds {
+  const patternsRaw = JSON.parse(readFileSync(workflowPatternSeedsPath(), "utf-8")) as unknown;
+  const casesRaw = JSON.parse(readFileSync(caseMemorySeedsPath(), "utf-8")) as unknown;
+  const memoriesRaw = JSON.parse(readFileSync(memorySeedsPath(), "utf-8")) as unknown;
+
+  if (!Array.isArray(patternsRaw) || !Array.isArray(casesRaw) || !Array.isArray(memoriesRaw)) {
+    throw new Error("Continuity seed files must all be JSON arrays.");
+  }
+
+  return {
+    patterns: patternsRaw.map((item) => normalizeWorkflowPatternSeed(item)),
+    cases: casesRaw.map((item) => normalizeCaseMemorySeed(item)),
+    memories: memoriesRaw.map((item) => normalizeStoreMemorySeed(item)),
+  };
+}
+
+function seedPreview(text: string, maxLen = 80): string {
+  const compact = String(text || "").replace(/\s+/g, " ").trim();
+  return compact.length <= maxLen ? compact : `${compact.slice(0, maxLen - 3).trimEnd()}...`;
+}
+
+export function assessContinuityBaseline(
+  entries: MemoryEntry[],
+  seeds: ContinuityBaselineSeeds = loadContinuityBaselineSeeds(),
+): ContinuityBaselineAssessment {
+  const patternKeys = new Set(
+    entries
+      .filter((entry) => entry.category === "patterns")
+      .map((entry) => {
+        const title = extractWorkflowPatternTitle(entry);
+        return title ? workflowPatternIdentity(title, entry.scope) : "";
+      })
+      .filter(Boolean),
+  );
+  const caseKeys = new Set(
+    entries
+      .filter((entry) => entry.category === "cases")
+      .map((entry) => {
+        const title = extractCaseMemoryTitle(entry);
+        return title ? caseMemoryIdentity(title, entry.scope) : "";
+      })
+      .filter(Boolean),
+  );
+  const memoryKeys = new Set(
+    entries.map((entry) => storeMemoryIdentity({
+      category: entry.category,
+      scope: entry.scope,
+      text: entry.text,
+      canonicalKey: extractCanonicalKey(entry.metadata) || undefined,
+    })),
+  );
+
+  const missingPatterns = seeds.patterns
+    .filter((seed) => !patternKeys.has(workflowPatternIdentity(seed.title, resolveSeedScope(seed.scope, seed.source))))
+    .map((seed) => seed.title);
+  const missingCases = seeds.cases
+    .filter((seed) => !caseKeys.has(caseMemoryIdentity(seed.title, resolveSeedScope(seed.scope, seed.source))))
+    .map((seed) => seed.title);
+  const missingMemories = seeds.memories
+    .filter((seed) => !memoryKeys.has(storeMemoryIdentity({
+      category: seed.category,
+      scope: resolveSeedScope(seed.scope, seed.source),
+      text: seed.text,
+      canonicalKey: seed.canonicalKey,
+    })))
+    .map((seed) => seedPreview(seed.canonicalKey || seed.text));
+
+  return {
+    expected: {
+      patterns: seeds.patterns.length,
+      cases: seeds.cases.length,
+      memories: seeds.memories.length,
+    },
+    found: {
+      patterns: seeds.patterns.length - missingPatterns.length,
+      cases: seeds.cases.length - missingCases.length,
+      memories: seeds.memories.length - missingMemories.length,
+    },
+    missing: {
+      patterns: missingPatterns,
+      cases: missingCases,
+      memories: missingMemories,
+    },
+  };
 }
 
 export async function runDoctor(options: { ci?: boolean } = {}): Promise<CheckResult[]> {
@@ -196,8 +404,43 @@ export async function runDoctor(options: { ci?: boolean } = {}): Promise<CheckRe
         "lm ingest --source all"
       ));
     }
+
+    try {
+      const entries = await store.list(undefined, undefined, 5000, 0);
+      const baseline = assessContinuityBaseline(entries);
+      const expectedTotal = baseline.expected.patterns + baseline.expected.cases + baseline.expected.memories;
+      const foundTotal = baseline.found.patterns + baseline.found.cases + baseline.found.memories;
+      const missingTotal = expectedTotal - foundTotal;
+      const summary = `patterns ${baseline.found.patterns}/${baseline.expected.patterns}, cases ${baseline.found.cases}/${baseline.expected.cases}, memories ${baseline.found.memories}/${baseline.expected.memories}`;
+
+      if (missingTotal === 0) {
+        results.push(pass("Continuity baseline", summary));
+      } else {
+        const missingPreview = [
+          ...baseline.missing.patterns.slice(0, 1),
+          ...baseline.missing.cases.slice(0, 1),
+          ...baseline.missing.memories.slice(0, 1),
+        ].join(" | ");
+        results.push(warn(
+          "Continuity baseline",
+          `${summary}; missing ${missingTotal} canonical seed(s)${missingPreview ? ` (${missingPreview})` : ""}`,
+          "bun run seed:continuity"
+        ));
+      }
+    } catch (error: any) {
+      results.push(warn(
+        "Continuity baseline",
+        error?.message || "unable to inspect canonical continuity seeds",
+        "bun run seed:continuity"
+      ));
+    }
   } catch {
     results.push(warn("Index", "not yet created (will be created on first ingest)"));
+    results.push(warn(
+      "Continuity baseline",
+      "not yet seeded",
+      "bun run seed:continuity"
+    ));
   }
 
   return results;

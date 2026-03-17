@@ -128,6 +128,43 @@ describe("persistMemory", () => {
     });
   });
 
+  it("infers a slot-aware canonical key for reply-style preferences", async () => {
+    const { deps, storedEntries } = createDeps();
+    const result = await persistMemory(deps as any, {
+      text: "User prefers concise, direct replies.",
+      category: "preferences",
+      source: "manual",
+    });
+
+    expect(result.canonicalKey).toBe("preferences:reply-style:concise:direct");
+    expect(JSON.parse(storedEntries[0].metadata)).toMatchObject({
+      canonicalKey: "preferences:reply-style:concise:direct",
+      preferenceSlot: {
+        type: "reply-style",
+        traits: ["concise", "direct"],
+      },
+    });
+  });
+
+  it("infers a slot-aware canonical key for tool-choice preferences", async () => {
+    const { deps, storedEntries } = createDeps();
+    const result = await persistMemory(deps as any, {
+      text: "Uses Bun over Node.",
+      category: "preferences",
+      source: "manual",
+    });
+
+    expect(result.canonicalKey).toBe("preferences:tool-choice:bun:over:node");
+    expect(JSON.parse(storedEntries[0].metadata)).toMatchObject({
+      canonicalKey: "preferences:tool-choice:bun:over:node",
+      preferenceSlot: {
+        type: "tool-choice",
+        preferredTool: "bun",
+        avoidedTool: "node",
+      },
+    });
+  });
+
   it("dedupes an exact canonical durable write instead of storing again", async () => {
     const { deps, storedEntries } = createDeps();
     await persistMemory(deps as any, {
@@ -399,7 +436,7 @@ describe("promoteMemory", () => {
     expect(promoted.sourceCategory).toBe("events");
     expect(promoted.canonicalKey).toBe("user-reply-style");
     expect(storedEntries).toHaveLength(2);
-    expect(JSON.parse(storedEntries[1].metadata)).toEqual({
+    expect(JSON.parse(storedEntries[1].metadata)).toMatchObject({
       source: "agent",
       tags: ["writing"],
       capture: "promote_memory_schema_v1",
@@ -422,6 +459,10 @@ describe("promoteMemory", () => {
           originalCategory: "preferences",
         },
         source: "cc",
+      },
+      preferenceSlot: {
+        type: "reply-style",
+        traits: ["concise", "direct"],
       },
     });
   });
@@ -634,7 +675,173 @@ describe("promoteMemory", () => {
     expect(promoted.canonicalKey).toBe("preferences:brand-item:麦当劳:麦辣鸡翅");
     expect(storedEntries).toHaveLength(2);
     expect(storedEntries[0]?.text).toBe("我喜欢吃麦当劳的麦辣鸡翅");
+    expect(JSON.parse(storedEntries[0]?.metadata || "{}")).toMatchObject({
+      canonicalKey: "preferences:brand-item:麦当劳:麦辣鸡翅",
+      preferenceSlot: {
+        type: "brand-item",
+        brand: "麦当劳",
+        item: "麦辣鸡翅",
+      },
+      provenanceHistoryCount: 1,
+      provenanceHistory: [{
+        memoryId: source.id,
+        scope: "cc:session-food-pref-rephrase",
+        category: "events",
+        source: "cc",
+        boundary: {
+          layer: "evidence",
+          authority: "transcript-ingest",
+          conflictPolicy: "append-only",
+          originalCategory: "preferences",
+        },
+      }],
+    });
+    expect(typeof JSON.parse(storedEntries[0]?.metadata || "{}").provenanceHistory?.[0]?.observedAt).toBe("string");
     expect(conflicts).toHaveLength(0);
+  });
+
+  it("collapses same-slot reply-style promotions onto the existing durable owner", async () => {
+    const { deps, storedEntries, conflicts } = createDeps();
+    const durable = await persistMemory(deps as any, {
+      text: "User prefers concise, direct replies.",
+      category: "preferences",
+      source: "manual",
+    });
+    const source = await deps.store.store({
+      text: "[用户] 用户偏好短句直说。",
+      vector: [1, 2, 3],
+      category: "events",
+      scope: "cc:session-reply-style-slot",
+      importance: 0.55,
+      metadata: JSON.stringify({
+        source: "cc",
+        boundary: {
+          layer: "evidence",
+          authority: "transcript-ingest",
+          conflictPolicy: "append-only",
+          originalCategory: "preferences",
+        },
+      }),
+    });
+
+    const promoted = await promoteMemory(deps as any, {
+      memoryId: source.id,
+      text: "User prefers direct, concise replies.",
+      category: "preferences",
+      tags: ["writing"],
+    });
+
+    expect(promoted.disposition).toBe("promoted");
+    expect(promoted.id).toBe(durable.id);
+    expect(promoted.canonicalKey).toBe("preferences:reply-style:concise:direct");
+    expect(JSON.parse(storedEntries[0]?.metadata || "{}")).toMatchObject({
+      canonicalKey: "preferences:reply-style:concise:direct",
+      preferenceSlot: {
+        type: "reply-style",
+        traits: ["concise", "direct"],
+      },
+      provenanceHistoryCount: 1,
+      provenanceHistory: [{
+        memoryId: source.id,
+        scope: "cc:session-reply-style-slot",
+        category: "events",
+        source: "cc",
+      }],
+    });
+    expect(conflicts).toHaveLength(0);
+  });
+
+  it("collapses same-slot tool-choice promotions onto the existing durable owner", async () => {
+    const { deps, storedEntries, conflicts } = createDeps();
+    const durable = await persistMemory(deps as any, {
+      text: "Uses Bun over Node.",
+      category: "preferences",
+      source: "manual",
+    });
+    const source = await deps.store.store({
+      text: "[用户] 更喜欢用 Bun 而不是 Node。",
+      vector: [1, 2, 3],
+      category: "events",
+      scope: "cc:session-tool-choice-slot",
+      importance: 0.55,
+      metadata: JSON.stringify({
+        source: "cc",
+        boundary: {
+          layer: "evidence",
+          authority: "transcript-ingest",
+          conflictPolicy: "append-only",
+          originalCategory: "preferences",
+        },
+      }),
+    });
+
+    const promoted = await promoteMemory(deps as any, {
+      memoryId: source.id,
+      text: "Prefers Bun over Node.",
+      category: "preferences",
+      tags: ["tooling"],
+    });
+
+    expect(promoted.disposition).toBe("promoted");
+    expect(promoted.id).toBe(durable.id);
+    expect(promoted.canonicalKey).toBe("preferences:tool-choice:bun:over:node");
+    expect(JSON.parse(storedEntries[0]?.metadata || "{}")).toMatchObject({
+      canonicalKey: "preferences:tool-choice:bun:over:node",
+      preferenceSlot: {
+        type: "tool-choice",
+        preferredTool: "bun",
+        avoidedTool: "node",
+      },
+      provenanceHistoryCount: 1,
+      provenanceHistory: [{
+        memoryId: source.id,
+        scope: "cc:session-tool-choice-slot",
+        category: "events",
+        source: "cc",
+      }],
+    });
+    expect(conflicts).toHaveLength(0);
+  });
+
+  it("does not duplicate provenance history when the same exact promotion is repeated", async () => {
+    const { deps, storedEntries } = createDeps();
+    await persistMemory(deps as any, {
+      text: "我喜欢吃麦当劳的麦辣鸡翅",
+      category: "preferences",
+      source: "manual",
+    });
+    const source = await deps.store.store({
+      text: "[用户] 我喜欢吃麦当劳的麦辣鸡翅。",
+      vector: [1, 2, 3],
+      category: "events",
+      scope: "cc:session-food-pref-exact",
+      importance: 0.55,
+      metadata: JSON.stringify({
+        source: "cc",
+        boundary: {
+          layer: "evidence",
+          authority: "transcript-ingest",
+          conflictPolicy: "append-only",
+          originalCategory: "preferences",
+        },
+      }),
+    });
+
+    await promoteMemory(deps as any, {
+      memoryId: source.id,
+      text: "我喜欢吃麦当劳的麦辣鸡翅",
+      category: "preferences",
+    });
+    await promoteMemory(deps as any, {
+      memoryId: source.id,
+      text: "我喜欢吃麦当劳的麦辣鸡翅",
+      category: "preferences",
+    });
+
+    const metadata = JSON.parse(storedEntries[0]?.metadata || "{}");
+    expect(metadata.provenanceHistoryCount).toBe(1);
+    expect(metadata.provenanceHistory).toHaveLength(1);
+    expect(metadata.provenanceHistory[0]?.memoryId).toBe(source.id);
   });
 
   it("reopens the same conflict record when the same resolved conflict happens again", async () => {
