@@ -3,7 +3,13 @@ import { describe, expect, it } from "bun:test";
 import { buildConflictCandidateRecord } from "../conflict-engine.js";
 import { buildConflictAuditSummary, clusterConflicts, summarizeConflictAdvice } from "../conflict-advisor.js";
 
+/** Returns an ISO timestamp N days before now (defaults to 4 days = firmly "stale"). */
+function daysAgo(n: number): string {
+  return new Date(Date.now() - n * 24 * 60 * 60 * 1000).toISOString();
+}
+
 function createConflictRecord(overrides: Record<string, unknown> = {}) {
+  const defaultTs = daysAgo(4); // 4 days ago → "stale" (3-6 days range)
   return {
     ...buildConflictCandidateRecord({
       canonicalKey: "user-reply-style",
@@ -29,8 +35,8 @@ function createConflictRecord(overrides: Record<string, unknown> = {}) {
         sourceMemoryId: "source-1",
         sourceCategory: "events",
       },
-      createdAt: "2026-03-10T00:00:00.000Z",
-      updatedAt: "2026-03-10T00:00:00.000Z",
+      createdAt: defaultTs,
+      updatedAt: defaultTs,
     }),
     ...overrides,
   };
@@ -131,11 +137,13 @@ describe("clusterConflicts", () => {
     const clusters = clusterConflicts([
       createConflictRecord({
         conflictId: "00000000-0000-0000-0000-000000000001",
-        updatedAt: "2026-03-10T00:00:00.000Z",
+        createdAt: daysAgo(4),
+        updatedAt: daysAgo(4),
       }) as any,
       createConflictRecord({
         conflictId: "00000000-0000-0000-0000-000000000002",
-        updatedAt: "2026-03-11T00:00:00.000Z",
+        createdAt: daysAgo(4),
+        updatedAt: daysAgo(3),
       }) as any,
       createConflictRecord({
         canonicalKey: "project-entity-owner",
@@ -157,21 +165,21 @@ describe("buildConflictAuditSummary", () => {
     const summary = buildConflictAuditSummary([
       createConflictRecord({
         conflictId: "00000000-0000-0000-0000-000000000001",
-        createdAt: "2026-03-01T00:00:00.000Z",
-        updatedAt: "2026-03-01T00:00:00.000Z",
+        createdAt: daysAgo(14),
+        updatedAt: daysAgo(14),
       }) as any,
       createConflictRecord({
         canonicalKey: "project-entity-owner",
         conflictId: "00000000-0000-0000-0000-000000000002",
         fingerprint: "project-entity-owner--durable-1--source-1--new-text",
-        createdAt: "2026-03-15T00:00:00.000Z",
-        updatedAt: "2026-03-15T00:00:00.000Z",
+        createdAt: daysAgo(1),
+        updatedAt: daysAgo(1),
       }) as any,
       createConflictRecord({
         conflictId: "00000000-0000-0000-0000-000000000003",
         status: "kept-existing",
-        resolvedAt: "2026-03-16T00:00:00.000Z",
-        updatedAt: "2026-03-16T00:00:00.000Z",
+        resolvedAt: daysAgo(0),
+        updatedAt: daysAgo(0),
       }) as any,
     ], 3);
 
