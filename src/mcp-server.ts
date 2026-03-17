@@ -5,9 +5,66 @@
  * Exposes conversation memory search as MCP tools,
  * so any MCP-compatible AI client (Claude Code, etc.)
  * can search your indexed conversations.
+ *
+ * Tool tiers:
+ * - core: Always exposed (5 tools)
+ * - advanced: Exposed by default, includes core (15 tools)
+ * - full: All tools including governance (24 tools)
+ *
+ * Control: RECALLNEST_MCP_TIER=core|advanced|full
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+
+// ============================================================================
+// Tier Configuration
+// ============================================================================
+
+type ToolTier = "core" | "advanced" | "governance";
+
+const MCP_TIER = (process.env.RECALLNEST_MCP_TIER || "advanced") as "core" | "advanced" | "full";
+
+const TOOL_TIERS: Record<string, ToolTier> = {
+  // Core (always)
+  resume_context: "core",
+  search_memory: "core",
+  store_memory: "core",
+  checkpoint_session: "core",
+  latest_checkpoint: "core",
+
+  // Advanced
+  store_case: "advanced",
+  store_workflow_pattern: "advanced",
+  promote_memory: "advanced",
+  explain_memory: "advanced",
+  distill_memory: "advanced",
+  brief_memory: "advanced",
+  pin_memory: "advanced",
+  list_assets: "advanced",
+  list_pins: "advanced",
+  memory_stats: "advanced",
+  export_memory: "advanced",
+
+  // Governance (CLI-only, not in MCP by default)
+  workflow_observe: "governance",
+  workflow_health: "governance",
+  workflow_evidence: "governance",
+  list_conflicts: "governance",
+  resolve_conflict: "governance",
+  audit_conflicts: "governance",
+  escalate_conflicts: "governance",
+  list_dirty_briefs: "governance",
+  clean_dirty_briefs: "governance",
+};
+
+function shouldRegisterTool(toolName: string): boolean {
+  const tier = TOOL_TIERS[toolName];
+  if (!tier) return true; // unknown tools always register (backward compat)
+  if (MCP_TIER === "full") return true;
+  if (MCP_TIER === "advanced") return tier !== "governance";
+  if (MCP_TIER === "core") return tier === "core";
+  return true;
+}
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import type { RetrievalResult } from "./retriever.js";
@@ -34,6 +91,7 @@ import { buildWorkflowEvidence, buildWorkflowObservationRecord, inspectWorkflowD
 import { formatWorkflowEvidencePack, formatWorkflowHealthDashboard, formatWorkflowHealthReport, formatWorkflowObservationSaved } from "./workflow-observation-output.js";
 import { WorkflowObservationStore } from "./workflow-observation-store.js";
 import { buildManagedCheckpointObservation, buildManagedResumeObservation } from "./workflow-observation-managed.js";
+import { buildRetrievalContext, resolveScopeSelection } from "./scope-policy.js";
 
 function entryToRetrievalResult(entry: Awaited<ReturnType<MemoryStore["get"]>>): RetrievalResult {
   if (!entry) {
@@ -74,7 +132,22 @@ const server = new McpServer({
   version: "1.3.0",
 });
 
-server.tool(
+// ============================================================================
+// Tool Registration Helper (tier-aware)
+// ============================================================================
+
+type ToolSchema = Parameters<typeof server.tool>[2];
+type ToolHandler = Parameters<typeof server.tool>[3];
+
+function registerTool(name: string, description: string, schema: ToolSchema, handler: ToolHandler): void {
+  if (!shouldRegisterTool(name)) {
+    console.log(`[MCP] Skipping ${name} (tier: ${TOOL_TIERS[name]})`);
+    return;
+  }
+  server.tool(name, description, schema, handler);
+}
+
+registerTool(
   "workflow_observe",
   "Store an append-only workflow observation for self-evolution. Use this to record whether a continuity primitive or reusable workflow succeeded, failed, was corrected by the user, or was missed entirely.",
   {
@@ -110,7 +183,7 @@ server.tool(
   },
 );
 
-server.tool(
+registerTool(
   "workflow_health",
   "Inspect workflow observation health. With workflowId, return a 7d/30d health report; without workflowId, return a dashboard of the most degraded workflows.",
   {
@@ -131,7 +204,7 @@ server.tool(
   },
 );
 
-server.tool(
+registerTool(
   "workflow_evidence",
   "Generate an evidence pack for a workflow primitive, including recent issue observations, top signals, and suggested next actions.",
   {
@@ -154,14 +227,14 @@ server.tool(
   },
 );
 
-server.tool(
+registerTool(
   "store_memory",
   "Store a durable memory when the user shares a stable preference, identity fact, project entity, reusable pattern, or solved case that should survive future windows. Do not use this for transient task state; use it only for memory worth keeping.",
   {
     text: z.string().min(1).max(4000).describe("Memory text to store"),
     category: DurableMemoryCategorySchema.default("events").describe("Durable memory category"),
     importance: z.number().min(0).max(1).default(0.7).describe("Importance score from 0 to 1"),
-    scope: z.string().min(1).max(160).optional().describe("Optional scope override; defaults to memory:<source>"),
+    scope: z.string().min(1).max(160).describe("Required scope such as project:recallnest or session:abc123"),
     source: StoreMemorySourceSchema.default("manual").describe("How this memory was captured"),
     tags: z.array(z.string().min(1).max(40)).max(8).default([]).describe("Optional tags"),
     canonicalKey: z.string().min(1).max(120).optional().describe("Optional stable key for merge/update semantics"),
@@ -199,7 +272,7 @@ server.tool(
   }
 );
 
-server.tool(
+registerTool(
   "store_workflow_pattern",
   "Store a reusable workflow pattern as durable memory. Use this when you identify a repeatable process worth reusing across fresh windows, such as startup continuity, debugging routines, review flows, or handoff steps.",
   {
@@ -209,7 +282,7 @@ server.tool(
     outcome: z.string().min(1).max(240).optional().describe("Optional expected outcome"),
     tools: z.array(z.string().min(1).max(60)).max(6).default([]).describe("Optional tools, commands, or interfaces involved"),
     importance: z.number().min(0).max(1).default(0.82).describe("Importance score from 0 to 1"),
-    scope: z.string().min(1).max(160).optional().describe("Optional scope override; defaults to memory:<source>"),
+    scope: z.string().min(1).max(160).describe("Required scope such as project:recallnest or session:abc123"),
     source: StoreMemorySourceSchema.default("agent").describe("How this pattern was captured"),
     tags: z.array(z.string().min(1).max(40)).max(8).default([]).describe("Optional tags"),
     canonicalKey: z.string().min(1).max(120).optional().describe("Optional stable key for merge/update semantics"),
@@ -251,7 +324,7 @@ server.tool(
   }
 );
 
-server.tool(
+registerTool(
   "store_case",
   "Store a reusable case as durable memory. Use this when you identify a concrete problem-and-solution pair worth reusing across future windows, such as a debugging fix, continuity cleanup, migration lesson, or implementation recovery.",
   {
@@ -262,7 +335,7 @@ server.tool(
     outcome: z.string().min(1).max(240).optional().describe("Optional result or resolution"),
     tools: z.array(z.string().min(1).max(60)).max(6).default([]).describe("Optional tools, commands, or interfaces involved"),
     importance: z.number().min(0).max(1).default(0.84).describe("Importance score from 0 to 1"),
-    scope: z.string().min(1).max(160).optional().describe("Optional scope override; defaults to memory:<source>"),
+    scope: z.string().min(1).max(160).describe("Required scope such as project:recallnest or session:abc123"),
     source: StoreMemorySourceSchema.default("agent").describe("How this case was captured"),
     tags: z.array(z.string().min(1).max(40)).max(8).default([]).describe("Optional tags"),
     canonicalKey: z.string().min(1).max(120).optional().describe("Optional stable key for merge/update semantics"),
@@ -305,7 +378,7 @@ server.tool(
   }
 );
 
-server.tool(
+registerTool(
   "promote_memory",
   "Promote an evidence memory into durable memory. Use this when a transcript snippet or imported artifact contains a fact worth keeping across windows, and you want an explicit authority upgrade instead of leaving it as raw evidence.",
   {
@@ -313,7 +386,7 @@ server.tool(
     text: z.string().min(1).max(4000).optional().describe("Optional cleaned durable text; defaults to the source entry text"),
     category: DurableMemoryCategorySchema.optional().describe("Optional target durable category; defaults to the source evidence category or its originalCategory"),
     importance: z.number().min(0).max(1).default(0.78).describe("Importance score from 0 to 1"),
-    scope: z.string().min(1).max(160).optional().describe("Optional scope override; defaults to memory:<source>"),
+    scope: z.string().min(1).max(160).describe("Required target scope such as project:recallnest or session:abc123"),
     source: StoreMemorySourceSchema.default("agent").describe("How this promotion was captured"),
     tags: z.array(z.string().min(1).max(40)).max(8).default([]).describe("Optional tags"),
     canonicalKey: z.string().min(1).max(120).optional().describe("Optional stable key for merge/update semantics"),
@@ -346,7 +419,7 @@ server.tool(
   }
 );
 
-server.tool(
+registerTool(
   "list_conflicts",
   "List or inspect open conflict candidates when incoming evidence promotions disagree with an existing durable memory for the same canonical key.",
   {
@@ -382,7 +455,7 @@ server.tool(
   }
 );
 
-server.tool(
+registerTool(
   "resolve_conflict",
   "Resolve a stored conflict candidate by keeping the existing durable memory, accepting the incoming promoted evidence, or merging the two texts.",
   {
@@ -413,7 +486,7 @@ server.tool(
   }
 );
 
-server.tool(
+registerTool(
   "audit_conflicts",
   "Generate a terminal-friendly conflict audit summary so you can see which stale or escalated conflict clusters should be reviewed first.",
   {
@@ -438,7 +511,7 @@ server.tool(
   }
 );
 
-server.tool(
+registerTool(
   "escalate_conflicts",
   "Preview or apply the conflict aging policy so stale or escalated open conflicts are explicitly marked for operator review.",
   {
@@ -469,7 +542,7 @@ server.tool(
   }
 );
 
-server.tool(
+registerTool(
   "checkpoint_session",
   "Store a compact checkpoint of the current work state. Use this when a task spans windows or terminals and you need the next session to recover decisions, open loops, and next actions without polluting durable memory.",
   {
@@ -511,7 +584,7 @@ server.tool(
   }
 );
 
-server.tool(
+registerTool(
   "latest_checkpoint",
   "Fetch the latest saved checkpoint for a session or shared scope. Useful for inspecting current work state before resume_context exists.",
   {
@@ -529,7 +602,7 @@ server.tool(
   }
 );
 
-server.tool(
+registerTool(
   "resume_context",
   "Compose startup context for a fresh window by combining stable durable memory, relevant patterns and cases, plus the latest checkpoint for the current scope or session.",
   {
@@ -542,12 +615,18 @@ server.tool(
   },
   async ({ task, scope, sessionId, limitPerSection, includeLatestCheckpoint, profile: profileName }) => {
     const { retriever, profile } = getComponents(profileName);
+    const scopeSelection = resolveScopeSelection({
+      scope,
+      sessionId,
+      operation: "resume_context",
+      allowUnscoped: true,
+    });
     const context = await composeResumeContext({
       retriever,
       checkpointStore,
     }, {
       task,
-      scope,
+      scope: scopeSelection.resolvedScope,
       sessionId,
       limitPerSection,
       includeLatestCheckpoint,
@@ -569,20 +648,30 @@ server.tool(
 );
 
 // --- search_memory tool ---
-server.tool(
+registerTool(
   "search_memory",
   "IMPORTANT: Use this tool proactively at the start of tasks to recall relevant past conversations, decisions, and patterns. Search when: starting a new task, debugging, writing, making decisions, or when the user references past work. Do NOT wait for the user to ask you to search. Query with key nouns/verbs from the user's message.",
   {
     query: z.string().describe("Search query — natural language or keywords"),
     limit: z.number().min(1).max(20).default(5).describe("Max results to return"),
-    scope: z.string().optional().describe("Filter by source: cc, codex, gemini, memory"),
+    scope: z.string().optional().describe("Optional explicit scope"),
+    sessionId: z.string().min(1).max(160).optional().describe("Optional session identifier to infer session:<id> scope"),
+    allScopes: z.boolean().default(false).describe("When true, explicitly allow cross-scope search"),
     category: DurableMemoryCategorySchema.optional().describe("Filter by memory category: profile (identity/background), preferences (habits/style), entities (projects/tools/people), events (past happenings), cases (problem-solution pairs), patterns (reusable workflows)"),
     profile: z.enum(["default", "writing", "debug", "fact-check"]).optional().describe("Retrieval profile"),
   },
-  async ({ query, limit, scope, category, profile: profileName }) => {
+  async ({ query, limit, scope, sessionId, allScopes, category, profile: profileName }) => {
     const { retriever, profile } = getComponents(profileName);
-    const scopeFilter = scope ? [scope] : undefined;
-    const results = await retriever.retrieve({ query, limit, scopeFilter, category });
+    const results = await retriever.retrieve(buildRetrievalContext({
+      query,
+      limit,
+      category,
+      scope,
+      sessionId,
+      allScopes,
+    }, {
+      operation: "search_memory",
+    }));
 
     return {
       content: [{
@@ -593,20 +682,30 @@ server.tool(
   }
 );
 
-server.tool(
+registerTool(
   "explain_memory",
   "Explain why the indexed memories matched: retrieval path, freshness, file/session, and matched terms.",
   {
     query: z.string().describe("Search query — natural language or keywords"),
     limit: z.number().min(1).max(20).default(5).describe("Max results to analyze"),
-    scope: z.string().optional().describe("Filter by source: cc, codex, gemini, memory"),
+    scope: z.string().optional().describe("Optional explicit scope"),
+    sessionId: z.string().min(1).max(160).optional().describe("Optional session identifier to infer session:<id> scope"),
+    allScopes: z.boolean().default(false).describe("When true, explicitly allow cross-scope search"),
     category: DurableMemoryCategorySchema.optional().describe("Filter by memory category"),
     profile: z.enum(["default", "writing", "debug", "fact-check"]).optional().describe("Retrieval profile"),
   },
-  async ({ query, limit, scope, category, profile: profileName }) => {
+  async ({ query, limit, scope, sessionId, allScopes, category, profile: profileName }) => {
     const { retriever, profile } = getComponents(profileName);
-    const scopeFilter = scope ? [scope] : undefined;
-    const results = await retriever.retrieve({ query, limit, scopeFilter, category });
+    const results = await retriever.retrieve(buildRetrievalContext({
+      query,
+      limit,
+      category,
+      scope,
+      sessionId,
+      allScopes,
+    }, {
+      operation: "explain_memory",
+    }));
     return {
       content: [{
         type: "text" as const,
@@ -616,19 +715,28 @@ server.tool(
   }
 );
 
-server.tool(
+registerTool(
   "distill_memory",
   "Distill retrieved memories into a compact briefing with source map, takeaways, and reusable evidence.",
   {
     query: z.string().describe("Topic or task to distill"),
     limit: z.number().min(1).max(20).default(8).describe("Max results to distill"),
-    scope: z.string().optional().describe("Filter by source: cc, codex, gemini, memory"),
+    scope: z.string().optional().describe("Optional explicit scope"),
+    sessionId: z.string().min(1).max(160).optional().describe("Optional session identifier to infer session:<id> scope"),
+    allScopes: z.boolean().default(false).describe("When true, explicitly allow cross-scope search"),
     profile: z.enum(["default", "writing", "debug", "fact-check"]).optional().describe("Retrieval profile"),
   },
-  async ({ query, limit, scope, profile: profileName }) => {
+  async ({ query, limit, scope, sessionId, allScopes, profile: profileName }) => {
     const { retriever, profile } = getComponents(profileName || "writing");
-    const scopeFilter = scope ? [scope] : undefined;
-    const results = await retriever.retrieve({ query, limit, scopeFilter });
+    const results = await retriever.retrieve(buildRetrievalContext({
+      query,
+      limit,
+      scope,
+      sessionId,
+      allScopes,
+    }, {
+      operation: "distill_memory",
+    }));
     return {
       content: [{
         type: "text" as const,
@@ -638,20 +746,29 @@ server.tool(
   }
 );
 
-server.tool(
+registerTool(
   "brief_memory",
   "Create a structured memory brief from retrieved results and feed it back into recall.",
   {
     query: z.string().describe("Topic or task to turn into a memory brief"),
     limit: z.number().min(1).max(20).default(8).describe("Max results to distill into the brief"),
-    scope: z.string().optional().describe("Filter by source: cc, codex, gemini, memory"),
+    scope: z.string().optional().describe("Optional explicit scope"),
+    sessionId: z.string().min(1).max(160).optional().describe("Optional session identifier to infer session:<id> scope"),
+    allScopes: z.boolean().default(false).describe("When true, explicitly allow cross-scope search"),
     profile: z.enum(["default", "writing", "debug", "fact-check"]).optional().describe("Retrieval profile"),
     title: z.string().optional().describe("Optional brief title"),
   },
-  async ({ query, limit, scope, profile: profileName, title }) => {
+  async ({ query, limit, scope, sessionId, allScopes, profile: profileName, title }) => {
     const { retriever, profile, store, embedder } = getComponents(profileName || "writing");
-    const scopeFilter = scope ? [scope] : undefined;
-    const results = await retriever.retrieve({ query, limit, scopeFilter });
+    const results = await retriever.retrieve(buildRetrievalContext({
+      query,
+      limit,
+      scope,
+      sessionId,
+      allScopes,
+    }, {
+      operation: "brief_memory",
+    }));
     if (results.length === 0) {
       return { content: [{ type: "text" as const, text: `No results found for: ${query}` }] };
     }
@@ -670,24 +787,33 @@ server.tool(
   }
 );
 
-server.tool(
+registerTool(
   "pin_memory",
   "Promote one retrieved memory into a pinned asset for later reuse.",
   {
     memory_id: z.string().describe("Memory ID or unique prefix from search/explain output"),
+    scope: z.string().optional().describe("Optional explicit scope"),
+    sessionId: z.string().min(1).max(160).optional().describe("Optional session identifier to infer session:<id> scope"),
+    allScopes: z.boolean().default(false).describe("When true, explicitly allow cross-scope reads"),
     title: z.string().optional().describe("Optional pinned title"),
     summary: z.string().optional().describe("Optional pinned summary"),
     query: z.string().optional().describe("Optional query that led to this pin"),
     profile: z.enum(["default", "writing", "debug", "fact-check"]).optional().describe("Retrieval profile"),
   },
-  async ({ memory_id, title, summary, query, profile: profileName }) => {
+  async ({ memory_id, scope, sessionId, allScopes, title, summary, query, profile: profileName }) => {
     const { store, embedder } = getComponents(profileName);
-    const entry = await store.get(memory_id);
+    const scopeSelection = resolveScopeSelection({
+      scope,
+      sessionId,
+      allScopes,
+      operation: "pin_memory",
+    });
+    const entry = await store.get(memory_id, scopeSelection.scopeFilter);
     if (!entry) {
       return { content: [{ type: "text" as const, text: `Memory not found: ${memory_id}` }] };
     }
 
-    await store.update(entry.id, { importance: Math.max(entry.importance || 0.7, 0.95) });
+    await store.update(entry.id, { importance: Math.max(entry.importance || 0.7, 0.95) }, scopeSelection.scopeFilter);
     const asset = buildPinAsset(entryToRetrievalResult(entry), {
       title,
       summary,
@@ -706,20 +832,29 @@ server.tool(
   }
 );
 
-server.tool(
+registerTool(
   "export_memory",
   "Export a distilled memory briefing to a markdown or json artifact on disk.",
   {
     query: z.string().describe("Topic or task to export"),
     limit: z.number().min(1).max(20).default(8).describe("Max results to export"),
-    scope: z.string().optional().describe("Filter by source: cc, codex, gemini, memory"),
+    scope: z.string().optional().describe("Optional explicit scope"),
+    sessionId: z.string().min(1).max(160).optional().describe("Optional session identifier to infer session:<id> scope"),
+    allScopes: z.boolean().default(false).describe("When true, explicitly allow cross-scope search"),
     profile: z.enum(["default", "writing", "debug", "fact-check"]).optional().describe("Retrieval profile"),
     format: z.enum(["md", "json"]).default("md").describe("Export format"),
   },
-  async ({ query, limit, scope, profile: profileName, format }) => {
+  async ({ query, limit, scope, sessionId, allScopes, profile: profileName, format }) => {
     const { retriever, profile } = getComponents(profileName || "writing");
-    const scopeFilter = scope ? [scope] : undefined;
-    const results = await retriever.retrieve({ query, limit, scopeFilter });
+    const results = await retriever.retrieve(buildRetrievalContext({
+      query,
+      limit,
+      scope,
+      sessionId,
+      allScopes,
+    }, {
+      operation: "export_memory",
+    }));
     const summary = distillResults(results, { query, profile: profile.name });
     const artifact = writeExportArtifact({
       query,
@@ -738,7 +873,7 @@ server.tool(
   }
 );
 
-server.tool(
+registerTool(
   "list_assets",
   "List recent structured memory assets, including pinned memories and distilled briefs.",
   {
@@ -758,7 +893,7 @@ server.tool(
   }
 );
 
-server.tool(
+registerTool(
   "list_dirty_briefs",
   "Preview dirty memory briefs that were generated before the current brief-cleanup rules.",
   {},
@@ -776,7 +911,7 @@ server.tool(
   }
 );
 
-server.tool(
+registerTool(
   "clean_dirty_briefs",
   "Archive dirty briefs and remove their indexed asset scopes. Use preview mode first if unsure.",
   {
@@ -815,7 +950,7 @@ server.tool(
   }
 );
 
-server.tool(
+registerTool(
   "list_pins",
   "List recently pinned memory assets.",
   {
@@ -836,7 +971,7 @@ server.tool(
 );
 
 // --- memory_stats tool ---
-server.tool(
+registerTool(
   "memory_stats",
   "Show statistics of the indexed memory database",
   {},
