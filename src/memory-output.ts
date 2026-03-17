@@ -8,6 +8,11 @@ interface MemoryMetadata {
   sessionId?: string;
   file?: string;
   heading?: string;
+  preferenceSlot?: {
+    type?: string;
+    brand?: string;
+    item?: string;
+  };
   [key: string]: unknown;
 }
 
@@ -75,6 +80,7 @@ function getProvenanceSummary(result: RetrievalResult): string {
     metadata: result.entry.metadata,
   });
   const boundary = provenance.boundary;
+  const meta = parseMetadata(result.entry);
   const parts = [
     boundary
       ? `${boundary.layer}/${boundary.authority}`
@@ -99,6 +105,15 @@ function getProvenanceSummary(result: RetrievalResult): string {
       ? `${promotedBoundary.layer}/${promotedBoundary.authority}`
       : "-";
     parts.push(`promoted:${provenance.promotedFrom.memoryId.slice(0, 8)}<-${promotedLabel}`);
+  }
+
+  const preferenceSlot = meta.preferenceSlot;
+  if (
+    preferenceSlot?.type === "brand-item" &&
+    typeof preferenceSlot.brand === "string" &&
+    typeof preferenceSlot.item === "string"
+  ) {
+    parts.push(`slot:${preferenceSlot.type}:${preferenceSlot.brand}:${preferenceSlot.item}`);
   }
 
   return parts.join(" | ");

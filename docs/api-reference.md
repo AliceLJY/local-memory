@@ -137,6 +137,8 @@ Store a new durable memory entry.
 
 If the same `canonicalKey` is already occupied by a different durable category, RecallNest returns `disposition = "conflict"` plus a `conflictId` instead of silently creating a second durable owner.
 
+For atomic brand-item preferences such as `我喜欢吃麦当劳的麦辣鸡翅`, RecallNest now derives a slot-aware key like `preferences:brand-item:麦当劳:麦辣鸡翅` instead of collapsing everything into a broader same-topic key.
+
 ---
 
 ## Capture (Structured Batch Write)
@@ -368,6 +370,10 @@ Promote an evidence memory into durable memory.
 ```
 
 When a promotion would overwrite an existing durable memory with the same `canonicalKey`, RecallNest now creates an open conflict candidate instead of silently applying `latest-wins`.
+
+The same slot-aware key inference also applies during promotion when `category = "preferences"` and the text is an atomic brand-item preference.
+
+If the promotion resolves to the same atomic preference slot as the existing durable owner, RecallNest now collapses it onto that owner instead of opening a conflict. This currently applies to slot-aware brand-item preference keys such as `preferences:brand-item:麦当劳:麦辣鸡翅`.
 
 ```json
 {

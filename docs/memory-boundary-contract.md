@@ -114,6 +114,7 @@ Cross-layer conflicts must not silently overwrite higher-authority data.
 Current implementation detail:
 
 - if an evidence promotion targets a `latest-wins` durable category and the same `canonicalKey` already exists with different text, RecallNest creates an open conflict candidate instead of silently overwriting the durable record
+- narrow exception: if the occupied durable memory and the incoming promotion resolve to the same atomic preference slot (currently brand-item preferences such as `preferences:brand-item:<brand>:<item>`), RecallNest collapses the promotion onto the existing durable owner instead of opening a conflict
 - if a durable write reuses an existing `canonicalKey` under a different durable category, RecallNest creates an open conflict candidate instead of silently creating a second durable owner
 - conflicts can then be resolved explicitly by keeping the existing durable memory or accepting the incoming promoted text
 - if the exact same conflict fingerprint appears again after a previous review, RecallNest reopens the existing conflict record instead of creating a duplicate review item
@@ -135,7 +136,7 @@ Current behavior:
 - exact same `canonicalKey` + same durable text => dedupe
 - same `canonicalKey` on merge-type categories => update latest durable record
 - same `canonicalKey` on append-type categories => keep append behavior unless the text is identical
-- evidence promotion into an occupied merge-type `canonicalKey` => open conflict candidate for manual review
+- evidence promotion into an occupied merge-type `canonicalKey` => open conflict candidate for manual review, unless the occupied durable owner and incoming promotion are the same atomic preference slot
 - reusing a `canonicalKey` across different durable categories => open conflict candidate for manual review
 
 This gives RecallNest an explicit way to say “these two writes refer to the same durable memory”.

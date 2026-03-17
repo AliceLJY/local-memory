@@ -17,7 +17,7 @@ See [memory-boundary-contract.md](./memory-boundary-contract.md) for the layer a
 | Category | What It Stores | Examples | Consolidation |
 |----------|---------------|----------|---------------|
 | **profile** | Who the user is — role, background, identity | "Data scientist with 5 years experience", "Works at Acme Corp" | Merge (latest wins) |
-| **preferences** | How the user likes things done | "Prefers TDD", "Uses Bun over Node", "Commit after every change" | Merge (latest wins) |
+| **preferences** | How the user likes things done | "Prefers TDD", "Uses Bun over Node", "Commit after every change" | Merge (slot-aware; item facts stay atomic) |
 | **entities** | Named things — projects, tools, people, repos | "Project X uses LanceDB", "Bob handles DevOps" | Merge (accumulate) |
 | **events** | Things that happened — incidents, decisions, milestones | "Migrated to AWS on 2026-01-15", "Bot crashed due to OOM" | Append (dedup only) |
 | **cases** | Debugging stories, troubleshooting workflows | "Fixed Docker crash by increasing memory limit", "API timeout was caused by DNS" | Append (dedup only) |
@@ -55,6 +55,8 @@ Not all memories age the same way:
 ### 3. Consolidation Strategy
 
 Merge-type categories (profile, preferences, entities, patterns) benefit from periodic consolidation — combining 5 similar entries into 1 refined one.
+
+For `preferences`, merge should be slot-aware, not topic-wide. Rewordings of the same preference can collapse, but concrete item/object preferences under the same brand or theme should stay as separate facts.
 
 Append-type categories (events, cases) keep distinct entries but remove exact duplicates.
 

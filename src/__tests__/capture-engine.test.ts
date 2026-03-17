@@ -109,6 +109,25 @@ describe("persistMemory", () => {
     });
   });
 
+  it("infers a slot-aware canonical key for atomic brand-item preferences", async () => {
+    const { deps, storedEntries } = createDeps();
+    const result = await persistMemory(deps as any, {
+      text: "我喜欢吃麦当劳的麦辣鸡翅",
+      category: "preferences",
+      source: "manual",
+    });
+
+    expect(result.canonicalKey).toBe("preferences:brand-item:麦当劳:麦辣鸡翅");
+    expect(JSON.parse(storedEntries[0].metadata)).toMatchObject({
+      canonicalKey: "preferences:brand-item:麦当劳:麦辣鸡翅",
+      preferenceSlot: {
+        type: "brand-item",
+        brand: "麦当劳",
+        item: "麦辣鸡翅",
+      },
+    });
+  });
+
   it("dedupes an exact canonical durable write instead of storing again", async () => {
     const { deps, storedEntries } = createDeps();
     await persistMemory(deps as any, {
@@ -149,6 +168,27 @@ describe("persistMemory", () => {
     expect(second.id).toBe(first.id);
     expect(storedEntries).toHaveLength(1);
     expect(storedEntries[0].text).toContain("direct technical replies");
+  });
+
+  it("updates the same durable owner when the same atomic preference slot is rephrased", async () => {
+    const { deps, storedEntries } = createDeps();
+    const first = await persistMemory(deps as any, {
+      text: "我喜欢吃麦当劳的麦辣鸡翅",
+      category: "preferences",
+      source: "manual",
+    });
+
+    const second = await persistMemory(deps as any, {
+      text: "我很喜欢吃麦当劳的麦辣鸡翅",
+      category: "preferences",
+      source: "manual",
+    });
+
+    expect(first.canonicalKey).toBe("preferences:brand-item:麦当劳:麦辣鸡翅");
+    expect(second.canonicalKey).toBe("preferences:brand-item:麦当劳:麦辣鸡翅");
+    expect(second.disposition).toBe("updated");
+    expect(second.id).toBe(first.id);
+    expect(storedEntries).toHaveLength(1);
   });
 
   it("creates a conflict when the same canonicalKey is reused across durable categories", async () => {
@@ -386,6 +426,44 @@ describe("promoteMemory", () => {
     });
   });
 
+  it("infers a slot-aware canonical key when promoting an atomic brand-item preference", async () => {
+    const { deps, storedEntries } = createDeps();
+    const source = await deps.store.store({
+      text: "[用户] 我喜欢吃麦当劳的麦辣鸡翅。",
+      vector: [1, 2, 3],
+      category: "events",
+      scope: "cc:session-food-pref",
+      importance: 0.5,
+      metadata: JSON.stringify({
+        source: "cc",
+        boundary: {
+          layer: "evidence",
+          authority: "transcript-ingest",
+          conflictPolicy: "append-only",
+          originalCategory: "preferences",
+        },
+      }),
+    });
+
+    const promoted = await promoteMemory(deps as any, {
+      memoryId: source.id,
+      text: "我喜欢吃麦当劳的麦辣鸡翅",
+      category: "preferences",
+      tags: ["food"],
+    });
+
+    expect(promoted.disposition).toBe("promoted");
+    expect(promoted.canonicalKey).toBe("preferences:brand-item:麦当劳:麦辣鸡翅");
+    expect(JSON.parse(storedEntries[1].metadata)).toMatchObject({
+      canonicalKey: "preferences:brand-item:麦当劳:麦辣鸡翅",
+      preferenceSlot: {
+        type: "brand-item",
+        brand: "麦当劳",
+        item: "麦辣鸡翅",
+      },
+    });
+  });
+
   it("accepts a unique source memory prefix for promotion", async () => {
     const { deps } = createDeps();
     const source = await deps.store.store({
@@ -518,6 +596,45 @@ describe("promoteMemory", () => {
     expect(repeated.disposition).toBe("conflict");
     expect(repeated.conflictId).toBe(promoted.conflictId);
     expect(conflicts).toHaveLength(1);
+  });
+
+  it("collapses same-slot atomic preference promotions onto the existing durable owner without opening a conflict", async () => {
+    const { deps, storedEntries, conflicts } = createDeps();
+    const durable = await persistMemory(deps as any, {
+      text: "我喜欢吃麦当劳的麦辣鸡翅",
+      category: "preferences",
+      source: "manual",
+    });
+    const source = await deps.store.store({
+      text: "[用户] 我很喜欢吃麦当劳的麦辣鸡翅。",
+      vector: [1, 2, 3],
+      category: "events",
+      scope: "cc:session-food-pref-rephrase",
+      importance: 0.55,
+      metadata: JSON.stringify({
+        source: "cc",
+        boundary: {
+          layer: "evidence",
+          authority: "transcript-ingest",
+          conflictPolicy: "append-only",
+          originalCategory: "preferences",
+        },
+      }),
+    });
+
+    const promoted = await promoteMemory(deps as any, {
+      memoryId: source.id,
+      text: "我很喜欢吃麦当劳的麦辣鸡翅",
+      category: "preferences",
+      tags: ["food"],
+    });
+
+    expect(promoted.disposition).toBe("promoted");
+    expect(promoted.id).toBe(durable.id);
+    expect(promoted.canonicalKey).toBe("preferences:brand-item:麦当劳:麦辣鸡翅");
+    expect(storedEntries).toHaveLength(2);
+    expect(storedEntries[0]?.text).toBe("我喜欢吃麦当劳的麦辣鸡翅");
+    expect(conflicts).toHaveLength(0);
   });
 
   it("reopens the same conflict record when the same resolved conflict happens again", async () => {

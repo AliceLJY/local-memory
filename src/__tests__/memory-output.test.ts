@@ -47,6 +47,11 @@ describe("memory output", () => {
             originalCategory: "preferences",
           },
         },
+        preferenceSlot: {
+          type: "brand-item",
+          brand: "麦当劳",
+          item: "麦辣鸡翅",
+        },
       }),
     ], {
       query: "reply style",
@@ -56,6 +61,7 @@ describe("memory output", () => {
     expect(output).toContain("prov : durable/structured-memory");
     expect(output).toContain("key:user-reply-style");
     expect(output).toContain("promoted:feedface<-evidence/transcript-ingest");
+    expect(output).toContain("slot:brand-item:麦当劳:麦辣鸡翅");
   });
 
   it("includes provenance in explain results", () => {

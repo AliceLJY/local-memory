@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 
 import {
   buildStructuredMemoryBoundary,
+  buildDefaultCanonicalKey,
   extractBoundaryMetadata,
   extractMemoryProvenance,
   extractPromotedFrom,
@@ -46,6 +47,18 @@ describe("memory boundaries", () => {
       originalCategory: "preferences",
       note: "Structured memory writes are the durable source inside RecallNest.",
     });
+  });
+
+  it("builds slot-aware canonical keys for atomic brand-item preferences", () => {
+    expect(buildDefaultCanonicalKey({
+      category: "preferences",
+      text: "我喜欢吃麦当劳的麦辣鸡翅",
+    })).toBe("preferences:brand-item:麦当劳:麦辣鸡翅");
+
+    expect(buildDefaultCanonicalKey({
+      category: "preferences",
+      text: "我喜欢吃麦当劳的麦旋风、板烧鸡腿堡和麦辣鸡翅",
+    })).toBe("preferences:我喜欢吃麦当劳的麦旋风-板烧鸡腿堡和麦辣鸡翅");
   });
 
   it("rejects transcript/evidence stable recall and keeps durable stable recall", () => {

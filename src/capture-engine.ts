@@ -32,6 +32,7 @@ import {
 } from "./memory-boundaries.js";
 import { buildConflictCandidateRecord, buildConflictFingerprint, reopenConflictCandidate } from "./conflict-engine.js";
 import type { ConflictCandidateStore } from "./conflict-store.js";
+import { inferAtomicBrandItemPreferenceSlot, type AtomicBrandItemPreferenceSlot } from "./preference-slots.js";
 
 type StoreDeps = Pick<MemoryStore, "store"> & Partial<Pick<MemoryStore, "list" | "update" | "getById" | "get">>;
 type ConflictStoreDeps = Pick<ConflictCandidateStore, "save" | "replace" | "getOpenByFingerprint" | "getLatestByFingerprint">;
@@ -112,6 +113,87 @@ function buildStructuredMetadata(params: {
     canonicalKey: params.canonicalKey,
     ...params.extra,
   });
+}
+
+function buildPreferenceSlotExtra(
+  category: DurableMemoryCategory,
+  text: string,
+): Record<string, unknown> | undefined {
+  if (category !== "preferences") return undefined;
+  const slot = inferAtomicBrandItemPreferenceSlot(text);
+  return slot ? { preferenceSlot: slot } : undefined;
+}
+
+function mergeExtra(...extras: Array<Record<string, unknown> | undefined>): Record<string, unknown> | undefined {
+  const merged = Object.assign({}, ...extras.filter(Boolean));
+  return Object.keys(merged).length > 0 ? merged : undefined;
+}
+
+function extractPreferenceSlot(metadata?: string): AtomicBrandItemPreferenceSlot | null {
+  const parsed = parseMetadataObject(metadata);
+  const slot = parsed?.preferenceSlot;
+  if (!slot || typeof slot !== "object") return null;
+
+  const record = slot as Record<string, unknown>;
+  if (
+    record.type === "brand-item" &&
+    typeof record.brand === "string" &&
+    typeof record.item === "string"
+  ) {
+    return {
+      type: "brand-item",
+      brand: record.brand,
+      item: record.item,
+    };
+  }
+
+  return null;
+}
+
+function parsePreferenceSlotFromCanonicalKey(canonicalKey?: string | null): AtomicBrandItemPreferenceSlot | null {
+  if (!canonicalKey || !canonicalKey.startsWith("preferences:brand-item:")) return null;
+  const [, , brand, ...rest] = canonicalKey.split(":");
+  const item = rest.join(":");
+  if (!brand || !item) return null;
+  return {
+    type: "brand-item",
+    brand,
+    item,
+  };
+}
+
+function samePreferenceSlot(
+  left: AtomicBrandItemPreferenceSlot | null,
+  right: AtomicBrandItemPreferenceSlot | null,
+): boolean {
+  return Boolean(
+    left &&
+    right &&
+    left.type === right.type &&
+    left.brand === right.brand &&
+    left.item === right.item,
+  );
+}
+
+function shouldAutoCollapsePromotionConflict(
+  params: DurableWriteInput,
+  existing: MemoryEntry,
+): boolean {
+  if (!params.promotedFrom || params.category !== "preferences") {
+    return false;
+  }
+
+  const incomingSlot =
+    extractPreferenceSlot(params.metadata) ||
+    inferAtomicBrandItemPreferenceSlot(params.text) ||
+    parsePreferenceSlotFromCanonicalKey(params.canonicalKey);
+
+  const existingSlot =
+    extractPreferenceSlot(existing.metadata) ||
+    inferAtomicBrandItemPreferenceSlot(existing.text) ||
+    parsePreferenceSlotFromCanonicalKey(extractCanonicalKey(existing.metadata));
+
+  return samePreferenceSlot(existingSlot, incomingSlot);
 }
 
 function buildWorkflowPatternText(input: WorkflowPatternInput): string {
@@ -255,6 +337,13 @@ async function writeDurableEntry(
   if (conflictPolicy === "latest-wins" && categoryMatches.length > 0 && deps.store.update) {
     const latest = [...categoryMatches].sort((a, b) => b.timestamp - a.timestamp)[0];
     if (params.promotedFrom && deps.conflictStore) {
+      if (shouldAutoCollapsePromotionConflict(params, latest)) {
+        return {
+          entry: latest,
+          disposition: "promoted",
+        };
+      }
+
       const fingerprint = buildConflictFingerprint({
         canonicalKey: params.canonicalKey,
         existingMemoryId: latest.id,
@@ -372,6 +461,7 @@ function buildStoreMemoryMetadata(input: StoreMemoryInput, canonicalKey: string)
     capture: "store_memory_schema_v1",
     category: input.category,
     canonicalKey,
+    extra: buildPreferenceSlotExtra(input.category, input.text),
   });
 }
 
@@ -427,6 +517,7 @@ function buildPromotionMetadata(
   canonicalKey: string,
   category: DurableMemoryCategory,
   sourceEntry: MemoryEntry,
+  text: string,
 ): string {
   const sourceMetadata = parseMetadataObject(sourceEntry.metadata);
   return buildStructuredMetadata({
@@ -435,15 +526,18 @@ function buildPromotionMetadata(
     capture: "promote_memory_schema_v1",
     category,
     canonicalKey,
-    extra: {
-      promotedFrom: {
-        memoryId: sourceEntry.id,
-        scope: sourceEntry.scope,
-        category: sourceEntry.category,
-        boundary: extractBoundaryMetadata(sourceEntry.metadata),
-        source: sourceMetadata?.source,
+    extra: mergeExtra(
+      buildPreferenceSlotExtra(category, text),
+      {
+        promotedFrom: {
+          memoryId: sourceEntry.id,
+          scope: sourceEntry.scope,
+          category: sourceEntry.category,
+          boundary: extractBoundaryMetadata(sourceEntry.metadata),
+          source: sourceMetadata?.source,
+        },
       },
-    },
+    ),
   });
 }
 
@@ -589,7 +683,7 @@ export async function promoteMemory(
     category,
     scope: resolvedScope,
     importance: input.importance,
-    metadata: buildPromotionMetadata(input, canonicalKey, category, sourceEntry),
+    metadata: buildPromotionMetadata(input, canonicalKey, category, sourceEntry, text),
     canonicalKey,
     promotedFrom: sourceEntry.id,
     source: input.source,

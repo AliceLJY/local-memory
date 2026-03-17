@@ -4,3 +4,8 @@ logs/
 .env
 *.log
 config.json
+.agent/
+.agents/
+.claude/
+skills/
+skills-lock.json

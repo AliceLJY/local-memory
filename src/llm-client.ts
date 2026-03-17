@@ -265,6 +265,7 @@ export class LLMClient {
         "- SKIP：新记忆跟已有记忆说的是同一件事，没有新信息\n" +
         "- MERGE：新记忆有补充信息，应该合并到已有记忆\n" +
         "- CREATE：新记忆是不同的事，应该独立存储\n\n" +
+        "额外规则：如果两条都是偏好陈述，并且是同品牌/同主题下的不同具体对象或条目（例如不同食物、商品、菜单项），必须返回 CREATE。聚合摘要也不能吞掉新的原子偏好。\n\n" +
         "只输出一行 JSON：{\"action\":\"CREATE|MERGE|SKIP\",\"reason\":\"简短原因\"}",
         `[已有记忆]\n${existingText.slice(0, 1000)}\n\n[新记忆]\n${newText.slice(0, 1000)}`,
       );

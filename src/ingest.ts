@@ -17,6 +17,7 @@ import { chunkDocument, type ChunkerConfig } from "./chunker.js";
 import { isProcessed, markProcessed } from "./tracker.js";
 import type { LLMClient, SmartExtraction } from "./llm-client.js";
 import { resolveIngestBoundary } from "./memory-boundaries.js";
+import { parseBrandItemPreference } from "./preference-slots.js";
 
 // ============================================================================
 // Types
@@ -55,13 +56,53 @@ interface ConversationTurn {
  */
 const DEDUP_HARD_THRESHOLD = 0.80;
 const DEDUP_SOFT_THRESHOLD = 0.68;
+const DEDUP_CANDIDATE_LIMIT = 5;
+
+interface AtomicPreferenceGuardDecision {
+  shouldForceCreate: boolean;
+  matchedText?: string;
+}
 
 /**
  * Two-stage dedup: vector pre-filter + optional LLM semantic decision.
  *
  * Returns: "store" | "skip" | "merge" (merge falls back to skip for now)
  */
-async function dedupCheck(
+function normalizeDedupText(value: string): string {
+  return value
+    .replace(/^\[(用户|助手)\]\s*/gm, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function shouldForceCreateAtomicPreference(
+  incomingText: string,
+  existingTexts: string[],
+): AtomicPreferenceGuardDecision {
+  const incoming = parseBrandItemPreference(incomingText);
+  if (!incoming || incoming.aggregate || incoming.items.length !== 1) {
+    return { shouldForceCreate: false };
+  }
+
+  let sameBrandDifferentItem: string | undefined;
+
+  for (const existingText of existingTexts) {
+    const existing = parseBrandItemPreference(existingText);
+    if (!existing || existing.brand !== incoming.brand) continue;
+
+    if (existing.items.includes(incoming.items[0])) {
+      return { shouldForceCreate: false };
+    }
+
+    sameBrandDifferentItem = existingText;
+  }
+
+  return sameBrandDifferentItem
+    ? { shouldForceCreate: true, matchedText: sameBrandDifferentItem }
+    : { shouldForceCreate: false };
+}
+
+export async function dedupCheck(
   store: MemoryStore,
   vector: number[],
   text: string,
@@ -69,9 +110,26 @@ async function dedupCheck(
 ): Promise<{ action: "store" | "skip"; existingText?: string }> {
   try {
     // Stage 1: vector similarity check
-    const results = await store.vectorSearch(vector, 1, DEDUP_SOFT_THRESHOLD);
+    const results = await store.vectorSearch(vector, DEDUP_CANDIDATE_LIMIT, DEDUP_SOFT_THRESHOLD);
     if (results.length === 0) {
       return { action: "store" }; // Clearly unique
+    }
+
+    const normalizedIncoming = normalizeDedupText(text);
+    const exact = results.find((result) => normalizeDedupText(result.entry.text) === normalizedIncoming);
+    if (exact) {
+      return { action: "skip", existingText: exact.entry.text };
+    }
+
+    const atomicPreferenceGuard = shouldForceCreateAtomicPreference(
+      text,
+      results.map((result) => result.entry.text),
+    );
+    if (atomicPreferenceGuard.shouldForceCreate) {
+      return {
+        action: "store",
+        existingText: atomicPreferenceGuard.matchedText,
+      };
     }
 
     const topScore = results[0].score;

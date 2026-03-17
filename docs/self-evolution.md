@@ -90,7 +90,7 @@ Over time, you accumulate many memories about the same topic. Consolidation merg
 | Category | Strategy | Why |
 |----------|----------|-----|
 | `profile` | **Merge** | User identity evolves; latest version wins |
-| `preferences` | **Merge** | Preferences update; keep the newest |
+| `preferences` | **Merge** | Preferences update within the same slot; concrete item preferences stay separate |
 | `entities` | **Merge** | Entity info accumulates; consolidate |
 | `patterns` | **Merge** | Patterns refine over time |
 | `events` | **Append** | Events are facts; dedup but keep distinct entries |
@@ -103,6 +103,8 @@ Over time, you accumulate many memories about the same topic. Consolidation merg
 3. For **merge** categories: LLM combines the cluster into one entry, archives originals
 4. For **append** categories: remove exact duplicates, keep distinct entries
 5. Update access counts (merged entry inherits the sum)
+
+`preferences` needs one extra guard: do not collapse same-brand, different-item preferences into one topic-level memory. A summary can exist, but it should not replace the atomic preference facts.
 
 ### Safety
 

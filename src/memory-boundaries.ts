@@ -1,4 +1,5 @@
 import type { DurableMemoryCategory } from "./memory-schema.js";
+import { inferAtomicBrandItemPreferenceSlot } from "./preference-slots.js";
 
 export const MEMORY_LAYERS = [
   "canonical",
@@ -108,11 +109,31 @@ export function buildDefaultCanonicalKey(params: {
   text?: string;
   title?: string;
 }): string {
+  if (params.category === "preferences") {
+    const slot = inferAtomicBrandItemPreferenceSlot(params.text || params.title || "");
+    if (slot) {
+      return truncateCanonicalKey([
+        params.category,
+        slot.type,
+        slot.brand,
+        slot.item,
+      ]);
+    }
+  }
+
   const base = collapseKeyText(params.title || params.text || "");
   const normalizedBase = normalizeCanonicalKey(base);
   return normalizedBase
     ? `${params.category}:${normalizedBase}`
     : `${params.category}:memory`;
+}
+
+function truncateCanonicalKey(segments: string[]): string {
+  return segments
+    .filter(Boolean)
+    .join(":")
+    .slice(0, 120)
+    .replace(/[:\-]+$/u, "");
 }
 
 export function resolveIngestBoundary(params: {
