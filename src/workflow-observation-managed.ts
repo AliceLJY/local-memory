@@ -17,13 +17,19 @@ function dedupeTags(tags: string[]): string[] {
   return deduped;
 }
 
-function resolveObservationScope(input: Pick<ResumeContextRequest, "scope" | "sessionId">): string | undefined {
-  return input.scope || (input.sessionId ? `session:${input.sessionId}` : undefined);
+function resolveObservationScope(
+  request: Pick<ResumeContextRequest, "scope" | "sessionId">,
+  response?: Pick<ResumeContextResponse, "resolvedScope" | "latestCheckpoint">,
+): string | undefined {
+  return request.scope
+    || (request.sessionId ? `session:${request.sessionId}` : undefined)
+    || response?.resolvedScope
+    || response?.latestCheckpoint?.resolvedScope;
 }
 
 export function buildManagedResumeObservation(
   request: Pick<ResumeContextRequest, "scope" | "sessionId" | "task">,
-  response: Pick<ResumeContextResponse, "stableContext" | "relevantPatterns" | "recentCases" | "latestCheckpoint" | "responseMode">,
+  response: Pick<ResumeContextResponse, "stableContext" | "relevantPatterns" | "recentCases" | "latestCheckpoint" | "responseMode" | "resolvedScope">,
 ): WorkflowObservationInput {
   const stableCount = response.stableContext.length;
   const patternCount = response.relevantPatterns.length;
@@ -35,7 +41,7 @@ export function buildManagedResumeObservation(
     summary: response.responseMode === "recall-only"
       ? `Managed resume_context recovered ${stableCount} stable item(s) in recall-only mode${checkpointText}.`
       : `Managed resume_context recovered ${stableCount} stable item(s), ${patternCount} pattern(s), and ${caseCount} case(s)${checkpointText}.`,
-    scope: resolveObservationScope(request),
+    scope: resolveObservationScope(request, response),
     source: MANAGED_SOURCE,
     signal: response.responseMode === "recall-only" ? "managed-recall-resolved" : "managed-resume-resolved",
     task: request.task,

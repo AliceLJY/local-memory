@@ -3,7 +3,7 @@ import { resolve, join } from "node:path";
 import { homedir } from "node:os";
 
 import { MemoryStore, validateStoragePath } from "./store.js";
-import { createEmbedder, type EmbeddingConfig } from "./embedder.js";
+import { createEmbedder, getVectorDimensions, type EmbeddingConfig } from "./embedder.js";
 import { createRetriever, type RetrievalConfig, DEFAULT_RETRIEVAL_CONFIG } from "./retriever.js";
 import { applyRetrievalProfile } from "./retrieval-profiles.js";
 import { AccessTracker } from "./access-tracker.js";
@@ -120,6 +120,15 @@ export function createComponents(config: LocalMemoryConfig, profileName?: string
   }
 
   return { store, embedder, retriever, profile, accessTracker, llm };
+}
+
+export function createStoreOnly(config: LocalMemoryConfig): MemoryStore {
+  const dbPath = resolve(import.meta.dir, "..", expandHome(config.dbPath));
+  validateStoragePath(dbPath);
+  return new MemoryStore({
+    dbPath,
+    vectorDim: getVectorDimensions(config.embedding.model, config.embedding.dimensions),
+  });
 }
 
 export function createComponentResolver(config: LocalMemoryConfig) {

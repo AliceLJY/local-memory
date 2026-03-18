@@ -19,7 +19,7 @@ import { applyRetrievalProfile, listRetrievalProfiles } from "./retrieval-profil
 import { distillResults, formatExplainResults, formatSearchResults, selectBriefSeedResults, summarizeResults } from "./memory-output.js";
 import { archiveDirtyBriefAsset, assetSummaryLine, buildBriefAsset, buildPinAsset, getExportsDir, listDirtyBriefAssets, listMemoryAssets, listPinAssets, pinSummaryLine, saveBriefAsset, savePinAsset, writeExportArtifact } from "./memory-assets.js";
 import { indexAsset, indexPinnedAsset } from "./asset-sync.js";
-import { createComponents, expandHome, loadConfig, loadDotEnv, type LocalMemoryConfig } from "./runtime-config.js";
+import { createComponents, createStoreOnly, expandHome, loadConfig, loadDotEnv, type LocalMemoryConfig } from "./runtime-config.js";
 import {
   ingestCCTranscripts,
   ingestCodexSessions,
@@ -48,6 +48,14 @@ import { WorkflowObservationOutcomeSchema } from "./workflow-observation-schema.
 import { buildWorkflowEvidence, buildWorkflowObservationRecord, inspectWorkflowDashboard, inspectWorkflowHealth } from "./workflow-observation-engine.js";
 import { formatWorkflowEvidencePack, formatWorkflowHealthDashboard, formatWorkflowHealthReport, formatWorkflowObservationSaved } from "./workflow-observation-output.js";
 import { WorkflowObservationStore } from "./workflow-observation-store.js";
+import {
+  applyWorkflowObservationScopeSuggestions,
+  formatWorkflowObservationScopeReview,
+  keepWorkflowObservationScopesGlobal,
+  parseWorkflowObservationScopeCue,
+  reviewWorkflowObservationScopes,
+} from "./workflow-observation-scope-review.js";
+import { collectScopeInventory, formatScopeInventoryReport } from "./scope-inventory.js";
 import { buildRetrievalContext, resolveScopeSelection } from "./scope-policy.js";
 
 /**
@@ -365,6 +373,10 @@ function formatLegacyScope(value: string | null): string {
   if (kind === "missing") return "<missing>";
   if (kind === "empty") return "<empty>";
   return value ?? "<missing>";
+}
+
+function collectRepeatedOption(value: string, previous: string[] = []): string[] {
+  return [...previous, value];
 }
 
 function entryToRetrievalResult(entry: Awaited<ReturnType<MemoryStore["get"]>>): RetrievalResult {
@@ -1413,7 +1425,7 @@ program
   .option("--json", "JSON 格式输出")
   .action(async (options) => {
     const config = loadConfig();
-    const { store } = createComponents(config);
+    const store = createStoreOnly(config);
     const limit = parseLimitOption(options.limit, 20, 1, 200);
     const audit = await store.auditLegacyScopes(limit);
 
@@ -1448,6 +1460,28 @@ program
     }
 
     console.log("\n  Use this report to migrate or delete historical unscoped rows before removing compatibility shims.");
+  });
+
+program
+  .command("scope-inventory")
+  .description("跨 memories / pins / checkpoints / workflow observations 统一盘点 legacy scope 异常")
+  .option("-n, --limit <n>", "每层最多显示多少条示例", "20")
+  .option("--json", "JSON 格式输出")
+  .action(async (options) => {
+    const config = loadConfig();
+    const store = createStoreOnly(config);
+    const limit = parseLimitOption(options.limit, 20, 1, 200);
+    const report = await collectScopeInventory({
+      store,
+      sampleLimit: limit,
+    });
+
+    if (options.json) {
+      console.log(JSON.stringify(report, null, 2));
+      return;
+    }
+
+    console.log(formatScopeInventoryReport(report));
   });
 
 // ─── reset ───────────────────────────────────────────────────────────────────
@@ -1649,6 +1683,83 @@ program
       return;
     }
     console.log(formatWorkflowEvidencePack(pack));
+  });
+
+program
+  .command("workflow-scope-review")
+  .description("审查指定 scope（默认 global）的 workflow observations，并按 cue 预览/回填目标 scope")
+  .option("--current-scope <scope>", "要审查的当前 scope", "global")
+  .option("--source <source>", "可选 source 过滤，如 managed")
+  .option("--workflow-id <workflowId>", "可选 workflowId 过滤，如 resume_context")
+  .option("--cue <needle=scope>", "可重复；把命中的 task/summary cue 映射到目标 scope", collectRepeatedOption, [])
+  .option("--neighbor-window-seconds <n>", "允许从邻近 observation 继承唯一 scope 的时间窗（秒）", "90")
+  .option("--apply", "把有唯一建议 scope 的记录直接回填到文件")
+  .option("--keep-global-id <id>", "可重复；把指定 manual-review 记录标记为已审阅且允许保留当前 global", collectRepeatedOption, [])
+  .option("--keep-global-reason <reason>", "给 --keep-global-id 使用的审阅原因")
+  .option("--json", "输出 JSON")
+  .action(async (options) => {
+    const cues = (options.cue as string[]).map(parseWorkflowObservationScopeCue);
+    const keepGlobalIds = (options.keepGlobalId as string[]) || [];
+    if (keepGlobalIds.length > 0 && typeof options.keepGlobalReason !== "string") {
+      throw new Error("workflow-scope-review --keep-global-id requires --keep-global-reason.");
+    }
+
+    const review = reviewWorkflowObservationScopes({
+      currentScope: options.currentScope,
+      source: options.source,
+      workflowId: options.workflowId,
+      cues,
+      neighborWindowSeconds: parseLimitOption(options.neighborWindowSeconds, 90, 0, 3600),
+    });
+
+    const keepGlobalResult = keepGlobalIds.length > 0
+      ? keepWorkflowObservationScopesGlobal(review, {
+        ids: keepGlobalIds,
+        reason: options.keepGlobalReason,
+      })
+      : undefined;
+
+    if (options.apply || keepGlobalResult) {
+      const result = options.apply
+        ? applyWorkflowObservationScopeSuggestions(review)
+        : undefined;
+      const latestReview = reviewWorkflowObservationScopes({
+        currentScope: options.currentScope,
+        source: options.source,
+        workflowId: options.workflowId,
+        cues,
+        neighborWindowSeconds: parseLimitOption(options.neighborWindowSeconds, 90, 0, 3600),
+      });
+      if (options.json) {
+        console.log(JSON.stringify({ review: latestReview, result, keepGlobalResult }, null, 2));
+        return;
+      }
+
+      console.log(formatWorkflowObservationScopeReview(latestReview));
+      if (keepGlobalResult) {
+        console.log();
+        console.log(`Reviewed keep-global : ${keepGlobalResult.reviewedCount}`);
+        console.log(`Skipped keep-global  : ${keepGlobalResult.skippedCount}`);
+        if (keepGlobalResult.unmatchedIds.length > 0) {
+          console.log(`Unmatched ids        : ${keepGlobalResult.unmatchedIds.join(", ")}`);
+        }
+        if (keepGlobalResult.ambiguousIds.length > 0) {
+          console.log(`Ambiguous ids        : ${keepGlobalResult.ambiguousIds.join(", ")}`);
+        }
+      }
+      if (options.apply) {
+        console.log();
+        console.log(`Applied : ${result?.updatedCount || 0}`);
+        console.log(`Skipped : ${result?.skippedCount || 0}`);
+      }
+      return;
+    }
+
+    if (options.json) {
+      console.log(JSON.stringify(review, null, 2));
+      return;
+    }
+    console.log(formatWorkflowObservationScopeReview(review));
   });
 
 program

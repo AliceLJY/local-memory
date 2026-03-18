@@ -920,7 +920,7 @@ describe("composeResumeContext", () => {
       },
       listPins: () => [],
     }, {
-      task: "继续这个项目，不要让我重复前情",
+      task: "继续 RecallNest MCP transport 适配",
       scope: "project:recallnest",
       includeLatestCheckpoint: false,
       limitPerSection: 3,
@@ -989,6 +989,660 @@ describe("composeResumeContext", () => {
     const stableJoined = response.stableContext.join(" ");
     expect(stableJoined).toContain("RecallNest");
     expect(stableJoined).not.toContain("claude-memory-pro");
+  });
+
+  it("filters foreign project entities from scoped stable recall when overlap is only shared tool nouns", async () => {
+    const retriever = {
+      async retrieve(context: RetrievalContext): Promise<RetrievalResult[]> {
+        if (context.category !== "entities") {
+          return [];
+        }
+
+        return [
+          withScope(
+            buildResult(
+              "entity-recallnest-mcp",
+              "entities",
+              "RecallNest MCP transport and memory routing stay shared across Claude Code, Codex, and Gemini CLI.",
+            ),
+            "project:recallnest",
+          ),
+          withScope(
+            buildResult(
+              "entity-foreign-mcp",
+              "entities",
+              "Telegram bridge MCP transport sync handles message relay and adapter wiring.",
+            ),
+            "project:telegram-bridge",
+          ),
+        ];
+      },
+    };
+
+    const response = await composeResumeContext({
+      retriever,
+      checkpointStore: {
+        async getLatest() {
+          return null;
+        },
+      },
+      listPins: () => [],
+    }, {
+      task: "继续 RecallNest MCP transport 适配",
+      scope: "project:recallnest",
+      includeLatestCheckpoint: false,
+      limitPerSection: 3,
+    });
+
+    const stableJoined = response.stableContext.join(" ");
+    expect(stableJoined).toContain("RecallNest MCP transport");
+    expect(stableJoined).not.toContain("Telegram bridge MCP transport");
+  });
+
+  it("filters foreign project patterns and cases from scoped continuity recall when overlap is only shared tool nouns", async () => {
+    const retriever = {
+      async retrieve(context: RetrievalContext): Promise<RetrievalResult[]> {
+        if (context.category === "entities") {
+          return [
+            withScope(
+              buildResult(
+                "entity-recallnest-continuity",
+                "entities",
+                "RecallNest continuity revolves around scoped memory and MCP tooling.",
+              ),
+              "project:recallnest",
+            ),
+          ];
+        }
+
+        if (context.category === "patterns") {
+          return [
+            withScope(
+              buildResult(
+                "pattern-recallnest-transport",
+                "patterns",
+                "Workflow pattern: RecallNest MCP transport rollout Tools: resume_context, search_memory Use when: When RecallNest transport wiring changes Steps: 1. Check scoped memory continuity before transport changes.",
+              ),
+              "project:recallnest",
+            ),
+            withScope(
+              buildResult(
+                "pattern-foreign-transport",
+                "patterns",
+                "Workflow pattern: Telegram bridge MCP transport rollout Tools: resume_context, search_memory Use when: When bridge transport wiring changes Steps: 1. Check bridge relay continuity before transport changes.",
+              ),
+              "project:telegram-bridge",
+            ),
+          ];
+        }
+
+        if (context.category === "cases") {
+          return [
+            withScope(
+              buildResult(
+                "case-recallnest-transport",
+                "cases",
+                "Case: RecallNest MCP transport regression Problem: RecallNest transport recall drifted under scoped MCP changes. Solution: tighten scoped recall before transport rollout.",
+              ),
+              "project:recallnest",
+            ),
+            withScope(
+              buildResult(
+                "case-foreign-transport",
+                "cases",
+                "Case: Telegram bridge MCP transport regression Problem: bridge relay drifted during MCP transport rollout. Solution: inspect bridge transport sync.",
+              ),
+              "project:telegram-bridge",
+            ),
+          ];
+        }
+
+        return [];
+      },
+    };
+
+    const response = await composeResumeContext({
+      retriever,
+      checkpointStore: {
+        async getLatest() {
+          return null;
+        },
+      },
+      listPins: () => [],
+    }, {
+      task: "继续 RecallNest continuity MCP transport rollout",
+      scope: "project:recallnest",
+      includeLatestCheckpoint: false,
+      limitPerSection: 3,
+    });
+
+    const patternJoined = response.relevantPatterns.join(" ");
+    const caseJoined = response.recentCases.join(" ");
+    expect(patternJoined).toContain("RecallNest MCP transport rollout");
+    expect(patternJoined).not.toContain("Telegram bridge MCP transport rollout");
+    expect(caseJoined).toContain("RecallNest MCP transport regression");
+    expect(caseJoined).not.toContain("Telegram bridge MCP transport regression");
+  });
+
+  it("filters foreign project workflow fallback patterns under scoped continuity recall", async () => {
+    const retriever = {
+      async retrieve(context: RetrievalContext): Promise<RetrievalResult[]> {
+        if (context.category === "entities") {
+          return [
+            withScope(
+              buildResult(
+                "entity-recallnest-fallback",
+                "entities",
+                "RecallNest continuity revolves around scoped memory and MCP tooling.",
+              ),
+              "project:recallnest",
+            ),
+          ];
+        }
+
+        if (context.category === "patterns") {
+          return [];
+        }
+
+        if (!context.category) {
+          return [
+            withScope(
+              buildResult(
+                "pattern-fallback-recallnest",
+                "fact",
+                "Workflow pattern: RecallNest MCP transport rollout Tools: resume_context, search_memory Use when: When RecallNest transport wiring changes Steps: 1. Run search_memory before transport rollout.",
+              ),
+              "memory:project:recallnest",
+            ),
+            withScope(
+              buildResult(
+                "pattern-fallback-foreign",
+                "fact",
+                "Workflow pattern: Telegram bridge MCP transport rollout Tools: resume_context, search_memory Use when: When bridge transport wiring changes Steps: 1. Run search_memory before bridge relay rollout.",
+              ),
+              "memory:project:telegram-bridge",
+            ),
+          ];
+        }
+
+        return [];
+      },
+    };
+
+    const response = await composeResumeContext({
+      retriever,
+      checkpointStore: {
+        async getLatest() {
+          return null;
+        },
+      },
+      listPins: () => [],
+    }, {
+      task: "继续 RecallNest continuity MCP transport rollout",
+      scope: "project:recallnest",
+      includeLatestCheckpoint: false,
+      limitPerSection: 3,
+    });
+
+    const patternJoined = response.relevantPatterns.join(" ");
+    expect(patternJoined).toContain("RecallNest MCP transport rollout");
+    expect(patternJoined).not.toContain("Telegram bridge MCP transport rollout");
+  });
+
+  it("filters foreign project cases from scoped continuity recall even when the foreign case mentions RecallNest", async () => {
+    const retriever = {
+      async retrieve(context: RetrievalContext): Promise<RetrievalResult[]> {
+        if (context.category === "entities") {
+          return [
+            withScope(
+              buildResult(
+                "entity-recallnest-cases",
+                "entities",
+                "RecallNest continuity revolves around scoped memory and MCP tooling.",
+              ),
+              "project:recallnest",
+            ),
+          ];
+        }
+
+        if (context.category === "cases") {
+          return [
+            withScope(
+              buildResult(
+                "case-recallnest-transport-scoped",
+                "cases",
+                "Case: RecallNest MCP transport regression Problem: RecallNest transport recall drifted under scoped MCP changes. Solution: tighten scoped recall before transport rollout.",
+              ),
+              "project:recallnest",
+            ),
+            withScope(
+              buildResult(
+                "case-foreign-transport-mentions-recallnest",
+                "cases",
+                "Case: Telegram bridge MCP transport regression Problem: bridge transport fixes should stay recoverable inside the bridge project without leaking into RecallNest continuity.",
+              ),
+              "project:telegram-bridge",
+            ),
+          ];
+        }
+
+        return [];
+      },
+    };
+
+    const response = await composeResumeContext({
+      retriever,
+      checkpointStore: {
+        async getLatest() {
+          return null;
+        },
+      },
+      listPins: () => [],
+    }, {
+      task: "继续 RecallNest MCP transport 适配",
+      scope: "project:recallnest",
+      includeLatestCheckpoint: false,
+      limitPerSection: 3,
+    });
+
+    const caseJoined = response.recentCases.join(" ");
+    expect(caseJoined).toContain("RecallNest MCP transport regression");
+    expect(caseJoined).not.toContain("Telegram bridge MCP transport regression");
+  });
+
+  it("suppresses project-scoped transport task results for writing-focused tasks with unrelated hints", async () => {
+    const retriever = {
+      async retrieve(context: RetrievalContext): Promise<RetrievalResult[]> {
+        if (context.category === "patterns") {
+          return [
+            withScope(
+              buildResult(
+                "pattern-recallnest-transport-writing",
+                "patterns",
+                "Workflow pattern: RecallNest MCP transport rollout Tools: resume_context, search_memory, eval:continuity Use when: When RecallNest continuity work touches MCP transport wiring under project scope Steps: 1. Call resume_context with project:recallnest before transport changes.",
+              ),
+              "project:recallnest",
+            ),
+          ];
+        }
+
+        if (context.category === "cases") {
+          return [
+            withScope(
+              buildResult(
+                "case-bridge-transport-writing",
+                "cases",
+                "Case: Telegram bridge MCP transport regression Problem: bridge transport fixes should stay recoverable inside the bridge project without leaking into RecallNest continuity.",
+              ),
+              "project:telegram-bridge",
+            ),
+          ];
+        }
+
+        return [];
+      },
+    };
+
+    const response = await composeResumeContext({
+      retriever,
+      checkpointStore: {
+        async getLatest() {
+          return null;
+        },
+      },
+      listPins: () => [],
+    }, {
+      task: "不要让我重复前情，接着写",
+      profile: "writing",
+      includeLatestCheckpoint: false,
+      limitPerSection: 3,
+    });
+
+    expect(response.relevantPatterns).toEqual([]);
+    expect(response.recentCases).toEqual([]);
+  });
+
+  it("suppresses same-project transport and smoke task results for generic scoped prompts", async () => {
+    const retriever = {
+      async retrieve(context: RetrievalContext): Promise<RetrievalResult[]> {
+        if (context.category === "entities") {
+          return [
+            withScope(
+              buildResult(
+                "entity-recallnest-generic",
+                "entities",
+                "RecallNest continuity revolves around scoped memory and startup recovery.",
+              ),
+              "project:recallnest",
+            ),
+          ];
+        }
+
+        if (context.category === "patterns") {
+          return [
+            withScope(
+              buildResult(
+                "pattern-recallnest-transport-generic",
+                "patterns",
+                "Workflow pattern: RecallNest MCP transport rollout Tools: resume_context, search_memory, eval:continuity Use when: When RecallNest continuity work touches MCP transport wiring under project scope Steps: 1. Call resume_context with project:recallnest before transport changes.",
+              ),
+              "project:recallnest",
+            ),
+            withScope(
+              buildResult(
+                "pattern-recallnest-smoke-generic",
+                "patterns",
+                "Workflow pattern: Headless Claude Code continuity smoke Tools: claude, bun run smoke:claude-continuity, resume_context, checkpoint_session Use when: When RecallNest needs a real continuity acceptance check Steps: 1. Run smoke:claude-continuity before shipping continuity changes.",
+              ),
+              "project:recallnest",
+            ),
+            withScope(
+              buildResult(
+                "pattern-recallnest-handoff-generic",
+                "patterns",
+                "Workflow pattern: Cross-window continuity handoff Tools: resume_context, latest_checkpoint Use when: When opening a fresh terminal window for the same project Steps: 1. Call resume_context before coding.",
+              ),
+              "project:recallnest",
+            ),
+          ];
+        }
+
+        if (context.category === "cases") {
+          return [
+            withScope(
+              buildResult(
+                "case-recallnest-transport-generic",
+                "cases",
+                "Case: RecallNest MCP transport regression Problem: Scoped RecallNest continuity work around MCP transport could still drift unless the transport fixes were easy to recover.",
+              ),
+              "project:recallnest",
+            ),
+            withScope(
+              buildResult(
+                "case-recallnest-scope-fallback-generic",
+                "cases",
+                "Case: RecallNest scope fallback cleanup Problem: resume_context stayed too narrow on project scope and surfaced ongoing notes instead of stable handoff context. Solution: prefer durable cases and patterns.",
+              ),
+              "project:recallnest",
+            ),
+          ];
+        }
+
+        return [];
+      },
+    };
+
+    const response = await composeResumeContext({
+      retriever,
+      checkpointStore: {
+        async getLatest() {
+          return null;
+        },
+      },
+      listPins: () => [],
+    }, {
+      task: "继续这个项目，不要让我重复前情",
+      scope: "project:recallnest",
+      includeLatestCheckpoint: false,
+      limitPerSection: 3,
+    });
+
+    const patternJoined = response.relevantPatterns.join(" ");
+    const caseJoined = response.recentCases.join(" ");
+    expect(patternJoined).toContain("Cross-window continuity handoff");
+    expect(patternJoined).not.toContain("RecallNest MCP transport rollout");
+    expect(patternJoined).not.toContain("Headless Claude Code continuity smoke");
+    expect(caseJoined).toContain("RecallNest scope fallback cleanup");
+    expect(caseJoined).not.toContain("RecallNest MCP transport regression");
+  });
+
+  it("prefers named non-RecallNest entities over unrelated project entities for unscoped tasks", async () => {
+    const retriever = {
+      async retrieve(context: RetrievalContext): Promise<RetrievalResult[]> {
+        if (context.category !== "entities") {
+          return [];
+        }
+
+        return [
+          buildResult(
+            "entity-recallnest",
+            "entities",
+            "RecallNest is the shared memory layer for Claude Code, Codex, and Gemini CLI.",
+          ),
+          buildResult(
+            "entity-telegram-bridge",
+            "entities",
+            "Telegram AI bridge handles A2A Claude Agent SDK query debugging and group-chat transport.",
+          ),
+        ];
+      },
+    };
+
+    const response = await composeResumeContext({
+      retriever,
+      checkpointStore: {
+        async getLatest() {
+          return null;
+        },
+      },
+      listPins: () => [{
+        id: "pin-writing-style",
+        type: "pinned-memory",
+        createdAt: "2026-03-16T04:00:00.000Z",
+        updatedAt: "2026-03-16T04:00:00.000Z",
+        title: "用户写作语气偏好",
+        summary: "用户稳定偏好口语化、不端着、可以自嘲但不说教。",
+        tags: ["写作", "风格"],
+        source: {
+          memoryId: "memory-old-pin",
+          scope: "memory:agent",
+          timestamp: Date.parse("2026-03-16T04:00:00.000Z"),
+          metadata: {},
+        },
+        snippet: "根据你的档案：GitHub, Claude Code CLI, 本地 Docker。",
+        path: "/tmp/pin-writing-style.json",
+      }],
+    }, {
+      task: "A2A code Claude SDK calling error",
+      includeLatestCheckpoint: false,
+      limitPerSection: 3,
+    });
+
+    const stableJoined = response.stableContext.join(" ");
+    expect(stableJoined).toContain("Telegram AI bridge");
+    expect(stableJoined).not.toContain("RecallNest is the shared memory layer");
+    expect(stableJoined).not.toContain("口语化");
+  });
+
+  it("keeps vague associative Nest tasks pointed at RecallNest instead of unrelated entities", async () => {
+    const retriever = {
+      async retrieve(context: RetrievalContext): Promise<RetrievalResult[]> {
+        if (context.category !== "entities") {
+          return [];
+        }
+
+        return [
+          buildResult(
+            "entity-recallnest",
+            "entities",
+            "RecallNest is the shared memory layer for Claude Code, Codex, and Gemini CLI.",
+          ),
+          buildResult(
+            "entity-telegram-bridge",
+            "entities",
+            "Telegram AI bridge handles A2A Claude Agent SDK query debugging and group-chat transport.",
+          ),
+        ];
+      },
+    };
+
+    const response = await composeResumeContext({
+      retriever,
+      checkpointStore: {
+        async getLatest() {
+          return null;
+        },
+      },
+      listPins: () => [{
+        id: "pin-writing-style",
+        type: "pinned-memory",
+        createdAt: "2026-03-16T04:00:00.000Z",
+        updatedAt: "2026-03-16T04:00:00.000Z",
+        title: "用户写作语气偏好",
+        summary: "用户稳定偏好口语化、不端着、可以自嘲但不说教。",
+        tags: ["写作", "风格"],
+        source: {
+          memoryId: "memory-old-pin",
+          scope: "memory:agent",
+          timestamp: Date.parse("2026-03-16T04:00:00.000Z"),
+          metadata: {},
+        },
+        snippet: "根据你的档案：GitHub, Claude Code CLI, 本地 Docker。",
+        path: "/tmp/pin-writing-style.json",
+      }],
+    }, {
+      task: "之前弄过那个什么 Nest 的记忆系统",
+      includeLatestCheckpoint: false,
+      limitPerSection: 3,
+    });
+
+    const stableJoined = response.stableContext.join(" ");
+    expect(stableJoined).toContain("RecallNest");
+    expect(stableJoined).not.toContain("Telegram AI bridge");
+    expect(stableJoined).not.toContain("口语化");
+  });
+
+  it("filters conversational transcript pins out of stable context for external bridge tasks", async () => {
+    const retriever = {
+      async retrieve(): Promise<RetrievalResult[]> {
+        return [];
+      },
+    };
+
+    const response = await composeResumeContext({
+      retriever,
+      checkpointStore: {
+        async getLatest() {
+          return null;
+        },
+      },
+      listPins: () => [{
+        id: "pin-bridge-raw",
+        type: "pinned-memory",
+        createdAt: "2026-03-16T04:00:00.000Z",
+        updatedAt: "2026-03-16T04:00:00.000Z",
+        title: "[助手] 现在更新 telegram-cli-bridge 自己的 README（已经有旧引用）。",
+        summary: "[助手] 现在更新 telegram-cli-bridge 自己的 README（已经有旧引用）。",
+        tags: ["telegram", "bridge"],
+        source: {
+          memoryId: "memory-bridge-raw",
+          scope: "cc:bridge-session",
+          timestamp: Date.parse("2026-03-16T04:00:00.000Z"),
+          metadata: {},
+        },
+        snippet: "[助手] 现在更新 telegram-cli-bridge 自己的 README（已经有旧引用）。",
+        path: "/tmp/pin-bridge-raw.json",
+      }],
+    }, {
+      task: "继续 telegram ai bridge 项目",
+      includeLatestCheckpoint: false,
+      limitPerSection: 3,
+    });
+
+    const stableJoined = response.stableContext.join(" ");
+    expect(stableJoined).toContain("Task focus:");
+    expect(stableJoined).toContain("telegram");
+    expect(stableJoined).not.toContain("[助手]");
+    expect(stableJoined).not.toContain("README");
+  });
+
+  it("filters conversational durable pins out of scoped stable context", async () => {
+    const retriever = {
+      async retrieve(): Promise<RetrievalResult[]> {
+        return [];
+      },
+    };
+
+    const response = await composeResumeContext({
+      retriever,
+      checkpointStore: {
+        async getLatest() {
+          return null;
+        },
+      },
+      listPins: () => [{
+        id: "pin-bridge-durable",
+        type: "pinned-memory",
+        createdAt: "2026-03-16T04:00:00.000Z",
+        updatedAt: "2026-03-16T04:00:00.000Z",
+        title: "[助手] 现在更新 telegram-cli-bridge 自己的 README（已经有旧引用）。",
+        summary: "[助手] 现在更新 telegram-cli-bridge 自己的 README（已经有旧引用）。",
+        tags: ["telegram", "bridge"],
+        source: {
+          memoryId: "memory-bridge-durable",
+          scope: "memory:project:telegram-bridge",
+          timestamp: Date.parse("2026-03-16T04:00:00.000Z"),
+          metadata: {},
+        },
+        snippet: "[助手] 现在更新 telegram-cli-bridge 自己的 README（已经有旧引用）。",
+        path: "/tmp/pin-bridge-durable.json",
+      }],
+    }, {
+      task: "继续 RecallNest continuity bridge 适配",
+      scope: "project:recallnest",
+      includeLatestCheckpoint: false,
+      limitPerSection: 3,
+    });
+
+    const stableJoined = response.stableContext.join(" ");
+    expect(stableJoined).toContain("Task focus: recallnest");
+    expect(stableJoined).not.toContain("[助手]");
+    expect(stableJoined).not.toContain("README");
+    expect(stableJoined).not.toContain("telegram-cli-bridge");
+  });
+
+  it("filters foreign project pins from scoped stable context when overlap is only task terms", async () => {
+    const retriever = {
+      async retrieve(): Promise<RetrievalResult[]> {
+        return [];
+      },
+    };
+
+    const response = await composeResumeContext({
+      retriever,
+      checkpointStore: {
+        async getLatest() {
+          return null;
+        },
+      },
+      listPins: () => [{
+        id: "pin-foreign-project",
+        type: "pinned-memory",
+        createdAt: "2026-03-16T04:00:00.000Z",
+        updatedAt: "2026-03-16T04:00:00.000Z",
+        title: "Telegram bridge README adaptation plan",
+        summary: "Bridge adapter migration notes for telegram-cli-bridge transport and README sync.",
+        tags: ["bridge", "readme", "telegram"],
+        source: {
+          memoryId: "memory-bridge-foreign",
+          scope: "memory:project:telegram-bridge",
+          timestamp: Date.parse("2026-03-16T04:00:00.000Z"),
+          metadata: {},
+        },
+        snippet: "adapter migration README sync",
+        path: "/tmp/pin-foreign-project.json",
+      }],
+    }, {
+      task: "继续 RecallNest bridge README 适配",
+      scope: "project:recallnest",
+      includeLatestCheckpoint: false,
+      limitPerSection: 3,
+    });
+
+    const stableJoined = response.stableContext.join(" ");
+    expect(stableJoined).toContain("Task focus: recallnest");
+    expect(stableJoined).not.toContain("Telegram bridge README adaptation plan");
+    expect(stableJoined).not.toContain("telegram-cli-bridge");
   });
 
   it("adds a task focus fallback when stable recall is otherwise empty", async () => {

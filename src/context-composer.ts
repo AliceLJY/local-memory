@@ -3,6 +3,28 @@ import { extractBoundaryMetadata, extractCanonicalKey, shouldUseStableMemoryResu
 import type { RetrievalContext, RetrievalResult } from "./retriever.js";
 import type { ResumeContextResponse, SessionCheckpointRecord } from "./session-schema.js";
 import { ResumeContextRequestSchema, ResumeContextResponseSchema } from "./session-schema.js";
+import {
+  CASE_CUE_TERMS,
+  GENERIC_ENTITY_TASK_TERMS,
+  GENERIC_SCOPE_TERMS,
+  STRONG_WORKFLOW_CUE_TERMS,
+  TASK_RESULT_SPECIFICITY_GROUPS,
+  WORKFLOW_CUE_TERMS,
+  buildTaskHintTerms,
+  containsAnyTerm,
+  containsLowSignalStableTerm,
+  countTermHits,
+  extractTerms,
+  looksLikeCaseFallbackTask,
+  looksLikeContinuityTask,
+  looksLikeLowSignalTaskResult,
+  looksLikePlanishTaskResult,
+  looksLikeRecallOnlyTask,
+  looksLikeStableInstruction,
+  looksLikeStyleTask,
+  normalizeText,
+  taskCueCoverage,
+} from "./term-registry.js";
 
 type StableCategory = "profile" | "preferences" | "entities";
 type TaskCategory = "patterns" | "cases";
@@ -28,257 +50,10 @@ const STABLE_CATEGORY_LABELS: Record<StableCategory, string> = {
   entities: "Entity",
 };
 
-const CONTINUITY_TASK_TERMS = [
-  "新窗口",
-  "fresh window",
-  "new window",
-  "cross window",
-  "跨窗口",
-  "接力",
-  "handoff",
-  "resume",
-  "session",
-  "checkpoint",
-  "continuity",
-  "terminal",
-];
-
-const WORKFLOW_CUE_TERMS = [
-  "search_memory",
-  "resume_context",
-  "checkpoint_session",
-  "checkpoint",
-  "autorecall",
-  "sessionstrategy",
-  "workflow",
-  "pattern",
-  "流程",
-  "步骤",
-  "模板",
-];
-
-const STRONG_WORKFLOW_CUE_TERMS = [
-  "search_memory",
-  "resume_context",
-  "checkpoint_session",
-  "checkpoint",
-  "autorecall",
-  "sessionstrategy",
-];
-
-const CONTINUITY_WORKFLOW_CUE_GROUPS = [
-  { key: "search_memory", terms: ["search_memory"] },
-  { key: "resume_context", terms: ["resume_context"] },
-  { key: "checkpoint", terms: ["checkpoint_session", "latest_checkpoint", "checkpoint"] },
-];
-
-const STABLE_INSTRUCTION_PREFIXES = [
-  "再看看",
-  "看看",
-  "查看",
-  "让我",
-  "帮我",
-  "继续",
-  "接着",
-  "排查",
-  "处理",
-  "同步",
-  "确认",
-  "检查",
-  "测试",
-  "review",
-  "inspect",
-  "check",
-  "look at",
-  "continue",
-  "help me",
-  "let me",
-];
-
-const STABLE_LOW_SIGNAL_TERMS = [
-  "本地没 clone",
-  "远程最新状态",
-  "setup 脚本和项目结构",
-  "setup script and project structure",
-  "继续讨论",
-  "读完了",
-  "整理一下关键发现",
-  "github.com/",
-  "https://",
-  "http://",
-];
-
-const TASK_RESULT_LOW_SIGNAL_TERMS = [
-  "https://",
-  "http://",
-  "github.com/",
-  "笑不活了",
-  "open issues",
-  "issue 还在",
-  "issue still",
-  "关闭啊",
-  "让我看看",
-  "看一下",
-  "没问题？",
-];
-
-const TASK_RESULT_PLANISH_TERMS = [
-  "我先",
-  "先看",
-  "先查",
-  "先补",
-  "先改",
-  "先确认",
-  "我要",
-  "准备",
-  "接下来",
-  "会先",
-  "i'll",
-  "i will",
-  "let me",
-  "going to",
-  "next i",
-];
-
-const GENERIC_SCOPE_TERMS = new Set([
-  "project",
-  "session",
-  "memory",
-  "asset",
-  "scope",
-  "项目",
-  "会话",
-  "记忆",
-]);
-
-const CASE_CUE_TERMS = [
-  "问题",
-  "解决",
-  "修复",
-  "排查",
-  "原因",
-  "导致",
-  "改成",
-  "改为",
-  "回退",
-  "恢复",
-  "workaround",
-  "root cause",
-  "resolved",
-  "solution",
-  "fixed",
-  "debug",
-  "error",
-  "failure",
-];
-
-const CASE_FALLBACK_TASK_TERMS = [
-  "recallnest",
-  "continuity",
-  "checkpoint",
-  "resume_context",
-  "排查",
-  "调试",
-  "debug",
-  "fix",
-  "root cause",
-  "workaround",
-  "issue",
-  "项目",
-  "terminal",
-  "window",
-  "跨窗口",
-  "新窗口",
-];
-
-const TASK_HINT_GROUPS = [
-  {
-    cues: ["写文章", "文章", "写作", "公众号", "draft", "article", "post", "writing"],
-    hints: ["写作", "文章", "语气", "风格", "口语化", "不端着", "AI", "公众号"],
-  },
-  {
-    cues: ["配图", "封面", "图片", "插图", "视觉", "image", "cover", "illustration"],
-    hints: ["配图", "封面", "视觉", "图片", "插图", "审美", "手绘", "撞色"],
-  },
-];
-
-const STYLE_TASK_TERMS = [
-  "语气",
-  "风格",
-  "偏好",
-  "写作风格",
-  "回复风格",
-  "tone",
-  "voice",
-  "style",
-  "preference",
-];
-
-const RECALL_ONLY_TERMS = [
-  "回忆",
-  "记得",
-  "想起",
-  "remember",
-  "recall",
-  "what do you remember",
-  "不要让我重复",
-];
-
-const WRITING_ACTION_TERMS = [
-  "写一篇",
-  "起草",
-  "草稿",
-  "改稿",
-  "润色",
-  "research",
-  "调研",
-  "选题",
-  "继续写",
-  "写公众号",
-  "draft",
-  "revise",
-  "edit",
-  "article",
-];
-
-const CHINESE_TERM_EDGE_STOP_CHARS = new Set([
-  "的",
-  "了",
-  "和",
-  "是",
-  "在",
-  "给",
-  "让",
-  "再",
-  "先",
-  "就",
-  "都",
-  "很",
-  "去",
-  "做",
-  "写",
-  "看",
-  "用",
-  "要",
-  "我",
-  "你",
-  "他",
-  "她",
-  "它",
-  "们",
-  "这",
-  "那",
-  "请",
-]);
-
 function cleanText(text: string, maxLen: number): string {
   const compact = text.replace(/\s+/g, " ").trim();
   if (compact.length <= maxLen) return compact;
   return `${compact.slice(0, Math.max(0, maxLen - 3)).trimEnd()}...`;
-}
-
-function normalizeText(text: string): string {
-  return text.replace(/\s+/g, " ").trim().toLowerCase();
 }
 
 function stripConversationMarkers(text: string): string {
@@ -291,44 +66,6 @@ function stripConversationMarkers(text: string): string {
     .trim();
 }
 
-function extractTerms(text?: string): string[] {
-  if (!text) return [];
-  const matches = text.match(/[\p{Script=Han}]{2,}|[a-z0-9._/-]{3,}/giu) || [];
-  const expanded: string[] = [];
-
-  for (const match of matches) {
-    const lower = match.toLowerCase();
-    expanded.push(lower);
-
-    if (!/[\p{Script=Han}]/u.test(match) || match.length <= 4) continue;
-
-    const chars = Array.from(lower);
-    for (let size = 2; size <= 3; size += 1) {
-      for (let index = 0; index <= chars.length - size; index += 1) {
-        const chunk = chars.slice(index, index + size).join("");
-        if (
-          chunk.length < 2 ||
-          CHINESE_TERM_EDGE_STOP_CHARS.has(chunk[0] || "") ||
-          CHINESE_TERM_EDGE_STOP_CHARS.has(chunk[chunk.length - 1] || "")
-        ) {
-          continue;
-        }
-        expanded.push(chunk);
-      }
-    }
-  }
-
-  return Array.from(new Set(expanded)).slice(0, 12);
-}
-
-function buildTaskHintTerms(text?: string): string[] {
-  if (!text) return [];
-  const normalized = normalizeText(text);
-  const hints = TASK_HINT_GROUPS.flatMap((group) =>
-    group.cues.some((cue) => normalized.includes(cue.toLowerCase())) ? group.hints : [],
-  );
-  return Array.from(new Set(hints.map((term) => term.toLowerCase())));
-}
 
 function interleaveUnique(buckets: string[][], limit: number): string[] {
   const seen = new Set<string>();
@@ -549,7 +286,7 @@ function formatTaskResult(result: RetrievalResult): string {
 
 function scorePin(asset: PinAsset, taskTerms: string[], scope?: string): number {
   let score = 0;
-  const haystack = `${asset.title} ${asset.summary} ${asset.tags.join(" ")} ${asset.snippet}`.toLowerCase();
+  const haystack = `${asset.title} ${asset.summary} ${asset.tags.join(" ")}`.toLowerCase();
   for (const term of taskTerms) {
     if (haystack.includes(term)) score += 2;
   }
@@ -593,6 +330,110 @@ function isDurablePinAsset(asset: PinAsset): boolean {
   return asset.source.scope.startsWith("memory:") || asset.source.scope.startsWith("asset:");
 }
 
+function looksLikeConversationalPinnedText(text: string): boolean {
+  const normalized = normalizeText(text);
+  if (!normalized) return true;
+  if (looksLikeStableInstruction(normalized)) return true;
+  if (looksLikePlanishTaskResult(normalized)) return true;
+  if (looksLikeLowSignalTaskResult(normalized)) return true;
+
+  return [
+    "现在看",
+    "现在查",
+    "现在更新",
+    "现在修改",
+    "现在修",
+    "现在补",
+    "现在排查",
+    "现在确认",
+    "现在检查",
+    "现在同步",
+    "现在处理",
+    "刚才",
+    "刚刚",
+    "i'll",
+    "i will",
+    "let me",
+    "going to",
+  ].some((prefix) => normalized.startsWith(prefix));
+}
+
+function isConversationalPinnedAsset(asset: PinAsset): boolean {
+  const rawLead = `${asset.title} ${asset.summary}`.trim();
+  if (!/^\[(用户|助手|Pinned Asset|Memory Brief)\]/i.test(rawLead)) return false;
+  if (looksLikeConversationalPinnedText(stripConversationMarkers(rawLead))) return true;
+  return !isDurablePinAsset(asset) || !asset.source.scope.startsWith("memory:");
+}
+
+function isUsefulPinnedAsset(asset: PinAsset): boolean {
+  if (isConversationalPinnedAsset(asset)) return false;
+
+  const stripped = stripConversationMarkers(`${asset.title} ${asset.summary}`);
+  const normalized = normalizeText(stripped);
+  if (!normalized || normalized.length < 8) return false;
+  if (looksLikeStableInstruction(normalized)) return false;
+  if (containsLowSignalStableTerm(normalized)) return false;
+  return true;
+}
+
+function normalizeScopedValue(scope: string): string {
+  const normalized = normalizeText(scope);
+  if (normalized.startsWith("memory:")) return normalized.slice("memory:".length);
+  if (normalized.startsWith("asset:")) return normalized.slice("asset:".length);
+  return normalized;
+}
+
+function buildScopeIdentityTerms(scope?: string): string[] {
+  if (!scope) return [];
+
+  const normalizedScope = normalizeScopedValue(scope);
+  const identity = normalizedScope.includes(":")
+    ? normalizedScope.slice(normalizedScope.indexOf(":") + 1)
+    : normalizedScope;
+  if (!identity) return [];
+
+  const spaced = identity.replace(/[-_/.:]+/g, " ");
+  return dedupeText([
+    identity,
+    spaced,
+    ...extractTerms(identity),
+    ...extractTerms(spaced),
+  ], 12)
+    .map((term) => normalizeText(term))
+    .filter((term) =>
+      term.length >= 2 &&
+      !GENERIC_SCOPE_TERMS.has(term),
+    );
+}
+
+function buildProjectScopeCueTerms(scope?: string): string[] {
+  if (!scope) return [];
+  return dedupeText(extractTerms(scope), 8)
+    .map((term) => normalizeText(term))
+    .filter((term) =>
+      term.length >= 2 &&
+      !GENERIC_SCOPE_TERMS.has(term),
+    );
+}
+
+function isRelevantToScopedPinnedContext(asset: PinAsset, scope?: string): boolean {
+  if (!scope) return true;
+
+  const requestScope = normalizeScopedValue(scope);
+  const assetScope = normalizeScopedValue(asset.source.scope);
+  if (assetScope === requestScope) return true;
+
+  const requestIsProject = requestScope.startsWith("project:");
+  const assetIsProject = assetScope.startsWith("project:");
+  if (!requestIsProject || !assetIsProject) return true;
+
+  const cueTerms = buildProjectScopeCueTerms(scope);
+  if (cueTerms.length === 0) return false;
+
+  const haystack = normalizeText(stripConversationMarkers(`${asset.title} ${asset.summary} ${asset.tags.join(" ")}`));
+  return cueTerms.some((term) => haystack.includes(term));
+}
+
 function selectPinnedContext(
   assets: Array<PinAsset & { path: string }>,
   params: {
@@ -615,6 +456,7 @@ function selectPinnedContext(
   ]));
   const requirePositiveMatch = taskTerms.length > 0 || Boolean(scope);
   const ranked = assets
+    .filter((asset) => isUsefulPinnedAsset(asset) && isRelevantToScopedPinnedContext(asset, scope))
     .map((asset, index) => ({
       asset,
       score: scorePin(asset, taskTerms, scope)
@@ -633,14 +475,6 @@ function selectPinnedContext(
       .map(({ asset }) => formatPinnedContext(asset, taskTerms)),
     limit,
   );
-}
-
-function looksLikeStableInstruction(text: string): boolean {
-  return STABLE_INSTRUCTION_PREFIXES.some((prefix) => text.startsWith(prefix));
-}
-
-function containsLowSignalStableTerm(text: string): boolean {
-  return STABLE_LOW_SIGNAL_TERMS.some((term) => text.includes(term.toLowerCase()));
 }
 
 function isDurableStableScope(scope: string): boolean {
@@ -679,12 +513,79 @@ function buildStableScopeCueTerms(scope?: string, taskSeed?: string): string[] {
     );
 }
 
+function buildTaskEntityCueTerms(taskSeed?: string): string[] {
+  return dedupeText([
+    ...extractTerms(taskSeed),
+    ...buildTaskHintTerms(taskSeed),
+  ], 12)
+    .map((term) => normalizeText(term))
+    .filter((term) =>
+      term.length >= 2 &&
+      !GENERIC_ENTITY_TASK_TERMS.has(term),
+    );
+}
+
+function countTaskEntityCueMatches(result: RetrievalResult, taskSeed?: string): number {
+  const cueTerms = buildTaskEntityCueTerms(taskSeed);
+  if (cueTerms.length === 0) return 0;
+
+  const haystack = normalizeText(stripConversationMarkers(result.entry.text));
+  return cueTerms.filter((term) => haystack.includes(term)).length;
+}
+
+function taskMentionsScopeIdentity(taskSeed: string | undefined, scope?: string): boolean {
+  if (!taskSeed) return false;
+  const identityTerms = buildScopeIdentityTerms(scope);
+  if (identityTerms.length === 0) return false;
+
+  const haystack = normalizeText(`${taskSeed} ${buildTaskHintTerms(taskSeed).join(" ")}`);
+  return identityTerms.some((term) => haystack.includes(term));
+}
+
+function countTaskHintMatches(result: RetrievalResult, taskSeed?: string): number {
+  const hintTerms = buildTaskHintTerms(taskSeed);
+  if (hintTerms.length === 0) return 0;
+
+  const haystack = normalizeText(stripConversationMarkers(result.entry.text));
+  return hintTerms.filter((term) => haystack.includes(term)).length;
+}
+
+function hasUnsupportedTaskResultSpecificity(result: RetrievalResult, taskSeed?: string): boolean {
+  if (!taskSeed) return false;
+
+  const taskHaystack = normalizeText(`${taskSeed} ${buildTaskHintTerms(taskSeed).join(" ")}`);
+  if (!taskHaystack) return false;
+
+  const resultHaystack = normalizeText(stripConversationMarkers(result.entry.text));
+  return TASK_RESULT_SPECIFICITY_GROUPS.some((group) =>
+    group.resultTerms.some((term) => resultHaystack.includes(term)) &&
+    !group.taskTerms.some((term) => taskHaystack.includes(term))
+  );
+}
+
 function isRelevantToScopedStableRecall(
   result: RetrievalResult,
   params: { scope?: string; taskSeed?: string },
 ): boolean {
-  if (!params.scope || result.entry.scope === params.scope) {
+  if (!params.scope) {
     return true;
+  }
+
+  const requestScope = normalizeScopedValue(params.scope);
+  const resultScope = normalizeScopedValue(result.entry.scope);
+  if (resultScope === requestScope) {
+    return true;
+  }
+
+  const haystack = normalizeText(stripConversationMarkers(result.entry.text));
+  const requestIsProject = requestScope.startsWith("project:");
+  const resultIsProject = resultScope.startsWith("project:");
+  if (requestIsProject && resultIsProject) {
+    const projectCueTerms = buildProjectScopeCueTerms(params.scope);
+    if (projectCueTerms.length === 0) {
+      return false;
+    }
+    return projectCueTerms.some((term) => haystack.includes(term));
   }
 
   const cueTerms = buildStableScopeCueTerms(params.scope, params.taskSeed);
@@ -692,7 +593,6 @@ function isRelevantToScopedStableRecall(
     return true;
   }
 
-  const haystack = normalizeText(stripConversationMarkers(result.entry.text));
   return cueTerms.some((term) => haystack.includes(term));
 }
 
@@ -743,12 +643,20 @@ function selectStableResults(
       result,
       key: stableResultKey(result),
       score: scoreStableResult(category, result, params),
+      taskCueMatches: category === "entities" ? countTaskEntityCueMatches(result, params.taskSeed) : 0,
     }))
     .sort((a, b) => b.score - a.score);
 
+  const maxTaskCueMatches = category === "entities" && !params.scope
+    ? Math.max(0, ...ranked.map((item) => item.taskCueMatches))
+    : 0;
+  const filteredRanked = category === "entities" && !params.scope && maxTaskCueMatches > 0
+    ? ranked.filter((item) => item.taskCueMatches === maxTaskCueMatches)
+    : ranked;
+
   const seen = new Set<string>();
   const output: string[] = [];
-  for (const item of ranked) {
+  for (const item of filteredRanked) {
     if (!item.key || seen.has(item.key)) continue;
     seen.add(item.key);
     output.push(formatStableResult(category, item.result));
@@ -818,35 +726,6 @@ function buildCaseFallbackQuery(taskSeed?: string): string {
   return "case solution fix root cause workaround cleanup continuity 问题 解决 方案 排查";
 }
 
-function containsAnyTerm(text: string, terms: string[]): boolean {
-  const normalized = normalizeText(text);
-  return terms.some((term) => normalized.includes(term));
-}
-
-function looksLikeContinuityTask(taskSeed?: string): boolean {
-  if (!taskSeed) return false;
-  return containsAnyTerm(taskSeed, CONTINUITY_TASK_TERMS);
-}
-
-function looksLikeStyleTask(taskSeed?: string): boolean {
-  if (!taskSeed) return false;
-  return containsAnyTerm(taskSeed, STYLE_TASK_TERMS);
-}
-
-function looksLikeRecallOnlyTask(taskSeed?: string): boolean {
-  if (!taskSeed) return false;
-  const normalized = normalizeText(taskSeed);
-  return (
-    RECALL_ONLY_TERMS.some((term) => normalized.includes(term)) &&
-    !WRITING_ACTION_TERMS.some((term) => normalized.includes(term))
-  );
-}
-
-function looksLikeCaseFallbackTask(taskSeed?: string): boolean {
-  if (!taskSeed) return false;
-  return containsAnyTerm(taskSeed, CASE_FALLBACK_TASK_TERMS);
-}
-
 function isDurableMemoryScope(scope: string): boolean {
   return scope.startsWith("memory:") || scope.startsWith("asset:");
 }
@@ -868,6 +747,7 @@ function selectWorkflowFallbackCandidates(
   results: RetrievalResult[],
   params: {
     scope?: string;
+    taskSeed?: string;
     limit: number;
     cueTerms?: string[];
   },
@@ -881,6 +761,11 @@ function selectWorkflowFallbackCandidates(
     .filter((item) =>
       item.score > 0 &&
       isDurableMemoryScope(item.result.entry.scope) &&
+      !hasUnsupportedTaskResultSpecificity(item.result, params.taskSeed) &&
+      isRelevantToScopedTaskResult(item.result, {
+        scope: params.scope,
+        taskSeed: params.taskSeed,
+      }) &&
       containsAnyTerm(item.result.entry.text, cueTerms),
     )
     .sort((a, b) => b.score - a.score)
@@ -895,19 +780,6 @@ function buildContinuityFallbackPatterns(limit: number): string[] {
     "Before leaving a window, save checkpoint_session so the next session can recover decisions and next actions.",
   ];
   return patterns.slice(0, limit);
-}
-
-function looksLikeLowSignalTaskResult(text: string): boolean {
-  return containsAnyTerm(text, TASK_RESULT_LOW_SIGNAL_TERMS);
-}
-
-function countTermHits(text: string, terms: string[]): number {
-  const normalized = normalizeText(text);
-  return terms.reduce((count, term) => count + (normalized.includes(term) ? 1 : 0), 0);
-}
-
-function looksLikePlanishTaskResult(text: string): boolean {
-  return containsAnyTerm(text, TASK_RESULT_PLANISH_TERMS);
 }
 
 function looksLikeStructuredPatternResult(text: string): boolean {
@@ -972,14 +844,6 @@ function scoreTaskCandidate(category: TaskCategory, result: RetrievalResult): nu
   score += Math.min(cueHits, 3) * 1.5;
   if (looksLikePlanishTaskResult(normalized)) score -= 5;
   return score;
-}
-
-function taskCueCoverage(category: TaskCategory, text: string): string[] {
-  if (category !== "patterns") return [];
-  const normalized = normalizeText(text);
-  return CONTINUITY_WORKFLOW_CUE_GROUPS
-    .filter((group) => group.terms.some((term) => normalized.includes(term)))
-    .map((group) => group.key);
 }
 
 function countPatternCueCoverage(items: string[]): number {
@@ -1065,21 +929,73 @@ function isTaskCandidateUseful(category: TaskCategory, result: RetrievalResult):
   ]);
 }
 
-function selectTaskResults(category: TaskCategory, results: RetrievalResult[], limit: number): string[] {
+function isRelevantToScopedTaskResult(
+  result: RetrievalResult,
+  params: { scope?: string; taskSeed?: string },
+): boolean {
+  const requestScope = params.scope ? normalizeScopedValue(params.scope) : "";
+  const resultScope = normalizeScopedValue(result.entry.scope);
+  const haystack = normalizeText(stripConversationMarkers(result.entry.text));
+  const resultIsProject = resultScope.startsWith("project:");
+  const requestIsProject = requestScope.startsWith("project:");
+
+  if (params.scope && resultScope === requestScope) return true;
+
+  if (resultIsProject && !taskMentionsScopeIdentity(params.taskSeed, result.entry.scope)) {
+    return false;
+  }
+
+  if (!params.scope) return true;
+
+  if (requestIsProject && resultIsProject) {
+    const projectCueTerms = buildProjectScopeCueTerms(params.scope);
+    if (projectCueTerms.length === 0) return false;
+    return projectCueTerms.some((term) => haystack.includes(term));
+  }
+
+  return true;
+}
+
+function selectTaskResults(
+  category: TaskCategory,
+  results: RetrievalResult[],
+  limit: number,
+  params: { scope?: string; taskSeed?: string } = {},
+): string[] {
+  const taskHintTerms = buildTaskHintTerms(params.taskSeed);
   const ranked = results
-    .filter((result) => isTaskCandidateUseful(category, result))
+    .filter((result) =>
+      isTaskCandidateUseful(category, result) &&
+      !hasUnsupportedTaskResultSpecificity(result, params.taskSeed) &&
+      isRelevantToScopedTaskResult(result, params)
+    )
     .map((result) => ({
       result,
       key: taskResultKey(result),
       durable: isDurableTaskCandidate(result),
       score: scoreTaskCandidate(category, result),
+      taskHintMatches: countTaskHintMatches(result, params.taskSeed),
       formatted: formatTaskResult(result),
     }))
     .sort((a, b) => b.score - a.score);
 
-  const preferred = ranked.some((item) => item.durable)
-    ? ranked.filter((item) => item.durable)
+  const maxTaskHintMatches = taskHintTerms.length > 0
+    ? Math.max(0, ...ranked.map((item) => item.taskHintMatches))
+    : 0;
+  if (
+    taskHintTerms.length > 0 &&
+    !looksLikeContinuityTask(params.taskSeed) &&
+    maxTaskHintMatches === 0
+  ) {
+    return [];
+  }
+
+  const hintFiltered = taskHintTerms.length > 0 && maxTaskHintMatches > 0
+    ? ranked.filter((item) => item.taskHintMatches === maxTaskHintMatches)
     : ranked;
+  const preferred = hintFiltered.some((item) => item.durable)
+    ? hintFiltered.filter((item) => item.durable)
+    : hintFiltered;
   const seen = new Set<string>();
   const selected: string[] = [];
   if (category === "patterns") {
@@ -1280,7 +1196,10 @@ export async function composeResumeContext(
     pinnedContext,
   ], stableLimit);
 
-  const retrievedPatterns = selectTaskResults("patterns", patternResults, taskLimit);
+  const retrievedPatterns = selectTaskResults("patterns", patternResults, taskLimit, {
+    scope: resolvedScope,
+    taskSeed,
+  });
   const workflowFallbackResults = !continuityTask || countPatternCueCoverage(retrievedPatterns) >= 3
     ? []
     : await retrieveCandidates(deps.retriever, {
@@ -1290,6 +1209,7 @@ export async function composeResumeContext(
       });
   const fallbackPatterns = selectWorkflowFallbackCandidates(workflowFallbackResults, {
     scope: resolvedScope,
+    taskSeed,
     limit: taskLimit,
     cueTerms: STRONG_WORKFLOW_CUE_TERMS,
   });
@@ -1301,7 +1221,10 @@ export async function composeResumeContext(
     ...fallbackPatterns.map((text) => ({ text, sourcePriority: 2 })),
     ...continuityFallbackPatterns.map((text) => ({ text, sourcePriority: 1 })),
   ], taskLimit);
-  const retrievedCases = selectTaskResults("cases", caseResults, taskLimit);
+  const retrievedCases = selectTaskResults("cases", caseResults, taskLimit, {
+    scope: resolvedScope,
+    taskSeed,
+  });
   const caseFallbackResults = retrievedCases.length > 0 || (!latestCheckpoint && !looksLikeCaseFallbackTask(taskSeed))
     ? []
     : await retrieveCandidates(deps.retriever, {
@@ -1310,7 +1233,10 @@ export async function composeResumeContext(
         limit: Math.max(4, taskLimit * 2),
         scope: resolvedScope,
       });
-  const fallbackCases = selectTaskResults("cases", caseFallbackResults, taskLimit);
+  const fallbackCases = selectTaskResults("cases", caseFallbackResults, taskLimit, {
+    scope: resolvedScope,
+    taskSeed,
+  });
   const recentCases = dedupeText([
     ...retrievedCases,
     ...fallbackCases,
