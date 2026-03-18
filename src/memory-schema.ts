@@ -38,6 +38,7 @@ export type WriteDisposition = z.infer<typeof WriteDispositionSchema>;
 
 export const MemoryTextSchema = boundedStringSchema("text", 4000);
 export const MemoryScopeSchema = optionalBoundedStringSchema(160);
+export const RequiredMemoryScopeSchema = boundedStringSchema("scope", 160);
 export const MemoryImportanceSchema = z.number().min(0).max(1);
 export const CanonicalKeySchema = optionalBoundedStringSchema(120);
 export const MemoryTagsSchema = normalizedStringListSchema("tags", 8, 40);
@@ -59,7 +60,7 @@ export const StoreMemoryInputSchema = z.object({
   text: MemoryTextSchema,
   category: DurableMemoryCategorySchema.default("events"),
   importance: MemoryImportanceSchema.default(0.7),
-  scope: MemoryScopeSchema,
+  scope: RequiredMemoryScopeSchema,
   source: StoreMemorySourceSchema.default("manual"),
   tags: MemoryTagsSchema,
   canonicalKey: CanonicalKeySchema,
@@ -90,6 +91,17 @@ export const CaptureMemoryInputSchema = z.object({
   memories: z.array(CaptureMemoryItemSchema)
     .min(1, "memories must contain at least 1 item")
     .max(20, "memories must contain at most 20 items"),
+}).superRefine((input, ctx) => {
+  if (input.scope) return;
+  input.memories.forEach((memory, index) => {
+    if (!memory.scope) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["memories", index, "scope"],
+        message: "scope is required for each memory when capture scope is not provided",
+      });
+    }
+  });
 });
 
 export const WorkflowPatternInputSchema = z.object({
@@ -99,7 +111,7 @@ export const WorkflowPatternInputSchema = z.object({
   outcome: WorkflowPatternOutcomeSchema,
   tools: WorkflowPatternToolsSchema,
   importance: MemoryImportanceSchema.default(0.82),
-  scope: MemoryScopeSchema,
+  scope: RequiredMemoryScopeSchema,
   source: StoreMemorySourceSchema.default("agent"),
   tags: MemoryTagsSchema,
   canonicalKey: CanonicalKeySchema,
@@ -113,7 +125,7 @@ export const CaseMemoryInputSchema = z.object({
   outcome: CaseMemoryOutcomeSchema,
   tools: CaseMemoryToolsSchema,
   importance: MemoryImportanceSchema.default(0.84),
-  scope: MemoryScopeSchema,
+  scope: RequiredMemoryScopeSchema,
   source: StoreMemorySourceSchema.default("agent"),
   tags: MemoryTagsSchema,
   canonicalKey: CanonicalKeySchema,
@@ -124,7 +136,7 @@ export const PromoteMemoryInputSchema = z.object({
   text: MemoryTextSchema.optional(),
   category: DurableMemoryCategorySchema.optional(),
   importance: MemoryImportanceSchema.default(0.78),
-  scope: MemoryScopeSchema,
+  scope: RequiredMemoryScopeSchema,
   source: StoreMemorySourceSchema.default("agent"),
   tags: MemoryTagsSchema,
   canonicalKey: CanonicalKeySchema,

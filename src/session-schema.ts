@@ -33,6 +33,7 @@ export const ResumeContextRequestSchema = z.object({
 
 export const ResumeCheckpointSummarySchema = z.object({
   sessionId: identifierSchema("sessionId"),
+  resolvedScope: optionalBoundedStringSchema(160),
   summary: boundedStringSchema("summary", 600),
   updatedAt: z.string().datetime(),
 });
@@ -41,6 +42,7 @@ export const ResumeResponseModeSchema = z.enum(["default", "recall-only"]);
 
 export const ResumeContextResponseSchema = z.object({
   summary: boundedStringSchema("summary", 800),
+  resolvedScope: optionalBoundedStringSchema(160),
   stableContext: normalizedStringListSchema("stableContext", 6, 220),
   relevantPatterns: normalizedStringListSchema("relevantPatterns", 6, 220),
   recentCases: normalizedStringListSchema("recentCases", 6, 220),

@@ -16,6 +16,16 @@ import Anthropic from "@anthropic-ai/sdk";
 const client = new Anthropic();
 const RECALLNEST = "http://localhost:4318";
 
+function buildRecallContext() {
+  const sessionId = process.env.RECALLNEST_SESSION_ID;
+  const scope = process.env.RECALLNEST_SCOPE;
+  const resolvedScope = scope || (sessionId ? `session:${sessionId}` : undefined);
+  return {
+    ...(sessionId ? { sessionId } : {}),
+    ...(resolvedScope ? { scope: resolvedScope } : {}),
+  };
+}
+
 // --- Tool definitions for Claude ---
 
 const tools: Anthropic.Tool[] = [
@@ -70,23 +80,35 @@ async function handleTool(
   input: Record<string, unknown>
 ): Promise<string> {
   if (name === "recall_memory") {
-    const res = await fetch(`${RECALLNEST}/v1/recall`, {
+    const res = await fetch(`${RECALLNEST}/v1/auto-recall`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query: input.query, limit: 5 }),
+      body: JSON.stringify({ message: input.query, limit: 5, ...buildRecallContext() }),
     });
     if (!res.ok) return `Error: ${res.status} ${await res.text()}`;
     const data = await res.json();
-    return JSON.stringify(data.results, null, 2);
+    return JSON.stringify({
+      mode: data.mode,
+      resolvedScope: data.resolvedScope,
+      summary: data.resume?.summary,
+      stableContext: data.resume?.stableContext || [],
+      results: data.results || [],
+      searchSkippedReason: data.searchSkippedReason,
+    }, null, 2);
   }
 
   if (name === "store_memory") {
+    const recallContext = buildRecallContext();
+    if (!("scope" in recallContext)) {
+      return "Set RECALLNEST_SCOPE or RECALLNEST_SESSION_ID before storing durable memory.";
+    }
     const res = await fetch(`${RECALLNEST}/v1/store`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         text: input.text,
         category: input.category || "events",
+        scope: recallContext.scope,
         source: "claude-agent-sdk-example",
       }),
     });
@@ -113,7 +135,7 @@ async function runAgent(userMessage: string) {
       max_tokens: 1024,
       system:
         "You are a helpful assistant with persistent memory. " +
-        "Always use recall_memory at the start of a task to check for relevant context. " +
+        "Always use recall_memory at the start of a task or project pivot to recover relevant context. " +
         "Store important facts with store_memory.",
       tools,
       messages,

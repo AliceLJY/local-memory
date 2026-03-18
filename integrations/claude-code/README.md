@@ -45,9 +45,11 @@ Re-run `setup.sh` after upgrading RecallNest if you want the managed block refre
 The installed rules tell Claude Code to:
 
 - call `resume_context` at the start of fresh windows or continuity-sensitive tasks
-- use `search_memory` only as a follow-up when a specific detail is needed
+- run lightweight `search_memory` on task pivots inside the same project before repo exploration drifts
+- reuse known `scope` / `sessionId` and the resolved scope returned by `resume_context` in follow-up recall calls
 - treat repo-state text recalled through `resume_context` as unverified handoff context until current-window repo tools confirm it
 - save `checkpoint_session` before leaving resumable work
+- do not inspect repo state just to enrich a close-window checkpoint unless the user explicitly asked for repo state
 - avoid writing `git status` / modified-file claims into `checkpoint_session` unless the repo was inspected in the current window
 - never copy unverified repo-state text into `checkpoint_session`, even if it is labeled as recalled or unverified
 - promote durable facts with `store_memory` and reusable workflows with `store_workflow_pattern`
@@ -94,11 +96,11 @@ bun run smoke:claude-continuity
 
 What it does:
 
-- runs `claude -p` in fresh-window style prompts
+- runs `claude -p` in fresh-window style prompts for `continue`, `checkpoint`, and task-pivot recall
 - pre-allows `resume_context` / `checkpoint_session` so `dontAsk` mode can still use RecallNest MCP tools
 - prints `[smoke]` phase markers so the slower checkpoint case is visible while it runs
 - saves raw `stream-json` artifacts under `/tmp/recallnest-claude-smoke-*`
-- fails if `Read` / `Bash` / `Grep` / `Glob` show up before `resume_context`
+- fails if `Read` / `Bash` / `Grep` / `Glob` show up before the required RecallNest recovery tool
 - records `workflow_observe` success / missed / failure signals into the dedicated observation store by default
 
 Outside smoke, normal managed continuity usage now records workflow observations too:
@@ -114,9 +116,9 @@ Requirements:
 - RecallNest MCP is installed via `setup.sh`
 - your local memory store has baseline continuity data, usually via `bun run seed:continuity`
 
-This smoke test validates tool order and checkpoint writes. Treat any free-text repo-state claims in Claude's reply as unverified unless the saved JSONL also shows matching repo tools.
-If the warning points at `resume_context`, the likely source is an older checkpoint that already contained speculative repo-state text; write a fresh checkpoint after verifying the repo if you want to flush that inherited handoff.
-RecallNest now sanitizes repo-state text out of saved `checkpoint_session` output, so a raw checkpoint request that still mentions `git status` stays a warning, while a saved checkpoint that still contains repo-state text remains a failure.
+This smoke test now uses recall-only prompts for the continue / checkpoint / task-pivot cases. Passing means Claude used RecallNest recovery tools first, avoided repo tools entirely, and did not restate unverified repo-state details such as `git status`, modified-file lists, or untracked filenames.
+If a case fails on `unverified-repo-state-claim`, inspect the saved JSONL and compare the final assistant text against the visible repo-tool log. Any repo-state detail without a matching repo tool in the same window should be treated as contamination from recalled or startup context.
+RecallNest still sanitizes repo-state text out of saved `checkpoint_session` output, but the smoke now fails earlier if Claude surfaces those details in a recall-only reply.
 The checkpoint case is usually slower than the continue case because Claude needs to finish both `resume_context` and `checkpoint_session`; the phase markers make that visible so a 30-90s run does not look like a hung process.
 Set `RECALLNEST_RECORD_WORKFLOW_OBSERVATIONS=0` if you want to skip writing smoke observations, or override the default scope with `RECALLNEST_CC_SMOKE_SCOPE=project:your-scope`.
 

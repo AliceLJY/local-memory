@@ -2,6 +2,8 @@ import { describe, expect, it } from "bun:test";
 
 import { persistCaseMemory, persistMemory, persistMemoryBatch, persistWorkflowPattern, promoteMemory } from "../capture-engine.js";
 
+const TEST_SCOPE = "project:test";
+
 function createDeps() {
   const storedEntries: any[] = [];
   const conflicts: any[] = [];
@@ -81,19 +83,20 @@ function createDeps() {
 }
 
 describe("persistMemory", () => {
-  it("stores durable memory under memory:* scope by default", async () => {
+  it("stores durable memory with an explicit scope", async () => {
     const { deps, storedEntries } = createDeps();
     const result = await persistMemory(deps as any, {
       text: "User prefers dark mode",
       category: "preferences",
+      scope: TEST_SCOPE,
       source: "manual",
       tags: ["ui"],
     });
 
-    expect(result.resolvedScope).toBe("memory:manual");
+    expect(result.resolvedScope).toBe(TEST_SCOPE);
     expect(result.canonicalKey).toBe("preferences:user-prefers-dark-mode");
     expect(result.disposition).toBe("stored");
-    expect(storedEntries[0].scope).toBe("memory:manual");
+    expect(storedEntries[0].scope).toBe(TEST_SCOPE);
     expect(JSON.parse(storedEntries[0].metadata)).toEqual({
       source: "manual",
       tags: ["ui"],
@@ -109,11 +112,22 @@ describe("persistMemory", () => {
     });
   });
 
+  it("rejects durable memory writes without a scope", async () => {
+    const { deps } = createDeps();
+
+    await expect(persistMemory(deps as any, {
+      text: "User prefers dark mode",
+      category: "preferences",
+      source: "manual",
+    })).rejects.toThrow("scope");
+  });
+
   it("infers a slot-aware canonical key for atomic brand-item preferences", async () => {
     const { deps, storedEntries } = createDeps();
     const result = await persistMemory(deps as any, {
       text: "我喜欢吃麦当劳的麦辣鸡翅",
       category: "preferences",
+      scope: TEST_SCOPE,
       source: "manual",
     });
 
@@ -133,6 +147,7 @@ describe("persistMemory", () => {
     const result = await persistMemory(deps as any, {
       text: "User prefers concise, direct replies.",
       category: "preferences",
+      scope: TEST_SCOPE,
       source: "manual",
     });
 
@@ -151,6 +166,7 @@ describe("persistMemory", () => {
     const result = await persistMemory(deps as any, {
       text: "Uses Bun over Node.",
       category: "preferences",
+      scope: TEST_SCOPE,
       source: "manual",
     });
 
@@ -170,6 +186,7 @@ describe("persistMemory", () => {
     await persistMemory(deps as any, {
       text: "User prefers dark mode",
       category: "preferences",
+      scope: TEST_SCOPE,
       source: "manual",
       canonicalKey: "user.reply.style",
     });
@@ -177,6 +194,7 @@ describe("persistMemory", () => {
     const result = await persistMemory(deps as any, {
       text: "User prefers dark mode",
       category: "preferences",
+      scope: TEST_SCOPE,
       source: "manual",
       canonicalKey: "user.reply.style",
     });
@@ -190,6 +208,7 @@ describe("persistMemory", () => {
     const first = await persistMemory(deps as any, {
       text: "User prefers concise replies",
       category: "preferences",
+      scope: TEST_SCOPE,
       source: "manual",
       canonicalKey: "user.reply.style",
     });
@@ -197,6 +216,7 @@ describe("persistMemory", () => {
     const second = await persistMemory(deps as any, {
       text: "User prefers concise and direct technical replies",
       category: "preferences",
+      scope: TEST_SCOPE,
       source: "manual",
       canonicalKey: "user.reply.style",
     });
@@ -212,12 +232,14 @@ describe("persistMemory", () => {
     const first = await persistMemory(deps as any, {
       text: "我喜欢吃麦当劳的麦辣鸡翅",
       category: "preferences",
+      scope: TEST_SCOPE,
       source: "manual",
     });
 
     const second = await persistMemory(deps as any, {
       text: "我很喜欢吃麦当劳的麦辣鸡翅",
       category: "preferences",
+      scope: TEST_SCOPE,
       source: "manual",
     });
 
@@ -233,6 +255,7 @@ describe("persistMemory", () => {
     const baseline = await persistMemory(deps as any, {
       text: "User prefers concise technical replies.",
       category: "preferences",
+      scope: TEST_SCOPE,
       source: "manual",
       canonicalKey: "user.reply.style.cross-category",
     });
@@ -240,6 +263,7 @@ describe("persistMemory", () => {
     const result = await persistMemory(deps as any, {
       text: "Reply-style observations imported as an event.",
       category: "events",
+      scope: TEST_SCOPE,
       source: "manual",
       canonicalKey: "user.reply.style.cross-category",
     });
@@ -310,6 +334,7 @@ describe("persistWorkflowPattern", () => {
         "Save checkpoint_session before leaving the window",
       ],
       outcome: "The next window recovers decisions and next actions faster",
+      scope: TEST_SCOPE,
       tools: ["resume_context", "checkpoint_session"],
       tags: ["continuity"],
     });
@@ -317,7 +342,7 @@ describe("persistWorkflowPattern", () => {
     expect(result.category).toBe("patterns");
     expect(result.disposition).toBe("stored");
     expect(result.canonicalKey).toBe("patterns:cross-window-continuity-handoff");
-    expect(result.resolvedScope).toBe("memory:agent");
+    expect(result.resolvedScope).toBe(TEST_SCOPE);
     expect(result.tags).toEqual(["continuity", "workflow", "pattern"]);
     expect(result.text).toContain("Workflow pattern: Cross-window continuity handoff");
     expect(result.text).toContain("1. Call resume_context before coding");
@@ -363,13 +388,14 @@ describe("persistCaseMemory", () => {
         "Use task focus fallback only when checkpoint-backed continuity is unavailable.",
       ],
       outcome: "Fresh windows recover project continuity with cleaner stable context and fewer raw transcript leaks.",
+      scope: TEST_SCOPE,
       tools: ["resume_context", "checkpoint_session"],
       tags: ["continuity"],
     });
 
     expect(result.category).toBe("cases");
     expect(result.canonicalKey).toBe("cases:recallnest-sparse-startup-context-cleanup");
-    expect(result.resolvedScope).toBe("memory:agent");
+    expect(result.resolvedScope).toBe(TEST_SCOPE);
     expect(result.tags).toEqual(["continuity", "case", "solution"]);
     expect(result.text).toContain("Case: RecallNest sparse startup context cleanup");
     expect(result.text).toContain("Problem: resume_context returned noisy transcript fragments");
@@ -427,6 +453,7 @@ describe("promoteMemory", () => {
       memoryId: source.id,
       text: "User prefers concise, direct replies.",
       category: "preferences",
+      scope: TEST_SCOPE,
       canonicalKey: "user.reply.style",
       tags: ["writing"],
     });
@@ -490,6 +517,7 @@ describe("promoteMemory", () => {
       memoryId: source.id,
       text: "我喜欢吃麦当劳的麦辣鸡翅",
       category: "preferences",
+      scope: TEST_SCOPE,
       tags: ["food"],
     });
 
@@ -528,6 +556,7 @@ describe("promoteMemory", () => {
       memoryId: source.id.slice(0, 8),
       text: "User prefers concise, direct replies.",
       category: "preferences",
+      scope: TEST_SCOPE,
       canonicalKey: "user.reply.style.prefix",
       tags: ["writing"],
     });
@@ -558,6 +587,7 @@ describe("promoteMemory", () => {
 
     await expect(promoteMemory(deps as any, {
       memoryId: durable.id,
+      scope: TEST_SCOPE,
     })).rejects.toThrow("already durable");
   });
 
@@ -601,6 +631,7 @@ describe("promoteMemory", () => {
       memoryId: source.id,
       text: "User prefers colloquial writing that stays grounded and non-salesy.",
       category: "preferences",
+      scope: TEST_SCOPE,
       canonicalKey: "user.reply.style",
       tags: ["writing"],
     });
@@ -630,6 +661,7 @@ describe("promoteMemory", () => {
       memoryId: source.id,
       text: "User prefers colloquial writing that stays grounded and non-salesy.",
       category: "preferences",
+      scope: TEST_SCOPE,
       canonicalKey: "user.reply.style",
       tags: ["writing"],
     });
@@ -644,6 +676,7 @@ describe("promoteMemory", () => {
     const durable = await persistMemory(deps as any, {
       text: "我喜欢吃麦当劳的麦辣鸡翅",
       category: "preferences",
+      scope: TEST_SCOPE,
       source: "manual",
     });
     const source = await deps.store.store({
@@ -667,6 +700,7 @@ describe("promoteMemory", () => {
       memoryId: source.id,
       text: "我很喜欢吃麦当劳的麦辣鸡翅",
       category: "preferences",
+      scope: TEST_SCOPE,
       tags: ["food"],
     });
 
@@ -705,6 +739,7 @@ describe("promoteMemory", () => {
     const durable = await persistMemory(deps as any, {
       text: "User prefers concise, direct replies.",
       category: "preferences",
+      scope: TEST_SCOPE,
       source: "manual",
     });
     const source = await deps.store.store({
@@ -728,6 +763,7 @@ describe("promoteMemory", () => {
       memoryId: source.id,
       text: "User prefers direct, concise replies.",
       category: "preferences",
+      scope: TEST_SCOPE,
       tags: ["writing"],
     });
 
@@ -756,6 +792,7 @@ describe("promoteMemory", () => {
     const durable = await persistMemory(deps as any, {
       text: "Uses Bun over Node.",
       category: "preferences",
+      scope: TEST_SCOPE,
       source: "manual",
     });
     const source = await deps.store.store({
@@ -779,6 +816,7 @@ describe("promoteMemory", () => {
       memoryId: source.id,
       text: "Prefers Bun over Node.",
       category: "preferences",
+      scope: TEST_SCOPE,
       tags: ["tooling"],
     });
 
@@ -808,6 +846,7 @@ describe("promoteMemory", () => {
     await persistMemory(deps as any, {
       text: "我喜欢吃麦当劳的麦辣鸡翅",
       category: "preferences",
+      scope: TEST_SCOPE,
       source: "manual",
     });
     const source = await deps.store.store({
@@ -831,11 +870,13 @@ describe("promoteMemory", () => {
       memoryId: source.id,
       text: "我喜欢吃麦当劳的麦辣鸡翅",
       category: "preferences",
+      scope: TEST_SCOPE,
     });
     await promoteMemory(deps as any, {
       memoryId: source.id,
       text: "我喜欢吃麦当劳的麦辣鸡翅",
       category: "preferences",
+      scope: TEST_SCOPE,
     });
 
     const metadata = JSON.parse(storedEntries[0]?.metadata || "{}");
@@ -884,6 +925,7 @@ describe("promoteMemory", () => {
       memoryId: source.id,
       text: "User prefers colloquial writing that stays grounded and non-salesy.",
       category: "preferences",
+      scope: TEST_SCOPE,
       canonicalKey: "user.reply.style.reopen",
       tags: ["writing"],
     });
@@ -900,6 +942,7 @@ describe("promoteMemory", () => {
       memoryId: source.id,
       text: "User prefers colloquial writing that stays grounded and non-salesy.",
       category: "preferences",
+      scope: TEST_SCOPE,
       canonicalKey: "user.reply.style.reopen",
       tags: ["writing"],
     });

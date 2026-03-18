@@ -287,7 +287,7 @@ Details: [`docs/memory-categories.md`](docs/memory-categories.md)
 | `explain_memory` | Explain why memories matched |
 | `distill_memory` | Distill results into a compact briefing |
 | `brief_memory` | Create a structured brief and re-index it |
-| `pin_memory` | Promote a memory into a pinned asset |
+| `pin_memory` | Promote a scoped memory into a pinned asset |
 | `export_memory` | Export a distilled memory briefing to disk |
 | `list_pins` | List pinned memories |
 | `list_assets` | List all structured assets |

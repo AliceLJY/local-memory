@@ -8,6 +8,7 @@ import { existsSync, accessSync, constants, mkdirSync, realpathSync, lstatSync }
 import { dirname } from "node:path";
 import { logWarn } from "./stderr-log.js";
 import type { DurableMemoryCategory } from "./memory-schema.js";
+import { matchesScopeFilter } from "./scope-policy.js";
 
 // ============================================================================
 // Types
@@ -53,6 +54,23 @@ export interface StoreConfig {
   vectorDim: number;
 }
 
+export type LegacyScopeIssueKind = "missing" | "empty" | "global";
+
+export interface LegacyScopeAuditSample {
+  id: string;
+  kind: LegacyScopeIssueKind;
+  scope: string | null;
+  category: MemoryEntry["category"];
+  timestamp: number;
+  text: string;
+}
+
+export interface LegacyScopeAudit {
+  totalCount: number;
+  counts: Record<LegacyScopeIssueKind, number>;
+  samples: LegacyScopeAuditSample[];
+}
+
 // ============================================================================
 // LanceDB Dynamic Import
 // ============================================================================
@@ -81,6 +99,23 @@ function clampInt(value: number, min: number, max: number): number {
 
 function escapeSqlLiteral(value: string): string {
   return value.replace(/'/g, "''");
+}
+
+export function classifyLegacyScope(scope: unknown): LegacyScopeIssueKind | undefined {
+  if (scope == null) {
+    return "missing";
+  }
+  if (typeof scope !== "string") {
+    return "missing";
+  }
+  const normalized = scope.trim();
+  if (normalized.length === 0) {
+    return "empty";
+  }
+  if (normalized === "global") {
+    return "global";
+  }
+  return undefined;
 }
 
 // ============================================================================
@@ -218,7 +253,7 @@ export class MemoryStore {
         text: "",
         vector: Array.from({ length: this.config.vectorDim }).fill(0) as number[],
         category: "other",
-        scope: "global",
+        scope: "__schema__",
         importance: 0,
         timestamp: 0,
         metadata: "{}",
@@ -354,7 +389,7 @@ export class MemoryStore {
 
     const full: MemoryEntry = {
       ...entry,
-      scope: entry.scope || "global",
+      scope: entry.scope,
       importance: Number.isFinite(entry.importance) ? entry.importance : 0.7,
       timestamp: Number.isFinite(entry.timestamp) ? entry.timestamp : Date.now(),
       metadata: entry.metadata || "{}",
@@ -391,7 +426,7 @@ export class MemoryStore {
             : `scope LIKE '${safe}%'`;
         })
         .join(" OR ");
-      query = query.where(`(${scopeConditions}) OR scope IS NULL`); // NULL for backward compatibility
+      query = query.where(`(${scopeConditions})`);
     }
 
     const results = await query.toArray();
@@ -403,14 +438,11 @@ export class MemoryStore {
 
       if (score < minScore) continue;
 
-      const rowScope = (row.scope as string | undefined) ?? "global";
+      const rowScope = (row.scope as string | undefined) ?? "";
 
       // Double-check scope filter in application layer (prefix-aware)
-      if (scopeFilter && scopeFilter.length > 0) {
-        const matches = scopeFilter.some(s =>
-          s.includes(":") ? rowScope === s : rowScope.startsWith(s)
-        );
-        if (!matches) continue;
+      if (!matchesScopeFilter(rowScope, scopeFilter)) {
+        continue;
       }
 
       mapped.push({
@@ -456,21 +488,18 @@ export class MemoryStore {
               : `scope LIKE '${safe}%'`;
           })
           .join(" OR ");
-        searchQuery = searchQuery.where(`(${scopeConditions}) OR scope IS NULL`);
+        searchQuery = searchQuery.where(`(${scopeConditions})`);
       }
 
       const results = await searchQuery.toArray();
       const mapped: MemorySearchResult[] = [];
 
       for (const row of results) {
-        const rowScope = (row.scope as string | undefined) ?? "global";
+        const rowScope = (row.scope as string | undefined) ?? "";
 
         // Double-check scope filter in application layer (prefix-aware)
-        if (scopeFilter && scopeFilter.length > 0) {
-          const matches = scopeFilter.some(s =>
-            s.includes(":") ? rowScope === s : rowScope.startsWith(s)
-          );
-          if (!matches) continue;
+        if (!matchesScopeFilter(rowScope, scopeFilter)) {
+          continue;
         }
 
         // LanceDB FTS _score is raw BM25 (unbounded). Normalize with sigmoid.
@@ -529,10 +558,10 @@ export class MemoryStore {
     }
 
     const resolvedId = candidates[0].id as string;
-    const rowScope = (candidates[0].scope as string | undefined) ?? "global";
+    const rowScope = (candidates[0].scope as string | undefined) ?? "";
 
     // Check scope permissions
-    if (scopeFilter && scopeFilter.length > 0 && !scopeFilter.includes(rowScope)) {
+    if (!matchesScopeFilter(rowScope, scopeFilter)) {
       throw new Error(`Memory ${resolvedId} is outside accessible scopes`);
     }
 
@@ -557,7 +586,7 @@ export class MemoryStore {
             : `scope LIKE '${safe}%'`;
         })
         .join(" OR ");
-      conditions.push(`((${scopeConditions}) OR scope IS NULL)`);
+      conditions.push(`((${scopeConditions}))`);
     }
 
     if (category) {
@@ -579,7 +608,7 @@ export class MemoryStore {
         text: row.text as string,
         vector: [], // Don't include vectors in list results for performance
         category: row.category as MemoryEntry["category"],
-        scope: (row.scope as string | undefined) ?? "global",
+        scope: (row.scope as string | undefined) ?? "",
         importance: Number(row.importance),
         timestamp: Number(row.timestamp),
         metadata: (row.metadata as string) || "{}",
@@ -623,14 +652,9 @@ export class MemoryStore {
     if (rows.length === 0) return null;
 
     const row = rows[0];
-    const rowScope = (row.scope as string | undefined) ?? "global";
-    if (scopeFilter && scopeFilter.length > 0) {
-      const matches = scopeFilter.some(scope =>
-        scope.includes(":") ? rowScope === scope : rowScope.startsWith(scope),
-      );
-      if (!matches) {
-        throw new Error(`Memory ${id} is outside accessible scopes`);
-      }
+    const rowScope = (row.scope as string | undefined) ?? "";
+    if (!matchesScopeFilter(rowScope, scopeFilter)) {
+      throw new Error(`Memory ${id} is outside accessible scopes`);
     }
 
     return {
@@ -664,7 +688,7 @@ export class MemoryStore {
       text: row.text as string,
       vector: Array.from(row.vector as Iterable<number>),
       category: row.category as MemoryEntry["category"],
-      scope: (row.scope as string | undefined) ?? "global",
+      scope: (row.scope as string | undefined) ?? "",
       importance: Number(row.importance),
       timestamp: Number(row.timestamp),
       metadata: (row.metadata as string) || "{}",
@@ -689,7 +713,7 @@ export class MemoryStore {
             : `scope LIKE '${safe}%'`;
         })
         .join(" OR ");
-      query = query.where(`((${scopeConditions}) OR scope IS NULL)`);
+      query = query.where(`((${scopeConditions}))`);
     }
 
     const results = await query.select(["scope", "category"]).toArray();
@@ -698,7 +722,7 @@ export class MemoryStore {
     const categoryCounts: Record<string, number> = {};
 
     for (const row of results) {
-      const scope = (row.scope as string | undefined) ?? "global";
+      const scope = (row.scope as string | undefined) ?? "";
       const category = row.category as string;
 
       scopeCounts[scope] = (scopeCounts[scope] || 0) + 1;
@@ -709,6 +733,47 @@ export class MemoryStore {
       totalCount: results.length,
       scopeCounts,
       categoryCounts,
+    };
+  }
+
+  async auditLegacyScopes(limit = 20): Promise<LegacyScopeAudit> {
+    await this.ensureInitialized();
+
+    const safeLimit = clampInt(limit, 1, 200);
+    const rows = await this.table!
+      .query()
+      .select(["id", "text", "category", "scope", "timestamp"])
+      .toArray();
+
+    const counts: Record<LegacyScopeIssueKind, number> = {
+      missing: 0,
+      empty: 0,
+      global: 0,
+    };
+
+    const samples = rows
+      .map((row) => {
+        const scopeValue = (row.scope as string | null | undefined) ?? null;
+        const kind = classifyLegacyScope(scopeValue);
+        if (!kind) return null;
+        counts[kind] += 1;
+        return {
+          id: row.id as string,
+          kind,
+          scope: scopeValue,
+          category: row.category as MemoryEntry["category"],
+          timestamp: Number(row.timestamp),
+          text: row.text as string,
+        } satisfies LegacyScopeAuditSample;
+      })
+      .filter((row): row is LegacyScopeAuditSample => row !== null)
+      .sort((a, b) => b.timestamp - a.timestamp)
+      .slice(0, safeLimit);
+
+    return {
+      totalCount: counts.missing + counts.empty + counts.global,
+      counts,
+      samples,
     };
   }
 
@@ -745,10 +810,10 @@ export class MemoryStore {
     if (rows.length === 0) return null;
 
     const row = rows[0];
-    const rowScope = (row.scope as string | undefined) ?? "global";
+    const rowScope = (row.scope as string | undefined) ?? "";
 
     // Check scope permissions
-    if (scopeFilter && scopeFilter.length > 0 && !scopeFilter.includes(rowScope)) {
+    if (!matchesScopeFilter(rowScope, scopeFilter)) {
       throw new Error(`Memory ${id} is outside accessible scopes`);
     }
 

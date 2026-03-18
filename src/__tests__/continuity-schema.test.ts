@@ -8,6 +8,7 @@ describe("StoreMemoryInputSchema", () => {
     const parsed = StoreMemoryInputSchema.parse({
       text: "  User prefers   dark mode  ",
       category: "preferences",
+      scope: "project:test",
       tags: [" ui ", "UI", "frontend"],
       canonicalKey: " user.reply.style ",
     });
@@ -31,6 +32,7 @@ describe("PromoteMemoryInputSchema", () => {
   it("applies defaults for evidence promotion", () => {
     const parsed = PromoteMemoryInputSchema.parse({
       memoryId: "12345678-1234-1234-1234-123456789abc",
+      scope: "project:test",
     });
 
     expect(parsed.importance).toBe(0.78);
@@ -75,11 +77,13 @@ describe("ResumeContext schemas", () => {
   it("accepts a composed response payload", () => {
     const parsed = ResumeContextResponseSchema.parse({
       summary: "Bring forward user identity, recent cases, and the latest checkpoint.",
+      resolvedScope: "project:recallnest",
       stableContext: ["User works across Claude Code, Codex, and Gemini CLI"],
       relevantPatterns: ["Always search memory at task start"],
       recentCases: ["Fixed hybrid retrieval tuning last week"],
       latestCheckpoint: {
         sessionId: "session-123",
+        resolvedScope: "project:recallnest",
         summary: "Implement schema modules first",
         updatedAt: "2026-03-16T01:41:00.000Z",
       },
@@ -87,6 +91,7 @@ describe("ResumeContext schemas", () => {
     });
 
     expect(parsed.latestCheckpoint?.sessionId).toBe("session-123");
+    expect(parsed.resolvedScope).toBe("project:recallnest");
     expect(parsed.stableContext).toHaveLength(1);
   });
 });

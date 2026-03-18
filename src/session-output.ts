@@ -45,6 +45,10 @@ export function formatResumeContext(response: ResumeContextResponse): string {
     `Summary: ${response.summary}`,
   ];
 
+  if (response.resolvedScope) {
+    lines.push(`Scope: ${response.resolvedScope}`);
+  }
+
   if (response.responseMode !== "default") {
     lines.push(`Response mode: ${response.responseMode}`);
   }
@@ -62,6 +66,9 @@ export function formatResumeContext(response: ResumeContextResponse): string {
   if (response.latestCheckpoint) {
     lines.push("Latest checkpoint:");
     lines.push(`Session: ${response.latestCheckpoint.sessionId}`);
+    if (response.latestCheckpoint.resolvedScope) {
+      lines.push(`Scope: ${response.latestCheckpoint.resolvedScope}`);
+    }
     lines.push(`Updated: ${response.latestCheckpoint.updatedAt}`);
     lines.push(`Summary: ${response.latestCheckpoint.summary}`);
   }

@@ -71,7 +71,10 @@ const PROVENANCE_HISTORY_LIMIT = 20;
 const DURABLE_CATEGORY_SET = new Set<string>(DURABLE_MEMORY_CATEGORIES);
 
 function resolveScope(input: { scope?: string; source: string }): string {
-  return input.scope || `memory:${input.source}`;
+  if (!input.scope) {
+    throw new Error("scope is required for durable memory writes");
+  }
+  return input.scope;
 }
 
 function normalizeMemoryText(text: string): string {

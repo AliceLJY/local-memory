@@ -22,6 +22,8 @@ import { buildConflictAuditSummary, clusterConflicts, summarizeConflictAdvice } 
 import { buildWorkflowEvidence, buildWorkflowObservationRecord, inspectWorkflowDashboard, inspectWorkflowHealth } from "./workflow-observation-engine.js";
 import { WorkflowObservationStore } from "./workflow-observation-store.js";
 import { buildManagedCheckpointObservation, buildManagedResumeObservation } from "./workflow-observation-managed.js";
+import { runAutoRecall } from "./auto-recall.js";
+import { buildRetrievalContext, resolveScopeSelection } from "./scope-policy.js";
 
 const config = (loadDotEnv(), loadConfig());
 const getComponents = createComponentResolver(config);
@@ -96,6 +98,30 @@ function buildProvenance(scope: string, metadata?: string) {
   };
 }
 
+function serializeRetrievalResult(result: Awaited<ReturnType<ReturnType<typeof getComponents>["retriever"]["retrieve"]>>[number]) {
+  const metadata = parseMetadata(result.entry.metadata);
+  const provenance = buildProvenance(result.entry.scope, result.entry.metadata);
+  return {
+    id: result.entry.id,
+    text: result.entry.text,
+    category: result.entry.category,
+    tier: String(metadata.tier || "peripheral"),
+    source: String(metadata.source || result.entry.scope || "?"),
+    scope: result.entry.scope,
+    score: Math.round(result.score * 1000) / 1000,
+    importance: result.entry.importance,
+    timestamp: result.entry.timestamp,
+    date: new Date(result.entry.timestamp).toISOString().split("T")[0],
+    metadata,
+    boundary: provenance.boundary,
+    canonicalKey: provenance.canonicalKey,
+    promotedFrom: provenance.promotedFrom,
+    provenanceHistory: provenance.provenanceHistory,
+    provenanceHistoryCount: provenance.provenanceHistoryCount,
+    sources: result.sources,
+  };
+}
+
 async function saveManagedObservation(observation: Parameters<typeof buildWorkflowObservationRecord>[0]): Promise<void> {
   try {
     const record = buildWorkflowObservationRecord(observation);
@@ -123,34 +149,84 @@ async function handleRecall(request: Request): Promise<Response> {
   const profileName = typeof body.profile === "string" ? body.profile : undefined;
 
   const { retriever, profile, store } = getComponents(profileName);
-  const results = await retriever.retrieve({ query, limit, category });
+  const results = await retriever.retrieve(buildRetrievalContext({
+    query,
+    limit,
+    category,
+    scope: typeof body.scope === "string" ? body.scope : undefined,
+    sessionId: typeof body.sessionId === "string" ? body.sessionId : undefined,
+    allScopes: body.allScopes === true,
+  }, {
+    operation: "api:/v1/recall",
+  }));
 
   const filtered = minScore > 0 ? results.filter((r) => r.score >= minScore) : results;
 
   const stats = await store.stats();
 
   return jsonResponse({
-    results: filtered.map((r) => {
-      const meta = parseMetadata(r.entry.metadata);
-      const provenance = buildProvenance(r.entry.scope, r.entry.metadata);
-      return {
-        id: r.entry.id,
-        text: r.entry.text,
-        category: r.entry.category,
-        tier: String(meta.tier || "peripheral"),
-        source: String(meta.source || r.entry.scope || "?"),
-        scope: r.entry.scope,
-        score: Math.round(r.score * 1000) / 1000,
-        date: new Date(r.entry.timestamp).toISOString().split("T")[0],
-        boundary: provenance.boundary,
-        canonicalKey: provenance.canonicalKey,
-        promotedFrom: provenance.promotedFrom,
-      };
-    }),
+    results: filtered.map((r) => serializeRetrievalResult(r)),
     query,
     profile: profile.name,
     totalMemories: stats.totalCount,
   });
+}
+
+/** POST /v1/auto-recall — compose resume context and scoped focused recall in one call */
+async function handleAutoRecall(request: Request): Promise<Response> {
+  const body = await readJson(request);
+  const message = typeof body.message === "string"
+    ? body.message
+    : typeof body.query === "string"
+      ? body.query
+      : undefined;
+  if (!message) {
+    return errorResponse(400, "message is required");
+  }
+
+  try {
+    const profileName = typeof body.profile === "string" ? body.profile : undefined;
+    const category = parseDurableMemoryCategory(body.category);
+    const { retriever, profile } = getComponents(profileName);
+    const autoRecall = await runAutoRecall({
+      retriever,
+      checkpointStore,
+    }, {
+      message,
+      task: typeof body.task === "string" ? body.task : undefined,
+      scope: typeof body.scope === "string" ? body.scope : undefined,
+      sessionId: typeof body.sessionId === "string" ? body.sessionId : undefined,
+      allScopes: body.allScopes === true,
+      limit: clampInt(body.limit, 5, 1, 20),
+      limitPerSection: clampInt(body.limitPerSection, 3, 1, 6),
+      includeLatestCheckpoint: typeof body.includeLatestCheckpoint === "boolean"
+        ? body.includeLatestCheckpoint
+        : true,
+      category,
+      profile: profile.name,
+      operation: "api:/v1/auto-recall",
+    });
+
+    await saveManagedObservation(buildManagedResumeObservation({
+      task: typeof body.task === "string" ? body.task : message,
+      scope: typeof body.scope === "string" ? body.scope : undefined,
+      sessionId: typeof body.sessionId === "string" ? body.sessionId : undefined,
+    }, autoRecall.resume));
+
+    return jsonResponse({
+      mode: autoRecall.mode,
+      query: message,
+      profile: profile.name,
+      resolvedScope: autoRecall.resolvedScope,
+      searchSkippedReason: autoRecall.searchSkippedReason,
+      resume: autoRecall.resume,
+      results: autoRecall.results.map((result) => serializeRetrievalResult(result)),
+      count: autoRecall.results.length,
+    });
+  } catch (err) {
+    const messageText = err instanceof Error ? err.message : String(err);
+    return errorResponse(400, messageText);
+  }
 }
 
 /** POST /v1/store — store a new memory */
@@ -436,11 +512,18 @@ async function handleResume(request: Request): Promise<Response> {
   try {
     const profileName = typeof body.profile === "string" ? body.profile : undefined;
     const { retriever, profile } = getComponents(profileName);
+    const scopeSelection = resolveScopeSelection({
+      scope: typeof body.scope === "string" ? body.scope : undefined,
+      sessionId: typeof body.sessionId === "string" ? body.sessionId : undefined,
+      operation: "api:/v1/resume",
+      allowUnscoped: true,
+    });
     const context = await composeResumeContext({
       retriever,
       checkpointStore,
     }, {
       ...body,
+      scope: scopeSelection.resolvedScope,
       profile: profile.name,
     });
     await saveManagedObservation(buildManagedResumeObservation({
@@ -471,38 +554,23 @@ async function handleSearch(request: Request): Promise<Response> {
   const minScore = clampFloat(body.minScore, 0, 0, 1);
   const category = parseDurableMemoryCategory(body.category);
   const profileName = typeof body.profile === "string" ? body.profile : undefined;
-  const scope = typeof body.scope === "string" ? body.scope : undefined;
 
   const { retriever, profile } = getComponents(profileName);
-  const results = await retriever.retrieve({
+  const results = await retriever.retrieve(buildRetrievalContext({
     query,
     limit,
-    scopeFilter: scope ? [scope] : undefined,
     category,
-  });
+    scope: typeof body.scope === "string" ? body.scope : undefined,
+    sessionId: typeof body.sessionId === "string" ? body.sessionId : undefined,
+    allScopes: body.allScopes === true,
+  }, {
+    operation: "api:/v1/search",
+  }));
 
   const filtered = minScore > 0 ? results.filter((r) => r.score >= minScore) : results;
 
   return jsonResponse({
-    results: filtered.map((r) => {
-      const metadata = parseMetadata(r.entry.metadata);
-      const provenance = buildProvenance(r.entry.scope, r.entry.metadata);
-      return {
-        id: r.entry.id,
-        text: r.entry.text,
-        category: r.entry.category,
-        scope: r.entry.scope,
-        score: Math.round(r.score * 1000) / 1000,
-        importance: r.entry.importance,
-        timestamp: r.entry.timestamp,
-        date: new Date(r.entry.timestamp).toISOString().split("T")[0],
-        metadata,
-        boundary: provenance.boundary,
-        canonicalKey: provenance.canonicalKey,
-        promotedFrom: provenance.promotedFrom,
-        sources: r.sources,
-      };
-    }),
+    results: filtered.map((r) => serializeRetrievalResult(r)),
     query,
     profile: profile.name,
     count: filtered.length,
@@ -562,6 +630,7 @@ const server = Bun.serve({
       // POST endpoints
       if (method === "POST") {
         if (pathname === "/v1/recall") return await handleRecall(request);
+        if (pathname === "/v1/auto-recall") return await handleAutoRecall(request);
         if (pathname === "/v1/store") return await handleStore(request);
         if (pathname === "/v1/capture") return await handleCapture(request);
         if (pathname === "/v1/pattern") return await handlePattern(request);

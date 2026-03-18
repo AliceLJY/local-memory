@@ -98,7 +98,9 @@ describe("composeResumeContext", () => {
       limitPerSection: 3,
     });
 
+    expect(response.resolvedScope).toBe("agent:codex");
     expect(response.latestCheckpoint?.sessionId).toBe("session-1");
+    expect(response.latestCheckpoint?.resolvedScope).toBe("agent:codex");
     expect(response.stableContext).toContain("Profile: User builds local-first memory systems.");
     expect(response.relevantPatterns).toEqual(["At task start, run search_memory before coding."]);
     expect(response.recentCases).toEqual(["Keep session state in a checkpoint store instead of the durable index."]);
@@ -156,7 +158,7 @@ describe("composeResumeContext", () => {
 
     expect(checkpointLookups).toBe(0);
     expect(response.latestCheckpoint).toBeUndefined();
-    expect(response.stableContext).toContain("Pinned: Pinned reminder: keep stable context visible across fresh windows.");
+    expect(response.stableContext).toContain("Pinned: Continuity rule: Pinned reminder: keep stable context visible across fresh windows.");
     expect(response.relevantPatterns).toEqual(["Use resume_context before starting a new terminal task."]);
   });
 
@@ -782,8 +784,8 @@ describe("composeResumeContext", () => {
       limitPerSection: 2,
     });
 
-    expect(response.stableContext).toContain(
-      "Pinned: 用户常用视觉风格是手绘涂鸦风加高对比撞色；在内容包装和配图生成时，应优先沿用这一审美方向。",
+    expect(response.stableContext.join(" ")).toContain(
+      "Pinned: 用户视觉审美偏好: 用户常用视觉风格是手绘涂鸦风加高对比撞色；在内容包装和配图生成时，应优先沿用这一审美方向。",
     );
   });
 
@@ -826,8 +828,52 @@ describe("composeResumeContext", () => {
     });
 
     expect(response.stableContext).toContain(
-      "Pinned: 用户稳定偏好口语化、不端着、可以自嘲但不说教。",
+      "Pinned: 用户写作语气偏好: 用户稳定偏好口语化、不端着、可以自嘲但不说教。",
     );
+  });
+
+  it("keeps Chinese writing pins visible for English writing-project prompts", async () => {
+    const retriever = {
+      async retrieve(): Promise<RetrievalResult[]> {
+        return [];
+      },
+    };
+
+    const response = await composeResumeContext({
+      retriever,
+      checkpointStore: {
+        async getLatest() {
+          return null;
+        },
+      },
+      listPins: () => [{
+        id: "pin-writing-cross-language",
+        type: "pinned-memory",
+        createdAt: "2026-03-16T04:00:00.000Z",
+        updatedAt: "2026-03-16T04:00:00.000Z",
+        title: "用户写作语气偏好",
+        summary: "用户稳定偏好口语化、不端着、可以自嘲但不说教。",
+        tags: ["写作风格", "口语化", "不端着"],
+        source: {
+          memoryId: "memory-writing-cross-language",
+          scope: "cc:writing-pin",
+          timestamp: Date.parse("2026-03-16T04:00:00.000Z"),
+          metadata: {},
+        },
+        snippet: "[助手] 根据你的档案：AI 野路子，不是程序员。公众号「我的AI小木屋」运营者。写作风格：口语化、不端着、可以自嘲但不说教。",
+        path: "/tmp/pin-writing-cross-language.json",
+      }],
+    }, {
+      task: "continue my AI writing project",
+      scope: "project:recallnest",
+      includeLatestCheckpoint: false,
+      limitPerSection: 3,
+    });
+
+    const stableJoined = response.stableContext.join(" ");
+    expect(stableJoined).toContain("写作");
+    expect(stableJoined).toContain("AI");
+    expect(stableJoined).toContain("公众号");
   });
 
   it("uses a scope-aware entity fallback query for sparse project prompts", async () => {
@@ -889,6 +935,60 @@ describe("composeResumeContext", () => {
       "Entity: RecallNest is the shared memory layer for Claude Code, Codex, and Gemini CLI.",
     );
     expect(response.stableContext.some((item) => item.startsWith("Task focus:"))).toBe(false);
+  });
+
+  it("filters unrelated global entity results from scoped stable recall", async () => {
+    const retriever = {
+      async retrieve(context: RetrievalContext): Promise<RetrievalResult[]> {
+        if (context.category !== "entities") {
+          return [];
+        }
+
+        const scopedResult = withScope(
+          buildResult(
+            "entity-recallnest-scoped",
+            "entities",
+            "RecallNest is the shared memory layer for Claude Code, Codex, and Gemini CLI.",
+          ),
+          "project:recallnest",
+        );
+
+        if (context.scopeFilter?.includes("project:recallnest")) {
+          return [scopedResult];
+        }
+
+        return [
+          scopedResult,
+          withScope(
+            buildResult(
+              "entity-other-project",
+              "entities",
+              "[project_cmp_status] claude-memory-pro is the current active maintenance target for a different repository.",
+            ),
+            "project:other",
+          ),
+        ];
+      },
+    };
+
+    const response = await composeResumeContext({
+      retriever,
+      checkpointStore: {
+        async getLatest() {
+          return null;
+        },
+      },
+      listPins: () => [],
+    }, {
+      task: "继续我的项目",
+      scope: "project:recallnest",
+      includeLatestCheckpoint: false,
+      limitPerSection: 3,
+    });
+
+    const stableJoined = response.stableContext.join(" ");
+    expect(stableJoined).toContain("RecallNest");
+    expect(stableJoined).not.toContain("claude-memory-pro");
   });
 
   it("adds a task focus fallback when stable recall is otherwise empty", async () => {

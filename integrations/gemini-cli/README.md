@@ -18,8 +18,12 @@ bash integrations/gemini-cli/setup.sh
 The managed block comes from [gemini-md-snippet.md](gemini-md-snippet.md) and tells Gemini CLI to:
 
 - call `resume_context` at the start of fresh windows or continuity-sensitive tasks
-- use `search_memory` only when it needs a specific follow-up detail
+- run lightweight `search_memory` on task pivots inside the same project before repo exploration drifts
+- reuse known `scope` / `sessionId` and the resolved scope returned by `resume_context` in follow-up recall calls
+- treat recalled or startup-hook repo state as unverified until this window explicitly checks the repo
 - save `checkpoint_session` before leaving resumable work
+- do not inspect repo state just to enrich a close-window checkpoint unless the user explicitly asked for repo state
+- do not write unverified repo-state claims into `checkpoint_session`
 - capture durable facts with `store_memory` and reusable workflows with `store_workflow_pattern`
 
 ## Shared Index

@@ -129,7 +129,7 @@ const workflowObservationStore = new WorkflowObservationStore();
 
 const server = new McpServer({
   name: "recallnest",
-  version: "1.3.0",
+  version: "1.4.0",
 });
 
 // ============================================================================
@@ -141,7 +141,8 @@ type ToolHandler = Parameters<typeof server.tool>[3];
 
 function registerTool(name: string, description: string, schema: ToolSchema, handler: ToolHandler): void {
   if (!shouldRegisterTool(name)) {
-    console.log(`[MCP] Skipping ${name} (tier: ${TOOL_TIERS[name]})`);
+    // stdout is reserved for MCP JSON-RPC on stdio transports.
+    console.error(`[MCP] Skipping ${name} (tier: ${TOOL_TIERS[name]})`);
     return;
   }
   server.tool(name, description, schema, handler);

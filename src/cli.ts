@@ -36,7 +36,7 @@ import {
   WorkflowPatternInputSchema,
   type WorkflowPatternInput,
 } from "./memory-schema.js";
-import type { MemoryEntry } from "./store.js";
+import { classifyLegacyScope, type MemoryEntry } from "./store.js";
 import { ConflictStatusSchema } from "./conflict-schema.js";
 import { resolveConflictCandidate } from "./conflict-engine.js";
 import { escalateConflicts } from "./conflict-escalation.js";
@@ -48,6 +48,7 @@ import { WorkflowObservationOutcomeSchema } from "./workflow-observation-schema.
 import { buildWorkflowEvidence, buildWorkflowObservationRecord, inspectWorkflowDashboard, inspectWorkflowHealth } from "./workflow-observation-engine.js";
 import { formatWorkflowEvidencePack, formatWorkflowHealthDashboard, formatWorkflowHealthReport, formatWorkflowObservationSaved } from "./workflow-observation-output.js";
 import { WorkflowObservationStore } from "./workflow-observation-store.js";
+import { buildRetrievalContext, resolveScopeSelection } from "./scope-policy.js";
 
 /**
  * Auto-detect Claude Code transcript directory.
@@ -104,19 +105,35 @@ const program = new Command();
 program
   .name("recallnest")
   .description("本地优先 AI 对话记忆搜索与蒸馏层")
-  .version("1.3.1");
+  .version("1.4.0");
 
 async function runRetrievalView(
   view: "search" | "explain" | "distill",
   query: string,
-  options: { limit?: string; scope?: string; json?: boolean; profile?: string; explain?: boolean },
+  options: {
+    limit?: string;
+    scope?: string;
+    sessionId?: string;
+    allScopes?: boolean;
+    json?: boolean;
+    profile?: string;
+    explain?: boolean;
+  },
 ) {
   const config = loadConfig();
   const { retriever, profile } = createComponents(config, options.profile);
 
   const limit = parseLimitOption(options.limit, 5, 1, 20);
-  const scopeFilter = toScopeFilter(options.scope);
-  const results = await retriever.retrieve({ query, limit, scopeFilter });
+  const results = await retriever.retrieve(buildRetrievalContext({
+    query,
+    limit,
+    scope: options.scope,
+    sessionId: options.sessionId,
+    allScopes: Boolean(options.allScopes),
+    source: "cli",
+  }, {
+    operation: `cli:${view}`,
+  }));
 
   if (view === "search" && options.json) {
     console.log(
@@ -343,6 +360,13 @@ function seedTextPreview(text: string, maxLen = 72): string {
   return compact.length <= maxLen ? compact : `${compact.slice(0, maxLen - 3).trimEnd()}...`;
 }
 
+function formatLegacyScope(value: string | null): string {
+  const kind = classifyLegacyScope(value);
+  if (kind === "missing") return "<missing>";
+  if (kind === "empty") return "<empty>";
+  return value ?? "<missing>";
+}
+
 function entryToRetrievalResult(entry: Awaited<ReturnType<MemoryStore["get"]>>): RetrievalResult {
   if (!entry) {
     throw new Error("Memory entry not found.");
@@ -362,7 +386,9 @@ program
   .command("search <query>")
   .description("搜索记忆（支持 profile / explain）")
   .option("-n, --limit <n>", "返回结果数", "5")
-  .option("-s, --scope <scope>", "限定来源（cc/codex/gemini/memory）")
+  .option("-s, --scope <scope>", "显式限定 scope")
+  .option("--session-id <sessionId>", "当前 sessionId；未传 scope 时会推断为 session:<id>")
+  .option("--all-scopes", "显式允许跨 scope 搜索")
   .option("-p, --profile <profile>", "检索画像：default / writing / debug / fact-check", "default")
   .option("--explain", "显示命中原因与检索路径")
   .option("--json", "JSON 格式输出")
@@ -374,7 +400,9 @@ program
   .command("explain <query>")
   .description("解释为什么召回这些记忆")
   .option("-n, --limit <n>", "返回结果数", "5")
-  .option("-s, --scope <scope>", "限定来源（cc/codex/gemini/memory）")
+  .option("-s, --scope <scope>", "显式限定 scope")
+  .option("--session-id <sessionId>", "当前 sessionId；未传 scope 时会推断为 session:<id>")
+  .option("--all-scopes", "显式允许跨 scope 搜索")
   .option("-p, --profile <profile>", "检索画像：default / writing / debug / fact-check", "default")
   .action(async (query: string, options) => {
     await runRetrievalView("explain", query, options);
@@ -384,7 +412,9 @@ program
   .command("distill <query>")
   .description("把命中结果蒸馏成可复用 briefing")
   .option("-n, --limit <n>", "返回结果数", "8")
-  .option("-s, --scope <scope>", "限定来源（cc/codex/gemini/memory）")
+  .option("-s, --scope <scope>", "显式限定 scope")
+  .option("--session-id <sessionId>", "当前 sessionId；未传 scope 时会推断为 session:<id>")
+  .option("--all-scopes", "显式允许跨 scope 搜索")
   .option("-p, --profile <profile>", "检索画像：default / writing / debug / fact-check", "writing")
   .action(async (query: string, options) => {
     await runRetrievalView("distill", query, options);
@@ -409,6 +439,9 @@ program
 program
   .command("pin <memoryId>")
   .description("把一条命中记忆提升为 pinned asset")
+  .option("-s, --scope <scope>", "显式限定 scope")
+  .option("--session-id <sessionId>", "当前 sessionId；未传 scope 时会推断为 session:<id>")
+  .option("--all-scopes", "显式允许跨 scope 读取")
   .option("-p, --profile <profile>", "检索画像：default / writing / debug / fact-check", "default")
   .option("-q, --query <query>", "记录这条记忆来自哪个查询")
   .option("-t, --title <title>", "自定义 asset 标题")
@@ -416,14 +449,20 @@ program
   .action(async (memoryId: string, options) => {
     const config = loadConfig();
     const { store, embedder } = createComponents(config, options.profile);
-    const entry = await store.get(memoryId);
+    const scopeSelection = resolveScopeSelection({
+      scope: options.scope,
+      sessionId: options.sessionId,
+      allScopes: Boolean(options.allScopes),
+      operation: "cli:pin",
+    });
+    const entry = await store.get(memoryId, scopeSelection.scopeFilter);
     if (!entry) {
       console.log(`Memory not found: ${memoryId}`);
       return;
     }
 
     const pinnedImportance = Math.max(entry.importance || 0.7, 0.95);
-    await store.update(entry.id, { importance: pinnedImportance });
+    await store.update(entry.id, { importance: pinnedImportance }, scopeSelection.scopeFilter);
 
     const asset = buildPinAsset(entryToRetrievalResult(entry), {
       title: options.title,
@@ -446,15 +485,25 @@ program
   .command("brief <query>")
   .description("把一组召回结果沉淀成 structured memory brief")
   .option("-n, --limit <n>", "返回结果数", "8")
-  .option("-s, --scope <scope>", "限定来源（cc/codex/gemini/memory）")
+  .option("-s, --scope <scope>", "显式限定 scope")
+  .option("--session-id <sessionId>", "当前 sessionId；未传 scope 时会推断为 session:<id>")
+  .option("--all-scopes", "显式允许跨 scope 搜索")
   .option("-p, --profile <profile>", "检索画像：default / writing / debug / fact-check", "writing")
   .option("-t, --title <title>", "自定义 brief 标题")
   .action(async (query: string, options) => {
     const config = loadConfig();
     const { retriever, profile, store, embedder } = createComponents(config, options.profile);
     const limit = parseLimitOption(options.limit, 8, 1, 20);
-    const scopeFilter = toScopeFilter(options.scope);
-    const results = await retriever.retrieve({ query, limit, scopeFilter });
+    const results = await retriever.retrieve(buildRetrievalContext({
+      query,
+      limit,
+      scope: options.scope,
+      sessionId: options.sessionId,
+      allScopes: Boolean(options.allScopes),
+      source: "cli",
+    }, {
+      operation: "cli:brief",
+    }));
     if (results.length === 0) {
       console.log("No results found.");
       return;
@@ -552,7 +601,9 @@ program
   .command("export <query>")
   .description("导出检索与蒸馏结果到 markdown/json")
   .option("-n, --limit <n>", "返回结果数", "8")
-  .option("-s, --scope <scope>", "限定来源（cc/codex/gemini/memory）")
+  .option("-s, --scope <scope>", "显式限定 scope")
+  .option("--session-id <sessionId>", "当前 sessionId；未传 scope 时会推断为 session:<id>")
+  .option("--all-scopes", "显式允许跨 scope 搜索")
   .option("-p, --profile <profile>", "检索画像：default / writing / debug / fact-check", "writing")
   .option("-f, --format <format>", "导出格式：md / json", "md")
   .action(async (query: string, options) => {
@@ -560,8 +611,16 @@ program
     const config = loadConfig();
     const { retriever, profile } = createComponents(config, options.profile);
     const limit = parseLimitOption(options.limit, 8, 1, 20);
-    const scopeFilter = toScopeFilter(options.scope);
-    const results = await retriever.retrieve({ query, limit, scopeFilter });
+    const results = await retriever.retrieve(buildRetrievalContext({
+      query,
+      limit,
+      scope: options.scope,
+      sessionId: options.sessionId,
+      allScopes: Boolean(options.allScopes),
+      source: "cli",
+    }, {
+      operation: "cli:export",
+    }));
     const summary = distillResults(results, { query, profile: profile.name });
     const artifact = writeExportArtifact({
       query,
@@ -941,7 +1000,7 @@ program
         scope: options.scope,
         source: options.source,
       });
-      const scope = input.scope || `memory:${input.source}`;
+      const scope = input.scope;
       const key = workflowPatternIdentity(input.title, scope);
       if (existingKeys.has(key)) {
         skipped.push({ title: input.title, scope });
@@ -1017,7 +1076,7 @@ program
         scope: options.scope,
         source: options.source,
       });
-      const scope = input.scope || `memory:${input.source}`;
+      const scope = input.scope;
       const key = caseMemoryIdentity(input.title, scope);
       if (existingKeys.has(key)) {
         skipped.push({ title: input.title, scope });
@@ -1095,7 +1154,7 @@ program
         scope: options.scope,
         source: options.source,
       });
-      const scope = input.scope || `memory:${input.source}`;
+      const scope = input.scope;
       const key = storeMemoryIdentity(input);
       if (existingKeys.has(key)) {
         skipped.push({ category: input.category, scope, text: input.text });
@@ -1347,6 +1406,50 @@ program
     console.log();
   });
 
+program
+  .command("scope-audit")
+  .description("扫描 legacy scope 异常行（missing / empty / global）")
+  .option("-n, --limit <n>", "最多显示多少条示例", "20")
+  .option("--json", "JSON 格式输出")
+  .action(async (options) => {
+    const config = loadConfig();
+    const { store } = createComponents(config);
+    const limit = parseLimitOption(options.limit, 20, 1, 200);
+    const audit = await store.auditLegacyScopes(limit);
+
+    if (options.json) {
+      console.log(JSON.stringify(audit, null, 2));
+      return;
+    }
+
+    if (audit.totalCount === 0) {
+      console.log("No legacy scope anomalies found.");
+      return;
+    }
+
+    console.log("Legacy scope audit\n");
+    console.log(`  Total anomalies: ${audit.totalCount}`);
+    console.log(`  Missing scope : ${audit.counts.missing}`);
+    console.log(`  Empty scope   : ${audit.counts.empty}`);
+    console.log(`  Global scope  : ${audit.counts.global}`);
+
+    if (audit.samples.length === 0) {
+      return;
+    }
+
+    console.log("\n  Sample rows:");
+    console.log("    ID        Kind     Scope        Category      Date        Text");
+    console.log("    --------  -------  -----------  ------------  ----------  ----");
+    for (const sample of audit.samples) {
+      const date = new Date(sample.timestamp).toISOString().slice(0, 10);
+      console.log(
+        `    ${sample.id.slice(0, 8)}  ${sample.kind.padEnd(7)}  ${formatLegacyScope(sample.scope).padEnd(11)}  ${sample.category.padEnd(12)}  ${date}  ${seedTextPreview(sample.text, 56)}`
+      );
+    }
+
+    console.log("\n  Use this report to migrate or delete historical unscoped rows before removing compatibility shims.");
+  });
+
 // ─── reset ───────────────────────────────────────────────────────────────────
 
 program
@@ -1415,7 +1518,7 @@ program
       // Markdown format: grouped by scope, sorted by time
       const grouped: Record<string, typeof recent> = {};
       for (const e of recent) {
-        const key = e.scope || "global";
+        const key = e.scope || "<missing>";
         if (!grouped[key]) grouped[key] = [];
         grouped[key].push(e);
       }

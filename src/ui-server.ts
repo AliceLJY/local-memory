@@ -10,6 +10,7 @@ import { extractMemoryProvenance } from "./memory-boundaries.js";
 import { archiveDirtyBriefAsset, assetSummaryLine, buildBriefAsset, buildPinAsset, listDirtyBriefAssets, listExportArtifacts, listMemoryAssets, saveBriefAsset, savePinAsset, writeExportArtifact } from "./memory-assets.js";
 import { indexAsset, indexPinnedAsset } from "./asset-sync.js";
 import { createComponentResolver, loadConfig, loadDotEnv } from "./runtime-config.js";
+import { buildRetrievalContext, resolveScopeSelection } from "./scope-policy.js";
 const config = (loadDotEnv(), loadConfig());
 const getComponents = createComponentResolver(config);
 
@@ -65,11 +66,6 @@ function readLimit(value: unknown, fallback: number, min = 1, max = 50): number 
   const parsed = Number.parseInt(String(value ?? ""), 10);
   if (!Number.isFinite(parsed)) return fallback;
   return Math.min(max, Math.max(min, parsed));
-}
-
-function readScopeFilter(value: unknown): string[] | undefined {
-  const scope = readOptionalString(value);
-  return scope ? [scope] : undefined;
 }
 
 function textResponse(output: string, init?: ResponseInit) {
@@ -161,11 +157,15 @@ function serveStatic(pathname: string): Response | null {
 async function handleSearch(mode: "search" | "explain" | "distill", body: Record<string, any>) {
   const query = requireString(body.query, "query");
   const { retriever, profile } = getComponents(readOptionalString(body.profile));
-  const results = await retriever.retrieve({
+  const results = await retriever.retrieve(buildRetrievalContext({
     query,
     limit: readLimit(body.limit, 5, 1, 20),
-    scopeFilter: readScopeFilter(body.scope),
-  });
+    scope: readOptionalString(body.scope),
+    sessionId: readOptionalString(body.sessionId),
+    allScopes: body.allScopes === true,
+  }, {
+    operation: `ui:${mode}`,
+  }));
   const context = { query, profile: profile.name };
   const output = mode === "explain"
     ? formatExplainResults(results, context)
@@ -293,9 +293,15 @@ const server = Bun.serve({
         const body = await readJson(request);
         const memoryId = requireString(body.memoryId, "memoryId");
         const { store, embedder } = getComponents(readOptionalString(body.profile));
-        const entry = await store.get(memoryId);
+        const scopeSelection = resolveScopeSelection({
+          scope: readOptionalString(body.scope),
+          sessionId: readOptionalString(body.sessionId),
+          allScopes: body.allScopes === true,
+          operation: "ui:pin",
+        });
+        const entry = await store.get(memoryId, scopeSelection.scopeFilter);
         if (!entry) return textResponse(`Memory not found: ${memoryId}`, { status: 404 });
-        await store.update(entry.id, { importance: Math.max(entry.importance || 0.7, 0.95) });
+        await store.update(entry.id, { importance: Math.max(entry.importance || 0.7, 0.95) }, scopeSelection.scopeFilter);
         const asset = buildPinAsset(entryToRetrievalResult(entry), {
           title: readOptionalString(body.title),
           summary: readOptionalString(body.summary),
@@ -316,11 +322,15 @@ const server = Bun.serve({
         const body = await readJson(request);
         const query = requireString(body.query, "query");
         const { retriever, profile, store, embedder } = getComponents(readOptionalString(body.profile) || "writing");
-        const results = await retriever.retrieve({
+        const results = await retriever.retrieve(buildRetrievalContext({
           query,
           limit: readLimit(body.limit, 8, 1, 20),
-          scopeFilter: readScopeFilter(body.scope),
-        });
+          scope: readOptionalString(body.scope),
+          sessionId: readOptionalString(body.sessionId),
+          allScopes: body.allScopes === true,
+        }, {
+          operation: "ui:brief",
+        }));
         if (results.length === 0) {
           return textResponse(`No results found for: ${query}`, { status: 404 });
         }
@@ -362,11 +372,15 @@ const server = Bun.serve({
         const body = await readJson(request);
         const query = requireString(body.query, "query");
         const { retriever, profile } = getComponents(readOptionalString(body.profile) || "writing");
-        const results = await retriever.retrieve({
+        const results = await retriever.retrieve(buildRetrievalContext({
           query,
           limit: readLimit(body.limit, 8, 1, 20),
-          scopeFilter: readScopeFilter(body.scope),
-        });
+          scope: readOptionalString(body.scope),
+          sessionId: readOptionalString(body.sessionId),
+          allScopes: body.allScopes === true,
+        }, {
+          operation: "ui:export",
+        }));
         const summary = distillResults(results, { query, profile: profile.name });
         const artifact = writeExportArtifact({
           query,

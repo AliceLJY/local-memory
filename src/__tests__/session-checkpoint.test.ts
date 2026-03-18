@@ -69,14 +69,22 @@ describe("session checkpoint output", () => {
   it("includes recall-only guidance in formatted resume context output", () => {
     const output = formatResumeContext({
       summary: "Stable context: Preference: 用户不喜欢 AI 味太重的文案语气。",
+      resolvedScope: "project:writing",
       stableContext: ["Preference: 用户不喜欢 AI 味太重的文案语气。"],
       relevantPatterns: [],
       recentCases: [],
+      latestCheckpoint: {
+        sessionId: "session-writing",
+        resolvedScope: "project:writing",
+        summary: "Continue writing-style preference recovery.",
+        updatedAt: "2026-03-16T04:30:00.000Z",
+      },
       responseMode: "recall-only",
       responseGuidance: "Recall-only mode: answer from the recalled stable context item only.",
       generatedAt: "2026-03-16T04:40:00.000Z",
     });
 
+    expect(output).toContain("Scope: project:writing");
     expect(output).toContain("Response mode: recall-only");
     expect(output).toContain("Guidance: Recall-only mode");
     expect(output).toContain("Stable context:");

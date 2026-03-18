@@ -37,15 +37,16 @@ Returns server status.
 POST /v1/recall
 ```
 
-Semantic search across all memories. Best for quick, conversational lookups.
+Semantic search across scoped memories. Best for quick, conversational lookups when the caller already knows the active scope or session.
 
-> 主动回忆：用关键词搜索相关记忆，返回按相关度排序的结果。
+> 主动回忆：用关键词搜索相关记忆，返回按相关度排序的结果。默认需要显式 `scope`、`sessionId`，或环境里的默认 scope；只有 `allScopes=true` 才会跨 scope 搜索。
 
 **Request:**
 
 ```json
 {
   "query": "Docker bot debugging",
+  "scope": "project:docker-bot",
   "limit": 5,
   "minScore": 0.5
 }
@@ -54,6 +55,9 @@ Semantic search across all memories. Best for quick, conversational lookups.
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `query` | string | yes | — | Search query (2-3 key nouns work best) |
+| `scope` | string | no | — | Explicit shared scope for the search |
+| `sessionId` | string | no | — | Session identifier used to infer `session:{id}` scope |
+| `allScopes` | boolean | no | `false` | Explicitly allow cross-scope search |
 | `limit` | number | no | 5 | Max results (1-20) |
 | `minScore` | number | no | 0 | Minimum relevance score (0-1). 0 = no filter |
 | `category` | string | no | — | Filter: `profile`, `preferences`, `entities`, `events`, `cases`, `patterns` |
@@ -91,6 +95,88 @@ Semantic search across all memories. Best for quick, conversational lookups.
 
 ---
 
+## Auto Recall (Resume + Focused Search)
+
+```
+POST /v1/auto-recall
+```
+
+Compose startup continuity context and then run a focused scoped search in one call. Best for agent frameworks that want a single "recall at task start" hook without exposing extra MCP tools.
+
+> 自动回忆：先做 `resume_context` 式的连续性恢复，再在同一 scope 下补一轮 focused search。适合 agent SDK / HTTP 集成在每次任务开始时直接调用。
+
+**Request:**
+
+```json
+{
+  "message": "RecallNest continuity",
+  "scope": "project:recallnest",
+  "limit": 3,
+  "limitPerSection": 3,
+  "includeLatestCheckpoint": true,
+  "profile": "default"
+}
+```
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `message` | string | yes | — | Raw user message or task-start query |
+| `task` | string | no | `message` | Optional broader task hint for resume composition |
+| `scope` | string | no | — | Explicit shared scope |
+| `sessionId` | string | no | — | Session identifier used to recover the latest checkpoint and infer scope |
+| `allScopes` | boolean | no | `false` | Explicitly allow cross-scope focused search |
+| `limit` | number | no | 5 | Max focused search results (1-20) |
+| `limitPerSection` | number | no | 3 | Max items per resume section (1-6) |
+| `includeLatestCheckpoint` | boolean | no | `true` | Whether to include the latest checkpoint in the resume payload |
+| `category` | string | no | — | Optional focused search category filter |
+| `profile` | string | no | `"default"` | Retrieval profile: `default`, `writing`, `debug`, `fact-check` |
+
+**Response:**
+
+```json
+{
+  "mode": "resume+search",
+  "query": "RecallNest continuity",
+  "profile": "default",
+  "resolvedScope": "project:recallnest",
+  "searchSkippedReason": null,
+  "resume": {
+    "summary": "Loaded 3 stable context item(s), 2 pattern(s), and 1 case(s). Latest checkpoint from codex-2026-03-16-001 on 2026-03-16: Implement startup continuity for fresh windows.",
+    "resolvedScope": "project:recallnest",
+    "stableContext": [
+      "Entity: RecallNest continuity revolves around three primitives."
+    ],
+    "relevantPatterns": [
+      "At task start, run search_memory before coding."
+    ],
+    "recentCases": [
+      "Case: RecallNest scope fallback cleanup"
+    ],
+    "latestCheckpoint": {
+      "sessionId": "codex-2026-03-16-001",
+      "resolvedScope": "project:recallnest",
+      "summary": "Implement startup continuity for fresh windows",
+      "updatedAt": "2026-03-16T05:00:00.000Z"
+    },
+    "generatedAt": "2026-03-16T05:10:00.000Z"
+  },
+  "results": [
+    {
+      "id": "a1b2c3d4",
+      "text": "RecallNest continuity revolves around three primitives: store_memory, checkpoint_session, resume_context.",
+      "category": "entities",
+      "scope": "project:recallnest",
+      "score": 0.91
+    }
+  ],
+  "count": 1
+}
+```
+
+If no explicit or inferred scope is available, `mode` becomes `resume-only`, `results` is empty, and `searchSkippedReason` explains why focused search was skipped.
+
+---
+
 ## Store
 
 ```
@@ -118,7 +204,7 @@ Store a new durable memory entry.
 | `text` | string | yes | — | Memory content |
 | `category` | string | no | `"events"` | One of: `profile`, `preferences`, `entities`, `events`, `cases`, `patterns` |
 | `source` | string | no | `"manual"` | One of: `manual`, `agent`, `api` |
-| `scope` | string | no | `memory:{source}` | Optional scope override |
+| `scope` | string | yes | — | Required explicit scope such as `project:recallnest` or `session:abc123` |
 | `importance` | number | no | 0.7 | Importance score (0-1), affects decay and ranking |
 | `tags` | string[] | no | `[]` | Optional tags, max 8 items |
 | `canonicalKey` | string | no | derived from content | Optional stable key for dedupe/update semantics |
@@ -193,7 +279,7 @@ Each memory item supports:
 | `text` | string | yes | — | Memory content |
 | `category` | string | no | `"events"` | Durable memory category |
 | `importance` | number | no | envelope default | Optional per-item override |
-| `scope` | string | no | envelope scope or `memory:{source}` | Optional per-item override |
+| `scope` | string | no | envelope scope | Optional per-item override; every stored memory still needs a scope via the envelope or item override |
 | `source` | string | no | envelope source | Optional per-item override |
 | `tags` | string[] | no | `[]` | Optional tags |
 | `canonicalKey` | string | no | derived from content | Optional stable key for dedupe/update semantics |
@@ -259,7 +345,7 @@ Store a reusable workflow as durable `patterns` memory.
 | `outcome` | string | no | — | Optional expected outcome |
 | `tools` | string[] | no | `[]` | Optional tools, commands, or interfaces involved |
 | `importance` | number | no | 0.82 | Importance score (0-1) |
-| `scope` | string | no | `memory:{source}` | Optional scope override |
+| `scope` | string | yes | — | Required explicit scope such as `project:recallnest` or `session:abc123` |
 | `source` | string | no | `"agent"` | One of: `manual`, `agent`, `api` |
 | `tags` | string[] | no | `[]` | Optional tags; `workflow` and `pattern` are auto-added |
 | `canonicalKey` | string | no | derived from title | Optional stable key for dedupe/update semantics |
@@ -319,7 +405,7 @@ Store a reusable problem-solution case as durable `cases` memory.
 | `outcome` | string | no | — | Optional result or resolution |
 | `tools` | string[] | no | `[]` | Optional tools, commands, or interfaces involved |
 | `importance` | number | no | 0.84 | Importance score (0-1) |
-| `scope` | string | no | `memory:{source}` | Optional scope override |
+| `scope` | string | yes | — | Required explicit scope such as `project:recallnest` or `session:abc123` |
 | `source` | string | no | `"agent"` | One of: `manual`, `agent`, `api` |
 | `tags` | string[] | no | `[]` | Optional tags; `case` and `solution` are auto-added |
 | `canonicalKey` | string | no | derived from title | Optional stable key for dedupe/update semantics |
@@ -354,7 +440,7 @@ Promote an evidence memory into durable memory.
 | `text` | string | no | source text | Optional cleaned durable text |
 | `category` | string | no | inferred from source | Target durable category |
 | `importance` | number | no | 0.78 | Importance score (0-1) |
-| `scope` | string | no | `memory:{source}` | Optional scope override |
+| `scope` | string | yes | — | Required explicit target scope such as `project:recallnest` or `session:abc123` |
 | `source` | string | no | `"agent"` | Promotion source label |
 | `tags` | string[] | no | `[]` | Optional tags |
 | `canonicalKey` | string | no | derived from text | Optional stable key for dedupe/update semantics |
@@ -788,6 +874,7 @@ Managed MCP / HTTP resume calls now also append a dedicated `resume_context` wor
 ```json
 {
   "summary": "Loaded 3 stable context item(s), 2 pattern(s), and 1 case(s). Latest checkpoint from codex-2026-03-16-001 on 2026-03-16: Implement startup continuity for fresh windows.",
+  "resolvedScope": "agent:codex",
   "stableContext": [
     "Profile: User builds local-first memory systems.",
     "Preference: User prefers concise technical replies.",
@@ -801,6 +888,7 @@ Managed MCP / HTTP resume calls now also append a dedicated `resume_context` wor
   ],
   "latestCheckpoint": {
     "sessionId": "codex-2026-03-16-001",
+    "resolvedScope": "agent:codex",
     "summary": "Implement startup continuity for fresh windows",
     "updatedAt": "2026-03-16T05:00:00.000Z"
   },
@@ -808,6 +896,8 @@ Managed MCP / HTTP resume calls now also append a dedicated `resume_context` wor
   "profile": "default"
 }
 ```
+
+Use `resolvedScope` as the default scope for follow-up `search_memory`, `brief_memory`, `pin_memory`, and similar recall calls when the client did not already provide a stricter shared scope.
 
 ---
 

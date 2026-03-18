@@ -1,6 +1,6 @@
 {
   "name": "recallnest",
-  "version": "1.3.1",
+  "version": "1.4.0",
   "description": "RecallNest \u2014 MCP-native, local-first memory search and distillation for AI conversations",
   "license": "MIT",
   "type": "module",
@@ -18,6 +18,8 @@
     "brief": "bun run src/cli.ts brief",
     "assets": "bun run src/cli.ts assets",
     "clean-briefs": "bun run src/cli.ts clean-briefs --apply",
+    "test": "bun test",
+    "test:core": "bun test src/__tests__/scope-policy.test.ts src/__tests__/core-recall-eval.test.ts src/__tests__/capture-engine.test.ts src/__tests__/store-scope-audit.test.ts",
     "eval": "bun run src/eval.ts",
     "eval:continuity": "bun run src/eval.ts --mode continuity --cases eval/continuity/cases.json",
     "profiles": "bun run src/cli.ts profiles",

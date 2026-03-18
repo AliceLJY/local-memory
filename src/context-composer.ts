@@ -140,6 +140,17 @@ const TASK_RESULT_PLANISH_TERMS = [
   "next i",
 ];
 
+const GENERIC_SCOPE_TERMS = new Set([
+  "project",
+  "session",
+  "memory",
+  "asset",
+  "scope",
+  "项目",
+  "会话",
+  "记忆",
+]);
+
 const CASE_CUE_TERMS = [
   "问题",
   "解决",
@@ -182,8 +193,8 @@ const CASE_FALLBACK_TASK_TERMS = [
 
 const TASK_HINT_GROUPS = [
   {
-    cues: ["写文章", "文章", "写作", "公众号", "draft", "article", "post"],
-    hints: ["写作", "文章", "语气", "风格", "口语化", "不端着"],
+    cues: ["写文章", "文章", "写作", "公众号", "draft", "article", "post", "writing"],
+    hints: ["写作", "文章", "语气", "风格", "口语化", "不端着", "AI", "公众号"],
   },
   {
     cues: ["配图", "封面", "图片", "插图", "视觉", "image", "cover", "illustration"],
@@ -546,6 +557,32 @@ function scorePin(asset: PinAsset, taskTerms: string[], scope?: string): number 
   return score;
 }
 
+function formatPinnedContext(asset: PinAsset, taskTerms: string[]): string {
+  const title = asset.title.trim();
+  const summary = asset.summary.trim();
+  const hasStandaloneTitle = title.length > 0 && !title.startsWith("[");
+  const base = hasStandaloneTitle && summary && !normalizeText(summary).includes(normalizeText(title))
+    ? `Pinned: ${title}: ${summary}`
+    : `Pinned: ${summary || title}`;
+
+  const combined = `${title} ${summary} ${asset.tags.join(" ")}`.toLowerCase();
+  const snippet = cleanText(stripConversationMarkers(asset.snippet), 120);
+  const shouldAppendSnippet = Boolean(
+    snippet &&
+    taskTerms.some((term) => {
+      const normalized = normalizeText(term);
+      return normalized.length >= 2 && snippet.toLowerCase().includes(normalized) && !combined.includes(normalized);
+    }),
+  );
+
+  return cleanText(
+    shouldAppendSnippet
+      ? `${base} Snippet: ${snippet}`
+      : base,
+    220,
+  );
+}
+
 function isDurablePinAsset(asset: PinAsset): boolean {
   if (asset.type === "pinned-memory") return true;
 
@@ -593,7 +630,7 @@ function selectPinnedContext(
   return dedupeText(
     ranked
       .slice(0, Math.max(limit * 2, 4))
-      .map(({ asset }) => cleanText(`Pinned: ${asset.summary}`, 220)),
+      .map(({ asset }) => formatPinnedContext(asset, taskTerms)),
     limit,
   );
 }
@@ -627,6 +664,36 @@ function isStableCandidateUseful(category: StableCategory, result: RetrievalResu
   if (!isDurableStableScope(result.entry.scope) && stripped.length > 180) return false;
   if (category === "entities" && /^(用户|助手|pinned asset|memory brief)/i.test(stripped)) return false;
   return true;
+}
+
+function buildStableScopeCueTerms(scope?: string, taskSeed?: string): string[] {
+  return dedupeText([
+    ...extractTerms(scope),
+    ...extractTerms(taskSeed),
+    ...buildTaskHintTerms(taskSeed),
+  ], 12)
+    .map((term) => normalizeText(term))
+    .filter((term) =>
+      term.length >= 2 &&
+      !GENERIC_SCOPE_TERMS.has(term),
+    );
+}
+
+function isRelevantToScopedStableRecall(
+  result: RetrievalResult,
+  params: { scope?: string; taskSeed?: string },
+): boolean {
+  if (!params.scope || result.entry.scope === params.scope) {
+    return true;
+  }
+
+  const cueTerms = buildStableScopeCueTerms(params.scope, params.taskSeed);
+  if (cueTerms.length === 0) {
+    return true;
+  }
+
+  const haystack = normalizeText(stripConversationMarkers(result.entry.text));
+  return cueTerms.some((term) => haystack.includes(term));
 }
 
 function stableResultKey(result: RetrievalResult): string {
@@ -665,10 +732,13 @@ function selectStableResults(
   category: StableCategory,
   results: RetrievalResult[],
   limit: number,
-  params: { taskSeed?: string; styleFocused?: boolean } = {},
+  params: { taskSeed?: string; styleFocused?: boolean; scope?: string } = {},
 ): string[] {
   const ranked = results
-    .filter((result) => isStableCandidateUseful(category, result))
+    .filter((result) =>
+      isStableCandidateUseful(category, result) &&
+      (category !== "entities" || isRelevantToScopedStableRecall(result, params))
+    )
     .map((result) => ({
       result,
       key: stableResultKey(result),
@@ -1171,14 +1241,17 @@ export async function composeResumeContext(
   const profileContext = selectStableResults("profile", profileResults, Math.max(2, stableLimit), {
     taskSeed,
     styleFocused: styleFocusedTask,
+    scope: resolvedScope,
   });
   const preferenceContext = selectStableResults("preferences", preferenceResults, Math.max(2, stableLimit), {
     taskSeed,
     styleFocused: styleFocusedTask,
+    scope: resolvedScope,
   });
   const entityContext = selectStableResults("entities", entityResults, Math.max(2, stableLimit), {
     taskSeed,
     styleFocused: styleFocusedTask,
+    scope: resolvedScope,
   });
   const checkpointContext = buildCheckpointStableContext(latestCheckpoint, Math.min(3, stableLimit));
   const pinnedContext = selectPinnedContext(pinAssets, {
@@ -1250,15 +1323,17 @@ export async function composeResumeContext(
       recentCases,
       latestCheckpoint,
     }),
+    resolvedScope,
     stableContext,
     relevantPatterns,
     recentCases,
     latestCheckpoint: latestCheckpoint
       ? {
-          sessionId: latestCheckpoint.sessionId,
-          summary: latestCheckpoint.summary,
-          updatedAt: latestCheckpoint.updatedAt,
-        }
+        sessionId: latestCheckpoint.sessionId,
+        resolvedScope: latestCheckpoint.resolvedScope,
+        summary: latestCheckpoint.summary,
+        updatedAt: latestCheckpoint.updatedAt,
+      }
       : undefined,
     responseMode: recallOnlyTask ? "recall-only" as const : "default" as const,
     responseGuidance: recallOnlyTask
