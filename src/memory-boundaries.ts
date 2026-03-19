@@ -14,6 +14,7 @@ export const MEMORY_AUTHORITIES = [
   "document-ingest",
   "transcript-ingest",
   "session-checkpoint",
+  "distillation",
 ] as const;
 
 export const MEMORY_CONFLICT_POLICIES = [
@@ -90,6 +91,17 @@ export function buildStructuredMemoryBoundary(
     conflictPolicy: getConflictPolicyForCategory(category),
     originalCategory: category,
     note: "Structured memory writes are the durable source inside RecallNest.",
+  };
+}
+
+export function buildDistillationBoundary(
+  category: DurableMemoryCategory,
+): MemoryBoundaryMetadata {
+  return {
+    layer: "durable",
+    authority: "distillation",
+    conflictPolicy: getConflictPolicyForCategory(category),
+    originalCategory: category,
   };
 }
 
