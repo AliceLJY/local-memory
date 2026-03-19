@@ -790,6 +790,52 @@ describe("composeResumeContext", () => {
     expect(response.relevantPatterns.join("\n")).toContain("resume_context");
   });
 
+  it("supplements a single low-coverage continuity pattern without needing a checkpoint", async () => {
+    const retriever = {
+      async retrieve(context: RetrievalContext): Promise<RetrievalResult[]> {
+        if (context.category === "patterns") {
+          return [
+            withMetadata(
+              buildResult(
+                "pattern-promote-only-no-checkpoint",
+                "patterns",
+                "Workflow pattern: Promote recurring continuity workflow",
+              ),
+              {
+                workflowPattern: {
+                  title: "Promote recurring continuity workflow",
+                  trigger: "When continuity workflows repeat across sessions",
+                  tools: ["store_workflow_pattern", "/v1/pattern"],
+                  steps: ["Store recurring continuity workflows as durable patterns."],
+                },
+              },
+            ),
+          ];
+        }
+        return [];
+      },
+    };
+
+    const response = await composeResumeContext({
+      retriever,
+      checkpointStore: {
+        async getLatest() {
+          return null;
+        },
+      },
+      listPins: () => [],
+    }, {
+      task: "开个新窗口继续做同一个终端项目",
+      includeLatestCheckpoint: false,
+      limitPerSection: 3,
+    });
+
+    expect(response.relevantPatterns).toHaveLength(3);
+    expect(response.relevantPatterns.join("\n")).toContain("search_memory");
+    expect(response.relevantPatterns.join("\n")).toContain("resume_context");
+    expect(response.relevantPatterns.join("\n")).toContain("checkpoint");
+  });
+
   it("filters plan-like non-durable pattern notes so workflow fallback can recover durable patterns", async () => {
     const calls: RetrievalContext[] = [];
     const retriever = {
@@ -1842,6 +1888,202 @@ describe("composeResumeContext", () => {
     expect(caseJoined).not.toContain("RecallNest MCP transport regression");
   });
 
+  it("filters bare recallnest continuity seeds from unscoped external bridge tasks", async () => {
+    const retriever = {
+      async retrieve(context: RetrievalContext): Promise<RetrievalResult[]> {
+        if (context.category === "patterns") {
+          return [
+            withScope(
+              buildResult(
+                "pattern-seeded-recallnest-handoff",
+                "patterns",
+                "Workflow pattern: Scoped project continuity recall Tools: resume_context, latest_checkpoint, search_memory Use when: When continuing a named project that already has a shared scope or project key Steps: 1. Call resume_context before repo exploration.",
+              ),
+              "recallnest",
+            ),
+          ];
+        }
+
+        if (context.category === "cases") {
+          return [
+            withScope(
+              buildResult(
+                "case-seeded-recallnest-startup",
+                "cases",
+                "Case: RecallNest sparse startup context cleanup Problem: resume_context returned noisy transcript fragments and unrelated memories instead of a clean project handoff.",
+              ),
+              "recallnest",
+            ),
+          ];
+        }
+
+        return [];
+      },
+    };
+
+    const response = await composeResumeContext({
+      retriever,
+      checkpointStore: {
+        async getLatest() {
+          return null;
+        },
+      },
+      listPins: () => [],
+    }, {
+      task: "继续 telegram ai bridge 项目",
+      includeLatestCheckpoint: false,
+      limitPerSection: 3,
+    });
+
+    expect(response.stableContext.join(" ")).toContain("telegram");
+    expect(response.relevantPatterns).toEqual([]);
+    expect(response.recentCases).toEqual([]);
+  });
+
+  it("prefers transport-specific results over generic bare recallnest continuity seeds", async () => {
+    const retriever = {
+      async retrieve(context: RetrievalContext): Promise<RetrievalResult[]> {
+        if (context.category === "patterns") {
+          return [
+            withScope(
+              buildResult(
+                "pattern-seeded-recallnest-handoff-transport",
+                "patterns",
+                "Workflow pattern: Scoped project continuity recall Tools: resume_context, latest_checkpoint, search_memory Use when: When continuing a named project that already has a shared scope or project key Steps: 1. Call resume_context before repo exploration.",
+              ),
+              "recallnest",
+            ),
+            withScope(
+              buildResult(
+                "pattern-recallnest-transport-seeded-specific",
+                "patterns",
+                "Workflow pattern: RecallNest MCP transport rollout Tools: resume_context, search_memory, eval:continuity Use when: When RecallNest continuity work touches MCP transport wiring under project scope Steps: 1. Call resume_context with project:recallnest before transport changes.",
+              ),
+              "project:recallnest",
+            ),
+          ];
+        }
+
+        if (context.category === "cases") {
+          return [
+            withScope(
+              buildResult(
+                "case-seeded-recallnest-validation",
+                "cases",
+                "Case: Three-terminal continuity trigger validation Problem: Claude Code, Codex, and Gemini CLI were configured with MCP but only continue-style prompts triggered recall reliably.",
+              ),
+              "recallnest",
+            ),
+            withScope(
+              buildResult(
+                "case-recallnest-transport-seeded-specific",
+                "cases",
+                "Case: RecallNest MCP transport regression Problem: Scoped RecallNest continuity work around MCP transport could still drift unless the transport fixes were easy to recover.",
+              ),
+              "project:recallnest",
+            ),
+          ];
+        }
+
+        return [];
+      },
+    };
+
+    const response = await composeResumeContext({
+      retriever,
+      checkpointStore: {
+        async getLatest() {
+          return null;
+        },
+      },
+      listPins: () => [],
+    }, {
+      task: "继续 RecallNest continuity MCP transport rollout",
+      scope: "project:recallnest",
+      includeLatestCheckpoint: false,
+      limitPerSection: 3,
+    });
+
+    expect(response.relevantPatterns.join(" ")).toContain("RecallNest MCP transport rollout");
+    expect(response.recentCases.join(" ")).toContain("RecallNest MCP transport regression");
+  });
+
+  it("keeps transport-specific patterns ahead of generic continuity diversity fillers", async () => {
+    const retriever = {
+      async retrieve(context: RetrievalContext): Promise<RetrievalResult[]> {
+        if (context.category === "patterns") {
+          return [
+            withScope(
+              buildResult(
+                "pattern-recallnest-generic-scoped-project",
+                "patterns",
+                "Workflow pattern: Scoped project continuity recall Tools: resume_context, latest_checkpoint, search_memory Use when: When continuing a named project that already has a shared scope or project key Steps: 1. Call resume_context before repo exploration.",
+              ),
+              "project:recallnest",
+            ),
+            withScope(
+              buildResult(
+                "pattern-recallnest-generic-handoff",
+                "patterns",
+                "Workflow pattern: Cross-window continuity handoff Tools: resume_context, latest_checkpoint Use when: When opening a fresh terminal window for the same project Steps: 1. Call resume_context before coding.",
+              ),
+              "project:recallnest",
+            ),
+            withScope(
+              buildResult(
+                "pattern-recallnest-generic-search",
+                "patterns",
+                "Workflow pattern: Recall before repo exploration Tools: resume_context, search_memory Use when: When a fresh window continues the same project but task details are still sparse Steps: 1. Run search_memory before reading local files.",
+              ),
+              "project:recallnest",
+            ),
+            withScope(
+              buildResult(
+                "pattern-recallnest-transport-priority",
+                "patterns",
+                "Workflow pattern: RecallNest MCP transport rollout Tools: resume_context, search_memory, eval:continuity Use when: When RecallNest continuity work touches MCP transport wiring under project scope Steps: 1. Call resume_context with project:recallnest before transport changes.",
+              ),
+              "project:recallnest",
+            ),
+          ];
+        }
+
+        if (context.category === "cases") {
+          return [
+            withScope(
+              buildResult(
+                "case-recallnest-transport-priority",
+                "cases",
+                "Case: RecallNest MCP transport regression Problem: Scoped RecallNest continuity work around MCP transport could still drift unless the transport fixes were easy to recover.",
+              ),
+              "project:recallnest",
+            ),
+          ];
+        }
+
+        return [];
+      },
+    };
+
+    const response = await composeResumeContext({
+      retriever,
+      checkpointStore: {
+        async getLatest() {
+          return null;
+        },
+      },
+      listPins: () => [],
+    }, {
+      task: "继续 RecallNest continuity MCP transport rollout",
+      scope: "project:recallnest",
+      includeLatestCheckpoint: false,
+      limitPerSection: 3,
+    });
+
+    expect(response.relevantPatterns.join(" ")).toContain("RecallNest MCP transport rollout");
+    expect(response.recentCases.join(" ")).toContain("RecallNest MCP transport regression");
+  });
+
   it("prefers named non-RecallNest entities over unrelated project entities for unscoped tasks", async () => {
     const retriever = {
       async retrieve(context: RetrievalContext): Promise<RetrievalResult[]> {
@@ -2262,6 +2504,58 @@ describe("composeResumeContext", () => {
     expect(response.recentCases).toHaveLength(1);
     expect(response.recentCases[0]).toContain("Case: RecallNest sparse startup context cleanup");
     expect(response.recentCases[0]).toContain("resume_context returned noisy transcript fragments");
+    expect(calls.some((call) => call.category === "cases" && call.query.includes("root cause workaround cleanup"))).toBe(true);
+  });
+
+  it("falls back to a broader case query when direct case recall is sparse and misses task-specific identity", async () => {
+    const calls: RetrievalContext[] = [];
+    const retriever = {
+      async retrieve(context: RetrievalContext): Promise<RetrievalResult[]> {
+        calls.push(context);
+        if (context.category !== "cases") return [];
+        if (context.query.includes("similar solved case previous fix")) {
+          return [
+            withScope(
+              buildResult(
+                "case-sparse-validation",
+                "cases",
+                "Case: Three-terminal continuity trigger validation Problem: Claude Code, Codex, and Gemini CLI were configured with MCP but only continue-style prompts triggered recall reliably.",
+              ),
+              "recallnest",
+            ),
+          ];
+        }
+        if (context.query.includes("root cause workaround cleanup")) {
+          return [
+            withScope(
+              buildResult(
+                "case-fallback-cleanup",
+                "cases",
+                "Case: RecallNest scope fallback cleanup Problem: resume_context stayed too narrow on project scope and surfaced ongoing notes instead of stable handoff context. Solution: prefer durable cases and patterns.",
+              ),
+              "recallnest",
+            ),
+          ];
+        }
+        return [];
+      },
+    };
+
+    const response = await composeResumeContext({
+      retriever,
+      checkpointStore: {
+        async getLatest() {
+          return null;
+        },
+      },
+      listPins: () => [],
+    }, {
+      task: "继续整理 RecallNest 实施清单，不要让我重复前情",
+      includeLatestCheckpoint: false,
+      limitPerSection: 3,
+    });
+
+    expect(response.recentCases.join(" ")).toContain("RecallNest scope fallback cleanup");
     expect(calls.some((call) => call.category === "cases" && call.query.includes("root cause workaround cleanup"))).toBe(true);
   });
 

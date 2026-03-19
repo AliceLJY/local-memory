@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 
-import { assessContinuityBaseline } from "../doctor.js";
+import { assessContinuityBaseline, assessScopeInventoryReport, formatDoctorResults } from "../doctor.js";
 import type { MemoryEntry } from "../store.js";
 
 function buildEntry(
@@ -143,5 +143,107 @@ describe("assessContinuityBaseline", () => {
     expect(assessment.missing.patterns).toEqual(["Recall before repo exploration"]);
     expect(assessment.missing.cases).toEqual(["RecallNest scope fallback cleanup"]);
     expect(assessment.missing.memories).toEqual(["entities:recallnest:continuity-primitives"]);
+  });
+});
+
+describe("assessScopeInventoryReport", () => {
+  it("reports a clean scope inventory when no unresolved anomalies remain", () => {
+    const result = assessScopeInventoryReport({
+      generatedAt: "2026-03-19T08:20:00.000Z",
+      sampleLimit: 5,
+      totalScannedCount: 42,
+      totalAnomalyCount: 0,
+      totalInvalidCount: 0,
+      totalReviewedCount: 1,
+      layers: [
+        {
+          layer: "memories",
+          scannedCount: 40,
+          anomalyCount: 0,
+          invalidCount: 0,
+          reviewedCount: 0,
+          counts: { missing: 0, empty: 0, global: 0 },
+          samples: [],
+          recommendation: "ok",
+        },
+        {
+          layer: "workflow-observations",
+          scannedCount: 2,
+          anomalyCount: 0,
+          invalidCount: 0,
+          reviewedCount: 1,
+          counts: { missing: 0, empty: 0, global: 0 },
+          samples: [],
+          recommendation: "ok",
+        },
+      ],
+    });
+
+    expect(result).toEqual({
+      name: "Scope inventory",
+      status: "pass",
+      message: "0 unresolved anomalies across 42 records; reviewed keeps 1",
+    });
+  });
+
+  it("warns when scope inventory still has unresolved anomalies or invalid files", () => {
+    const result = assessScopeInventoryReport({
+      generatedAt: "2026-03-19T08:20:00.000Z",
+      sampleLimit: 5,
+      totalScannedCount: 12,
+      totalAnomalyCount: 2,
+      totalInvalidCount: 1,
+      totalReviewedCount: 0,
+      layers: [
+        {
+          layer: "pins",
+          scannedCount: 4,
+          anomalyCount: 1,
+          invalidCount: 0,
+          reviewedCount: 0,
+          counts: { missing: 0, empty: 0, global: 1 },
+          samples: [{
+            layer: "pins",
+            id: "pin-legacy-1234",
+            kind: "global",
+            scope: "global",
+            context: "pin",
+            preview: "Legacy pin",
+            recordedAt: "2026-03-19T08:00:00.000Z",
+          }],
+          recommendation: "re-pin",
+        },
+        {
+          layer: "workflow-observations",
+          scannedCount: 8,
+          anomalyCount: 1,
+          invalidCount: 1,
+          reviewedCount: 0,
+          counts: { missing: 1, empty: 0, global: 0 },
+          samples: [],
+          recommendation: "review",
+        },
+      ],
+    });
+
+    expect(result.status).toBe("warn");
+    expect(result.name).toBe("Scope inventory");
+    expect(result.message).toContain("2 unresolved anomalies, 1 invalid file(s) across 12 records");
+    expect(result.message).toContain("pins:1");
+    expect(result.message).toContain("workflow-observations:1 invalid 1");
+    expect(result.message).toContain("sample pins:global:pin-lega");
+    expect(result.fix).toBe("bun run scope-inventory");
+  });
+});
+
+describe("formatDoctorResults", () => {
+  it("does not claim all clear when warnings are present", () => {
+    const output = formatDoctorResults([
+      { name: "Bun runtime", status: "pass", message: "ok" },
+      { name: "Scope inventory", status: "warn", message: "1 unresolved anomaly", fix: "bun run scope-inventory" },
+    ]);
+
+    expect(output).toContain("Review the ⚠️ items above before relying on this environment as a clean baseline.");
+    expect(output).not.toContain("All clear.");
   });
 });

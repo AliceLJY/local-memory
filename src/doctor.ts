@@ -24,6 +24,7 @@ import {
   WorkflowPatternInputSchema,
   type WorkflowPatternInput,
 } from "./memory-schema.js";
+import { collectScopeInventory, type ScopeInventoryReport } from "./scope-inventory.js";
 import { MemoryStore, type MemoryEntry, validateStoragePath } from "./store.js";
 
 interface CheckResult {
@@ -55,6 +56,41 @@ function fail(name: string, message: string, fix?: string): CheckResult {
 
 function warn(name: string, message: string, fix?: string): CheckResult {
   return { name, status: "warn", message, fix };
+}
+
+function summarizeScopeInventoryLayers(report: ScopeInventoryReport): string {
+  return report.layers
+    .filter((layer) => layer.anomalyCount > 0 || layer.invalidCount > 0)
+    .map((layer) => {
+      const parts = [`${layer.layer}:${layer.anomalyCount}`];
+      if (layer.invalidCount > 0) {
+        parts.push(`invalid ${layer.invalidCount}`);
+      }
+      return parts.join(" ");
+    })
+    .join(", ");
+}
+
+export function assessScopeInventoryReport(report: ScopeInventoryReport): CheckResult {
+  const cleanSummary = `0 unresolved anomalies across ${report.totalScannedCount} records`;
+  if (report.totalAnomalyCount === 0 && report.totalInvalidCount === 0) {
+    const reviewedSuffix = report.totalReviewedCount > 0
+      ? `; reviewed keeps ${report.totalReviewedCount}`
+      : "";
+    return pass("Scope inventory", `${cleanSummary}${reviewedSuffix}`);
+  }
+
+  const layerSummary = summarizeScopeInventoryLayers(report);
+  const firstSample = report.layers.flatMap((layer) => layer.samples).at(0);
+  const sampleSummary = firstSample
+    ? `; sample ${firstSample.layer}:${firstSample.kind}:${firstSample.id.slice(0, 8)}`
+    : "";
+
+  return warn(
+    "Scope inventory",
+    `${report.totalAnomalyCount} unresolved anomalies, ${report.totalInvalidCount} invalid file(s) across ${report.totalScannedCount} records${layerSummary ? ` (${layerSummary})` : ""}${sampleSummary}`,
+    "bun run scope-inventory",
+  );
 }
 
 function workflowPatternSeedsPath(): string {
@@ -434,12 +470,31 @@ export async function runDoctor(options: { ci?: boolean } = {}): Promise<CheckRe
         "bun run seed:continuity"
       ));
     }
+
+    try {
+      const report = await collectScopeInventory({
+        store,
+        sampleLimit: 5,
+      });
+      results.push(assessScopeInventoryReport(report));
+    } catch (error: any) {
+      results.push(warn(
+        "Scope inventory",
+        error?.message || "unable to audit scoped records across memories, pins, checkpoints, and workflow observations",
+        "bun run scope-inventory",
+      ));
+    }
   } catch {
     results.push(warn("Index", "not yet created (will be created on first ingest)"));
     results.push(warn(
       "Continuity baseline",
       "not yet seeded",
       "bun run seed:continuity"
+    ));
+    results.push(warn(
+      "Scope inventory",
+      "not yet audited",
+      "bun run scope-inventory"
     ));
   }
 
@@ -451,6 +506,7 @@ export function formatDoctorResults(results: CheckResult[]): string {
 
   const icons = { pass: "  ✅", fail: "  ❌", warn: "  ⚠️ " };
   let hasFailure = false;
+  let hasWarning = false;
 
   for (const r of results) {
     lines.push(`${icons[r.status]} ${r.name}: ${r.message}`);
@@ -458,11 +514,14 @@ export function formatDoctorResults(results: CheckResult[]): string {
       lines.push(`     → ${r.fix}`);
     }
     if (r.status === "fail") hasFailure = true;
+    if (r.status === "warn") hasWarning = true;
   }
 
   lines.push("");
   if (hasFailure) {
     lines.push("  Fix the ❌ items above before running `lm ingest`.");
+  } else if (hasWarning) {
+    lines.push("  Review the ⚠️ items above before relying on this environment as a clean baseline.");
   } else {
     lines.push("  All clear. Run `lm ingest --source all` to get started.");
   }

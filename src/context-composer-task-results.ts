@@ -17,6 +17,7 @@ import {
   WORKFLOW_CUE_TERMS,
   buildTaskHintTerms,
   containsAnyTerm,
+  extractTerms,
   countTermHits,
   looksLikeCaseFallbackTask,
   looksLikeContinuityTask,
@@ -81,6 +82,53 @@ function countTaskHintMatches(result: RetrievalResult, taskSeed?: string): numbe
 
   const haystack = normalizeText(stripConversationMarkers(result.entry.text));
   return hintTerms.filter((term) => haystack.includes(term)).length;
+}
+
+const GENERIC_TASK_MATCH_TERMS = new Set([
+  ...WORKFLOW_CUE_TERMS.map((term) => normalizeText(term)),
+  ...CASE_CUE_TERMS.map((term) => normalizeText(term)),
+  "continue",
+  "继续",
+  "接着",
+  "项目",
+  "project",
+  "terminal",
+  "window",
+  "fresh",
+  "new",
+  "same",
+  "回到",
+  "之前",
+  "刚才",
+]);
+
+function buildTaskSpecificTerms(taskSeed?: string): string[] {
+  if (!taskSeed) return [];
+  return dedupeText(
+    extractTerms(taskSeed)
+      .map((term) => normalizeText(term))
+      .filter((term) =>
+        term.length >= 2 &&
+        !GENERIC_TASK_MATCH_TERMS.has(term)
+      ),
+    24,
+  );
+}
+
+function countTaskSpecificMatches(result: RetrievalResult, taskSeed?: string): number {
+  const specificTerms = buildTaskSpecificTerms(taskSeed);
+  if (specificTerms.length === 0) return 0;
+
+  const haystack = normalizeText(stripConversationMarkers(result.entry.text));
+  return specificTerms.filter((term) => haystack.includes(term)).length;
+}
+
+function countTaskSpecificTextMatches(text: string, taskSeed?: string): number {
+  const specificTerms = buildTaskSpecificTerms(taskSeed);
+  if (specificTerms.length === 0) return 0;
+
+  const haystack = normalizeText(stripConversationMarkers(text));
+  return specificTerms.filter((term) => haystack.includes(term)).length;
 }
 
 function hasUnsupportedTaskResultSpecificity(result: RetrievalResult, taskSeed?: string): boolean {
@@ -212,6 +260,32 @@ function countPatternCueCoverage(items: string[]): number {
   return new Set(items.flatMap((item) => taskCueCoverage("patterns", item))).size;
 }
 
+function looksLikeGenericWindowHandoffTask(taskSeed?: string): boolean {
+  if (!taskSeed) return false;
+  const normalized = normalizeText(taskSeed);
+  const hasWindowCue = [
+    "新窗口",
+    "fresh window",
+    "new window",
+    "cross window",
+    "窗口",
+    "window",
+    "terminal",
+    "终端",
+  ].some((term) => normalized.includes(term));
+  const hasContinuationCue = [
+    "继续",
+    "continue",
+    "同一个",
+    "same",
+    "项目",
+    "project",
+    "接力",
+    "handoff",
+  ].some((term) => normalized.includes(term));
+  return hasWindowCue && hasContinuationCue;
+}
+
 function selectRelevantPatterns(
   candidates: Array<{ text: string; sourcePriority: number }>,
   limit: number,
@@ -300,8 +374,14 @@ function isRelevantToScopedTaskResult(
   const haystack = normalizeText(stripConversationMarkers(result.entry.text));
   const resultIsProject = resultScope.startsWith("project:");
   const requestIsProject = requestScope.startsWith("project:");
+  const resultHasNamedIdentity = !["memory:", "asset:", "cc:", "codex:", "gemini:", "session:", "agent:", "eval:"]
+    .some((prefix) => normalizeText(result.entry.scope).startsWith(prefix));
 
   if (params.scope && resultScope === requestScope) return true;
+
+  if (!params.scope && resultHasNamedIdentity && !taskMentionsScopeIdentity(params.taskSeed, result.entry.scope)) {
+    return false;
+  }
 
   if (resultIsProject && !taskMentionsScopeIdentity(params.taskSeed, result.entry.scope)) {
     return false;
@@ -337,9 +417,15 @@ function selectTaskResults(
       durable: isDurableTaskCandidate(result),
       score: scoreTaskCandidate(category, result),
       taskHintMatches: countTaskHintMatches(result, params.taskSeed),
+      taskSpecificMatches: countTaskSpecificMatches(result, params.taskSeed),
       formatted: formatTaskResult(result),
     }))
-    .sort((a, b) => b.score - a.score);
+    .sort((a, b) => {
+      if (b.taskSpecificMatches !== a.taskSpecificMatches) {
+        return b.taskSpecificMatches - a.taskSpecificMatches;
+      }
+      return b.score - a.score;
+    });
 
   const maxTaskHintMatches = taskHintTerms.length > 0
     ? Math.max(0, ...ranked.map((item) => item.taskHintMatches))
@@ -373,7 +459,7 @@ function selectTaskResults(
         const uncoveredCueCount = taskCueCoverage(category, item.formatted)
           .filter((term) => !coveredCues.has(term))
           .length;
-        const value = item.score + uncoveredCueCount * 3;
+        const value = item.score + item.taskSpecificMatches * 4 + uncoveredCueCount * 3;
         if (value > bestValue) {
           bestValue = value;
           bestIndex = index;
@@ -460,8 +546,12 @@ export async function buildTaskResultSections(params: {
   const combinedPatternCueCoverage = countPatternCueCoverage(combinedPatterns);
   const allowSingleContinuityGapSupplement = Boolean(
     continuityTask &&
+    retrievedPatterns.length === 1 &&
     combinedPatterns.length === 1 &&
-    combinedPatternCueCoverage >= 2,
+    (
+      combinedPatternCueCoverage >= 2 ||
+      looksLikeGenericWindowHandoffTask(taskSeed)
+    ),
   );
   const continuityFallbackPatterns = !shouldProvideContinuityGuidance
     ? []
@@ -484,7 +574,13 @@ export async function buildTaskResultSections(params: {
     scope,
     taskSeed,
   });
-  const caseFallbackResults = retrievedCases.length > 0 || (!hasLatestCheckpoint && !looksLikeCaseFallbackTask(taskSeed))
+  const allowSparseCaseFallback = Boolean(
+    retrievedCases.length <= 1 &&
+    looksLikeCaseFallbackTask(taskSeed) &&
+    Math.max(0, ...retrievedCases.map((item) => countTaskSpecificTextMatches(item, taskSeed))) === 0,
+  );
+  const caseFallbackResults = (retrievedCases.length > 0 && !allowSparseCaseFallback) ||
+      (!hasLatestCheckpoint && !looksLikeCaseFallbackTask(taskSeed))
     ? []
     : await retrieveCandidates({
         category: "cases",
