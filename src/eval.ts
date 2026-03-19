@@ -6,6 +6,7 @@ import { dirname, resolve } from "node:path";
 import { buildSessionCheckpointRecord } from "./session-engine.js";
 import type { ResumeContextResponse, SessionCheckpointRecord } from "./session-schema.js";
 import { composeResumeContext } from "./context-composer.js";
+import { cleanText } from "./context-composer-text.js";
 import { createComponentResolver, loadConfig, loadDotEnv } from "./runtime-config.js";
 import { logInfo } from "./stderr-log.js";
 import { buildWorkflowObservationRecord } from "./workflow-observation-engine.js";
@@ -118,7 +119,7 @@ export function buildContinuityEvalRequest(evalCase: ContinuityEvalCase) {
   return {
     task: evalCase.task,
     scope: evalCase.scope,
-    sessionId: evalCase.sessionId,
+    sessionId: evalCase.sessionId || evalCase.checkpoint?.sessionId,
     profile: evalCase.profile,
     limitPerSection: evalCase.limitPerSection,
     includeLatestCheckpoint: evalCase.includeLatestCheckpoint,
@@ -156,13 +157,8 @@ function loadCases<T>(mode: EvalMode, pathArg?: string): T[] {
   return JSON.parse(readFileSync(casesPath, "utf-8")) as T[];
 }
 
-function cleanText(text: string): string {
-  return text.replace(/\s+/g, " ").trim();
-}
-
 function clip(text: string, maxLen = 140): string {
-  const compact = cleanText(text);
-  return compact.length <= maxLen ? compact : `${compact.slice(0, maxLen - 3)}...`;
+  return cleanText(text, maxLen);
 }
 
 function matchedTerms(terms: string[] | undefined, haystack: string): string[] {

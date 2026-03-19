@@ -1,12 +1,15 @@
 import { extractBoundaryMetadata, extractCanonicalKey } from "./memory-boundaries.js";
 import {
   buildProjectScopeCueTerms,
-  cleanText,
-  dedupeText,
   normalizeScopedValue,
-  stripConversationMarkers,
   taskMentionsScopeIdentity,
-} from "./context-composer-stable.js";
+} from "./context-composer-scope.js";
+import { cleanText, dedupeText, stripConversationMarkers } from "./context-composer-text.js";
+import {
+  buildCaseFallbackQuery,
+  buildContinuityFallbackPatterns,
+  buildWorkflowFallbackQuery,
+} from "./context-composer-task-fallbacks.js";
 import type { RetrievalResult } from "./retriever.js";
 import {
   CASE_CUE_TERMS,
@@ -93,20 +96,6 @@ function hasUnsupportedTaskResultSpecificity(result: RetrievalResult, taskSeed?:
   );
 }
 
-function buildWorkflowFallbackQuery(taskSeed?: string): string {
-  if (taskSeed) {
-    return `${taskSeed} search_memory resume_context checkpoint_session checkpoint autoRecall sessionStrategy workflow pattern steps`;
-  }
-  return "search_memory resume_context checkpoint_session checkpoint autoRecall sessionStrategy workflow pattern steps";
-}
-
-function buildCaseFallbackQuery(taskSeed?: string): string {
-  if (taskSeed) {
-    return `${taskSeed} case solution fix root cause workaround cleanup continuity 问题 解决 方案 排查`;
-  }
-  return "case solution fix root cause workaround cleanup continuity 问题 解决 方案 排查";
-}
-
 function isDurableMemoryScope(scope: string): boolean {
   return scope.startsWith("memory:") || scope.startsWith("asset:");
 }
@@ -153,14 +142,6 @@ function selectWorkflowFallbackCandidates(
     .map((item) => formatTaskResult(item.result));
 
   return dedupeText(ranked, params.limit);
-}
-
-function buildContinuityFallbackPatterns(limit: number): string[] {
-  const patterns = [
-    "Start fresh windows with resume_context before coding so stable context is restored early.",
-    "Before leaving a window, save checkpoint_session so the next session can recover decisions and next actions.",
-  ];
-  return patterns.slice(0, limit);
 }
 
 function looksLikeStructuredPatternResult(text: string): boolean {
@@ -452,7 +433,14 @@ export async function buildTaskResultSections(params: {
     scope,
     taskSeed,
   });
-  const workflowFallbackResults = !continuityTask || countPatternCueCoverage(retrievedPatterns) >= 3
+  const allowSparseCheckpointSupplement = Boolean(
+    hasLatestCheckpoint &&
+    scope?.startsWith("project:") &&
+    taskMentionsScopeIdentity(taskSeed, scope) &&
+    retrievedPatterns.length <= 1,
+  );
+  const shouldProvideContinuityGuidance = continuityTask || allowSparseCheckpointSupplement;
+  const workflowFallbackResults = !shouldProvideContinuityGuidance || countPatternCueCoverage(retrievedPatterns) >= 3
     ? []
     : await retrieveCandidates({
         query: buildWorkflowFallbackQuery(taskSeed),
@@ -465,9 +453,27 @@ export async function buildTaskResultSections(params: {
     limit: taskLimit,
     cueTerms: strongWorkflowCueTerms,
   });
-  const continuityFallbackPatterns = continuityTask && retrievedPatterns.length === 0 && fallbackPatterns.length === 0
-    ? buildContinuityFallbackPatterns(taskLimit)
-    : [];
+  const combinedPatterns = [
+    ...retrievedPatterns,
+    ...fallbackPatterns,
+  ];
+  const combinedPatternCueCoverage = countPatternCueCoverage(combinedPatterns);
+  const allowSingleContinuityGapSupplement = Boolean(
+    continuityTask &&
+    combinedPatterns.length === 1 &&
+    combinedPatternCueCoverage >= 2,
+  );
+  const continuityFallbackPatterns = !shouldProvideContinuityGuidance
+    ? []
+    : combinedPatterns.length === 0
+      ? buildContinuityFallbackPatterns(taskLimit)
+      : combinedPatternCueCoverage < 3 && (
+          combinedPatterns.length >= 2 ||
+          allowSparseCheckpointSupplement ||
+          allowSingleContinuityGapSupplement
+        )
+        ? buildContinuityFallbackPatterns(taskLimit, combinedPatterns)
+        : [];
   const relevantPatterns = selectRelevantPatterns([
     ...retrievedPatterns.map((text) => ({ text, sourcePriority: 3 })),
     ...fallbackPatterns.map((text) => ({ text, sourcePriority: 2 })),

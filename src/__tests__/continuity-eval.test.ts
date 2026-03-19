@@ -23,6 +23,28 @@ describe("scoreContinuityCase", () => {
     });
   });
 
+  it("falls back to the case checkpoint sessionId when the eval case omits top-level sessionId", () => {
+    expect(buildContinuityEvalRequest({
+      name: "project_scope_checkpoint_continuity",
+      task: "继续这个项目，不要让我重复前情",
+      profile: "default",
+      scope: "project:recallnest",
+      includeLatestCheckpoint: true,
+      checkpoint: {
+        sessionId: "eval-project-recallnest-checkpoint",
+        scope: "project:recallnest",
+        summary: "RecallNest continuity acceptance checkpoint fixture.",
+      },
+    })).toEqual({
+      task: "继续这个项目，不要让我重复前情",
+      scope: "project:recallnest",
+      sessionId: "eval-project-recallnest-checkpoint",
+      profile: "default",
+      limitPerSection: undefined,
+      includeLatestCheckpoint: true,
+    });
+  });
+
   it("scores a continuity response using section-specific expectations", () => {
     const response: ResumeContextResponse = {
       summary: "Loaded stable context with a latest checkpoint for RecallNest continuity work.",

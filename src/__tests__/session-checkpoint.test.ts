@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { buildSessionCheckpointRecord, buildSessionCheckpointResult, resolveCheckpointScope } from "../session-engine.js";
-import { formatCheckpointSaved, formatCheckpointSummary, formatResumeContext } from "../session-output.js";
+import { formatCheckpointRecallSummary, formatCheckpointSaved, formatCheckpointSummary, formatResumeContext } from "../session-output.js";
 import { SessionCheckpointStore } from "../session-store.js";
 
 describe("session checkpoint engine", () => {
@@ -64,6 +64,18 @@ describe("session checkpoint output", () => {
     expect(formatCheckpointSaved(record)).toContain("Keep checkpoints out of LanceDB");
     expect(formatCheckpointSummary(record)).toContain("Latest checkpoint");
     expect(formatCheckpointSummary(null)).toBe("No checkpoint found.");
+  });
+
+  it("enriches recall checkpoint summaries with missing entity hints only once", () => {
+    const record = buildSessionCheckpointRecord({
+      sessionId: "session-entity-hints",
+      summary: "Raised continuity coverage for RecallNest startup recovery.",
+      entities: ["RecallNest", "smoke:claude-continuity", "resume_context"],
+    });
+
+    expect(formatCheckpointRecallSummary(record)).toBe(
+      "Raised continuity coverage for RecallNest startup recovery. Entities: smoke:claude-continuity, resume_context",
+    );
   });
 
   it("includes recall-only guidance in formatted resume context output", () => {

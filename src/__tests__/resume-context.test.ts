@@ -402,12 +402,15 @@ describe("composeResumeContext", () => {
     }, {
       task: "open a fresh window to continue the same terminal project",
       includeLatestCheckpoint: false,
-      limitPerSection: 2,
+      limitPerSection: 3,
     });
 
-    expect(response.relevantPatterns).toHaveLength(2);
+    expect(response.relevantPatterns).toHaveLength(3);
     expect(response.relevantPatterns).toContain(
       "Start fresh windows with resume_context before coding so stable context is restored early.",
+    );
+    expect(response.relevantPatterns).toContain(
+      "If resume_context still leaves gaps, run search_memory with the project name and task nouns before repo exploration drifts.",
     );
     expect(response.relevantPatterns).toContain(
       "Before leaving a window, save checkpoint_session so the next session can recover decisions and next actions.",
@@ -456,10 +459,11 @@ describe("composeResumeContext", () => {
       limitPerSection: 2,
     });
 
-    expect(response.relevantPatterns).toHaveLength(1);
+    expect(response.relevantPatterns).toHaveLength(2);
     expect(response.relevantPatterns[0]).toContain("resume_context");
     expect(response.relevantPatterns[0]).toContain("search_memory");
     expect(response.relevantPatterns[0]).toContain("Recall before repo exploration");
+    expect(response.relevantPatterns.join("\n")).toContain("checkpoint_session");
   });
 
   it("diversifies workflow patterns so strong cue coverage includes search_memory", async () => {
@@ -625,6 +629,167 @@ describe("composeResumeContext", () => {
     expect(calls.some((call) => !call.category && call.query.includes("search_memory"))).toBe(true);
   });
 
+  it("supplements continuity workflow coverage with built-in search_memory fallback when retrieval stays sparse", async () => {
+    const pattern = (
+      id: string,
+      title: string,
+      tools: string[],
+      steps: string[],
+    ): RetrievalResult => withMetadata(
+      buildResult(id, "patterns", `Workflow pattern: ${title}`),
+      {
+        workflowPattern: {
+          title,
+          trigger: "When continuing the same project in a fresh terminal window",
+          steps,
+          tools,
+        },
+      },
+    );
+
+    const retriever = {
+      async retrieve(context: RetrievalContext): Promise<RetrievalResult[]> {
+        if (context.category === "patterns") {
+          return [
+            pattern(
+              "pattern-handoff",
+              "Cross-window continuity handoff",
+              ["resume_context", "latest_checkpoint"],
+              ["Call resume_context before planning work in the fresh window."],
+            ),
+            pattern(
+              "pattern-promote",
+              "Promote recurring continuity workflow",
+              ["store_workflow_pattern", "/v1/pattern"],
+              ["Store recurring continuity workflows as durable patterns."],
+            ),
+          ];
+        }
+        return [];
+      },
+    };
+
+    const response = await composeResumeContext({
+      retriever,
+      checkpointStore: {
+        async getLatest() {
+          return null;
+        },
+      },
+      listPins: () => [],
+    }, {
+      task: "开个新窗口继续做同一个终端项目",
+      includeLatestCheckpoint: false,
+      limitPerSection: 3,
+    });
+
+    expect(response.relevantPatterns).toHaveLength(3);
+    expect(response.relevantPatterns.join("\n")).toContain("search_memory");
+    expect(response.relevantPatterns.join("\n")).toContain("resume_context");
+  });
+
+  it("supplements a single handoff pattern with built-in search_memory guidance when cue coverage is still incomplete", async () => {
+    const retriever = {
+      async retrieve(context: RetrievalContext): Promise<RetrievalResult[]> {
+        if (context.category === "patterns") {
+          return [
+            withMetadata(
+              buildResult(
+                "pattern-handoff-only",
+                "patterns",
+                "Workflow pattern: Cross-window continuity handoff",
+              ),
+              {
+                workflowPattern: {
+                  title: "Cross-window continuity handoff",
+                  trigger: "When opening a fresh terminal window for the same project",
+                  tools: ["resume_context", "latest_checkpoint"],
+                  steps: ["Call resume_context before planning work in the fresh window."],
+                },
+              },
+            ),
+          ];
+        }
+        return [];
+      },
+    };
+
+    const response = await composeResumeContext({
+      retriever,
+      checkpointStore: {
+        async getLatest() {
+          return null;
+        },
+      },
+      listPins: () => [],
+    }, {
+      task: "开个新窗口继续做同一个终端项目",
+      includeLatestCheckpoint: false,
+      limitPerSection: 3,
+    });
+
+    expect(response.relevantPatterns.join("\n")).toContain("Cross-window continuity handoff");
+    expect(response.relevantPatterns.join("\n")).toContain("search_memory");
+    expect(response.relevantPatterns.join("\n")).toContain("resume_context");
+  });
+
+  it("supplements a sparse checkpoint-backed project handoff with built-in search_memory guidance", async () => {
+    const retriever = {
+      async retrieve(context: RetrievalContext): Promise<RetrievalResult[]> {
+        if (context.category === "patterns") {
+          return [
+            withMetadata(
+              buildResult(
+                "pattern-promote-only",
+                "patterns",
+                "Workflow pattern: Promote recurring continuity workflow",
+              ),
+              {
+                workflowPattern: {
+                  title: "Promote recurring continuity workflow",
+                  trigger: "When continuity workflows repeat across sessions",
+                  tools: ["store_workflow_pattern", "/v1/pattern"],
+                  steps: ["Store recurring continuity workflows as durable patterns."],
+                },
+              },
+            ),
+          ];
+        }
+        return [];
+      },
+    };
+
+    const response = await composeResumeContext({
+      retriever,
+      checkpointStore: {
+        async getLatest() {
+          return {
+            checkpointId: "checkpoint-task-pivot",
+            sessionId: "task-pivot-session",
+            resolvedScope: "project:recallnest",
+            summary: "RecallNest 已补上 HTTP auto-recall，下一步把 task-pivot 的主动 recall 变成 smoke 和 eval 的稳定回归信号。",
+            task: "RecallNest task-pivot recall regression",
+            decisions: ["任务切换时也要先回忆，不能只在 continue 场景触发"],
+            openLoops: [],
+            nextActions: ["补 task-pivot continuity eval case"],
+            entities: ["RecallNest", "auto-recall", "search_memory"],
+            files: ["src/context-composer.ts"],
+            updatedAt: "2026-03-17T14:40:00.000Z",
+          } satisfies SessionCheckpointRecord;
+        },
+      },
+      listPins: () => [],
+    }, {
+      task: "回到 RecallNest 项目，处理主动 recall regression",
+      scope: "project:recallnest",
+      includeLatestCheckpoint: true,
+      limitPerSection: 3,
+    });
+
+    expect(response.relevantPatterns.join("\n")).toContain("search_memory");
+    expect(response.relevantPatterns.join("\n")).toContain("resume_context");
+  });
+
   it("filters plan-like non-durable pattern notes so workflow fallback can recover durable patterns", async () => {
     const calls: RetrievalContext[] = [];
     const retriever = {
@@ -745,6 +910,97 @@ describe("composeResumeContext", () => {
     expect(response.stableContext.some((item) => item.includes("本地没 clone"))).toBe(false);
     expect(response.stableContext.some((item) => item.includes("再看看"))).toBe(false);
     expect(response.summary).toContain("Stable context:");
+  });
+
+  it("prioritizes checkpoint summary over checkpoint focus when stable slots are tight", async () => {
+    const checkpoint: SessionCheckpointRecord = {
+      checkpointId: "checkpoint-task-pivot",
+      sessionId: "task-pivot-session",
+      resolvedScope: "project:recallnest",
+      summary: "RecallNest 已补上 HTTP auto-recall，下一步把 task-pivot 的主动 recall 变成 smoke 和 eval 的稳定回归信号。",
+      task: "RecallNest task-pivot recall regression",
+      decisions: ["任务切换时也要先回忆，不能只在 continue 场景触发"],
+      openLoops: [],
+      nextActions: ["补 task-pivot continuity eval case"],
+      entities: ["RecallNest", "auto-recall"],
+      files: ["src/context-composer.ts"],
+      updatedAt: "2026-03-17T14:40:00.000Z",
+    };
+
+    const retriever = {
+      async retrieve(context: RetrievalContext): Promise<RetrievalResult[]> {
+        if (context.category !== "entities") return [];
+        return [
+          buildResult(
+            "entity-primitives",
+            "entities",
+            "RecallNest continuity revolves around three primitives: store_memory, checkpoint_session, and resume_context.",
+          ),
+          buildResult(
+            "entity-transport",
+            "entities",
+            "RecallNest exposes continuity through both HTTP API and MCP.",
+          ),
+        ];
+      },
+    };
+
+    const response = await composeResumeContext({
+      retriever,
+      checkpointStore: {
+        async getLatest() {
+          return checkpoint;
+        },
+      },
+      listPins: () => [],
+    }, {
+      task: "回到 RecallNest 项目，处理主动 recall regression",
+      scope: "project:recallnest",
+      includeLatestCheckpoint: true,
+      limitPerSection: 3,
+    });
+
+    expect(response.stableContext).toHaveLength(3);
+    expect(response.stableContext.some((item) => item.includes("auto-recall"))).toBe(true);
+    expect(response.stableContext.some((item) => item.includes("Checkpoint summary:"))).toBe(true);
+  });
+
+  it("enriches latest checkpoint summary with missing checkpoint entity hints", async () => {
+    const checkpoint: SessionCheckpointRecord = {
+      checkpointId: "checkpoint-project-scope",
+      sessionId: "eval-project-recallnest-checkpoint",
+      resolvedScope: "project:recallnest",
+      summary: "RecallNest 项目范围下已完成 continuity baseline setup、doctor baseline 和 headless Claude Code smoke，下一步继续扩 continuity eval case。",
+      task: "RecallNest continuity acceptance — project scope handoff",
+      decisions: ["继续把 project-scope continuity 做成稳定回归信号"],
+      openLoops: [],
+      nextActions: ["补更多 scoped project continuity cases"],
+      entities: ["RecallNest", "seed:continuity", "doctor", "smoke:claude-continuity"],
+      files: ["src/context-composer.ts"],
+      updatedAt: "2026-03-17T08:40:00.000Z",
+    };
+
+    const response = await composeResumeContext({
+      retriever: {
+        async retrieve() {
+          return [];
+        },
+      },
+      checkpointStore: {
+        async getLatest() {
+          return checkpoint;
+        },
+      },
+      listPins: () => [],
+    }, {
+      task: "继续这个项目，不要让我重复前情",
+      scope: "project:recallnest",
+      includeLatestCheckpoint: true,
+      limitPerSection: 3,
+    });
+
+    expect(response.latestCheckpoint?.summary).toContain("smoke:claude-continuity");
+    expect(response.summary).toContain("smoke:claude-continuity");
   });
 
   it("uses task hints to keep relevant writing or visual pins in sparse contexts", async () => {
@@ -1700,6 +1956,56 @@ describe("composeResumeContext", () => {
     expect(stableJoined).toContain("RecallNest");
     expect(stableJoined).not.toContain("Telegram AI bridge");
     expect(stableJoined).not.toContain("口语化");
+  });
+
+  it("uses an associative Nest fallback query to recover continuity primitives for vague RecallNest tasks", async () => {
+    const calls: RetrievalContext[] = [];
+    const retriever = {
+      async retrieve(context: RetrievalContext): Promise<RetrievalResult[]> {
+        calls.push(context);
+        if (context.category !== "entities") {
+          return [];
+        }
+
+        if (context.query.includes("checkpoint_session")) {
+          return [
+            buildResult(
+              "entity-primitives",
+              "entities",
+              "RecallNest continuity revolves around three primitives: store_memory, checkpoint_session, and resume_context.",
+            ),
+          ];
+        }
+
+        return [
+          buildResult(
+            "entity-recallnest",
+            "entities",
+            "RecallNest is the shared memory layer for Claude Code, Codex, and Gemini CLI.",
+          ),
+        ];
+      },
+    };
+
+    const response = await composeResumeContext({
+      retriever,
+      checkpointStore: {
+        async getLatest() {
+          return null;
+        },
+      },
+      listPins: () => [],
+    }, {
+      task: "之前弄过那个什么 Nest 的记忆系统",
+      includeLatestCheckpoint: false,
+      limitPerSection: 3,
+    });
+
+    const stableJoined = response.stableContext.join(" ");
+    expect(stableJoined).toContain("RecallNest");
+    expect(stableJoined).toContain("checkpoint_session");
+    expect(calls.filter((call) => call.category === "entities")).toHaveLength(2);
+    expect(calls.some((call) => call.category === "entities" && call.query.includes("checkpoint_session"))).toBe(true);
   });
 
   it("filters conversational transcript pins out of stable context for external bridge tasks", async () => {

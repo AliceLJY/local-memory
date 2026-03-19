@@ -1,26 +1,28 @@
 import { listPinAssets, type PinAsset } from "./memory-assets.js";
+import { buildStableContextSections } from "./context-composer-stable.js";
 import {
-  buildStableContextSections,
-  cleanText,
-  dedupeText,
-  type StableCategory,
-} from "./context-composer-stable.js";
+  buildAssociativeNestEntityFallbackQuery,
+  buildScopedEntityFallbackQuery,
+  buildStableQuery,
+  buildStylePreferenceFallbackQuery,
+  buildTaskQuery,
+  formatLatestCheckpointHeadline,
+} from "./context-composer-queries.js";
+import { cleanText, dedupeText } from "./context-composer-text.js";
 import {
   buildTaskResultSections,
-  type TaskCategory,
 } from "./context-composer-task-results.js";
 import type { RetrievalContext, RetrievalResult } from "./retriever.js";
 import type { ResumeContextResponse, SessionCheckpointRecord } from "./session-schema.js";
 import { ResumeContextRequestSchema, ResumeContextResponseSchema } from "./session-schema.js";
+import { formatCheckpointRecallSummary } from "./session-output.js";
 import {
   STRONG_WORKFLOW_CUE_TERMS,
-  containsAnyTerm,
-  extractTerms,
   looksLikeContinuityTask,
   looksLikeRecallOnlyTask,
   looksLikeStyleTask,
 } from "./term-registry.js";
-type ResumeCategory = StableCategory | TaskCategory;
+type ResumeCategory = "profile" | "preferences" | "entities" | "patterns" | "cases";
 
 interface ResumeRetriever {
   retrieve(context: RetrievalContext): Promise<RetrievalResult[]>;
@@ -34,78 +36,6 @@ export interface ResumeContextDeps {
   retriever: ResumeRetriever;
   checkpointStore: CheckpointLookup;
   listPins?: (limit?: number) => Array<PinAsset & { path: string }>;
-}
-
-function buildStableQuery(category: StableCategory, taskSeed?: string): string {
-  if (taskSeed) {
-    switch (category) {
-      case "profile":
-        return `${taskSeed} user background identity role`;
-      case "preferences":
-        if (looksLikeStyleTask(taskSeed)) {
-          return `${taskSeed} user preferences writing tone voice style habits 口语化 不端着 自嘲 鸡血 浮夸`;
-        }
-        return `${taskSeed} user preferences workflow style`;
-      case "entities":
-        return `${taskSeed} project tools repository entities`;
-    }
-  }
-
-  switch (category) {
-    case "profile":
-      return "user background identity role";
-    case "preferences":
-      return "user preferences workflow style habits";
-    case "entities":
-      return "active project tools repository entities";
-  }
-}
-
-function buildStylePreferenceFallbackQuery(taskSeed?: string): string {
-  const extracted = extractTerms(taskSeed).filter((term) =>
-    containsAnyTerm(term, ["写作", "风格", "语气", "偏好", "表达", "style", "tone", "voice", "preference"])
-  );
-  const lead = dedupeText([
-    "写作风格",
-    "语气",
-    "偏好",
-    "避免表达",
-    "口语化",
-    "不端着",
-    ...extracted,
-  ], 6).join(" ");
-
-  return lead || "写作风格 语气 偏好 避免表达 口语化 不端着";
-}
-
-function buildTaskQuery(category: TaskCategory, taskSeed?: string): string {
-  if (taskSeed) {
-    return category === "patterns"
-      ? `${taskSeed} reusable workflow pattern steps`
-      : `${taskSeed} similar solved case previous fix`;
-  }
-  return category === "patterns"
-    ? "reusable workflow pattern steps"
-    : "similar solved case previous fix";
-}
-
-function buildScopedEntityFallbackQuery(scope?: string, taskSeed?: string): string {
-  const scopeTerms = extractTerms(scope).slice(0, 4);
-  const taskTerms = extractTerms(taskSeed).slice(0, 4);
-  const query = dedupeText([
-    ...scopeTerms,
-    ...taskTerms,
-    "active project",
-    "shared memory layer",
-    "continuity",
-    "checkpoint_session",
-    "resume_context",
-    "project entity",
-    "tools",
-    "repository",
-  ], 10).join(" ");
-
-  return query || "active project continuity checkpoint_session resume_context project entity tools repository";
 }
 
 async function retrieveCandidates(
@@ -201,7 +131,11 @@ function buildSummary(params: {
 
   if (params.latestCheckpoint) {
     parts.push(
-      `Latest checkpoint from ${params.latestCheckpoint.sessionId} on ${params.latestCheckpoint.updatedAt.slice(0, 10)}: ${cleanText(params.latestCheckpoint.summary, 220)}`,
+      formatLatestCheckpointHeadline(
+        params.latestCheckpoint.sessionId,
+        params.latestCheckpoint.updatedAt,
+        formatCheckpointRecallSummary(params.latestCheckpoint),
+      ),
     );
   }
 
@@ -241,7 +175,8 @@ export async function composeResumeContext(
   const entityQueries = dedupeText([
     buildStableQuery("entities", taskSeed),
     ...(resolvedScope ? [buildScopedEntityFallbackQuery(resolvedScope, taskSeed)] : []),
-  ], 2);
+    ...(!resolvedScope ? [buildAssociativeNestEntityFallbackQuery(taskSeed)] : []),
+  ], 3);
 
   const [profileResults, preferenceResultSets, entityResultSets, patternResults, caseResults] = await Promise.all([
     retrieveCandidates(deps.retriever, {
@@ -332,7 +267,7 @@ export async function composeResumeContext(
       ? {
         sessionId: latestCheckpoint.sessionId,
         resolvedScope: latestCheckpoint.resolvedScope,
-        summary: latestCheckpoint.summary,
+        summary: formatCheckpointRecallSummary(latestCheckpoint),
         updatedAt: latestCheckpoint.updatedAt,
       }
       : undefined,

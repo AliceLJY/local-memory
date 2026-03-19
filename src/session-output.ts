@@ -1,4 +1,5 @@
 import type { ResumeContextResponse, SessionCheckpointRecord } from "./session-schema.js";
+import { cleanText } from "./context-composer-text.js";
 
 function listBlock(label: string, items: string[]): string[] {
   if (items.length === 0) return [];
@@ -6,6 +7,24 @@ function listBlock(label: string, items: string[]): string[] {
     `${label}:`,
     ...items.map((item, index) => `${index + 1}. ${item}`),
   ];
+}
+
+export function formatCheckpointRecallSummary(record: SessionCheckpointRecord): string {
+  const parts: string[] = [];
+  const baseSummary = record.summary.trim();
+  if (baseSummary) {
+    parts.push(baseSummary);
+  }
+
+  const baseLower = baseSummary.toLowerCase();
+  const missingEntities = record.entities
+    .filter((entity) => entity.trim().length > 0 && !baseLower.includes(entity.toLowerCase()))
+    .slice(0, 2);
+  if (missingEntities.length > 0) {
+    parts.push(`Entities: ${missingEntities.join(", ")}`);
+  }
+
+  return cleanText(parts.join(" "), 600);
 }
 
 export function formatCheckpointSaved(record: SessionCheckpointRecord): string {
