@@ -40,6 +40,7 @@ export interface IngestResult {
   chunksIngested: number;
   chunksSkipped: number;
   chunksDeduped: number;
+  dedupReasonCounts: DedupReasonCounts;
   errors: string[];
 }
 
@@ -66,6 +67,51 @@ const DEDUP_CANDIDATE_LIMIT = 5;
 interface AtomicPreferenceGuardDecision {
   shouldForceCreate: boolean;
   matchedText?: string;
+}
+
+export type DedupReason = "hard" | "exact" | "llm-skip" | "llm-merge" | "unique";
+
+export type DedupReasonCounts = Record<DedupReason, number>;
+
+export interface DedupCheckResult {
+  action: "store" | "skip";
+  reason: DedupReason;
+  existingText?: string;
+}
+
+function createDedupReasonCounts(): DedupReasonCounts {
+  return {
+    hard: 0,
+    exact: 0,
+    "llm-skip": 0,
+    "llm-merge": 0,
+    unique: 0,
+  };
+}
+
+function recordDedupDecision(result: IngestResult, decision: DedupCheckResult): void {
+  result.dedupReasonCounts[decision.reason] += 1;
+  if (decision.reason !== "unique") {
+    result.chunksDeduped += 1;
+  }
+}
+
+export function getDedupSkippedCount(result: IngestResult): number {
+  return result.dedupReasonCounts.hard
+    + result.dedupReasonCounts.exact
+    + result.dedupReasonCounts["llm-skip"];
+}
+
+export function getDedupSkipRate(result: IngestResult): number {
+  const skipped = getDedupSkippedCount(result);
+  const considered = result.chunksIngested + skipped;
+  if (considered === 0) return 0;
+  return skipped / considered;
+}
+
+export function formatDedupReasonSummary(result: IngestResult): string {
+  const counts = result.dedupReasonCounts;
+  return `hard:${counts.hard}, exact:${counts.exact}, llm-skip:${counts["llm-skip"]}, llm-merge:${counts["llm-merge"]}`;
 }
 
 /**
@@ -171,18 +217,18 @@ export async function dedupCheck(
   vector: number[],
   text: string,
   llm?: LLMClient | null,
-): Promise<{ action: "store" | "skip"; existingText?: string }> {
+): Promise<DedupCheckResult> {
   try {
     // Stage 1: vector similarity check
     const results = await store.vectorSearch(vector, DEDUP_CANDIDATE_LIMIT, DEDUP_SOFT_THRESHOLD);
     if (results.length === 0) {
-      return { action: "store" }; // Clearly unique
+      return { action: "store", reason: "unique" }; // Clearly unique
     }
 
     const normalizedIncoming = normalizeDedupText(text);
     const exact = results.find((result) => normalizeDedupText(result.entry.text) === normalizedIncoming);
     if (exact) {
-      return { action: "skip", existingText: exact.entry.text };
+      return { action: "skip", reason: "exact", existingText: exact.entry.text };
     }
 
     const atomicPreferenceGuard = shouldForceCreateAtomicPreference(
@@ -192,6 +238,7 @@ export async function dedupCheck(
     if (atomicPreferenceGuard.shouldForceCreate) {
       return {
         action: "store",
+        reason: "unique",
         existingText: atomicPreferenceGuard.matchedText,
       };
     }
@@ -203,6 +250,7 @@ export async function dedupCheck(
     if (replyStyleGuard.shouldForceCreate) {
       return {
         action: "store",
+        reason: "unique",
         existingText: replyStyleGuard.matchedText,
       };
     }
@@ -214,6 +262,7 @@ export async function dedupCheck(
     if (toolChoiceGuard.shouldForceCreate) {
       return {
         action: "store",
+        reason: "unique",
         existingText: toolChoiceGuard.matchedText,
       };
     }
@@ -223,7 +272,7 @@ export async function dedupCheck(
 
     // Hard duplicate: skip without LLM
     if (topScore >= DEDUP_HARD_THRESHOLD) {
-      return { action: "skip", existingText };
+      return { action: "skip", reason: "hard", existingText };
     }
 
     // Borderline: ask LLM if available
@@ -231,19 +280,19 @@ export async function dedupCheck(
       try {
         const decision = await llm.dedupDecision(text, existingText);
         if (decision.action === "SKIP") {
-          return { action: "skip", existingText };
+          return { action: "skip", reason: "llm-skip", existingText };
         }
         if (decision.action === "MERGE") {
-          return { action: "store", existingText };
+          return { action: "store", reason: "llm-merge", existingText };
         }
       } catch {
         // LLM failed, fall through to store
       }
     }
 
-    return { action: "store" };
+    return { action: "store", reason: "unique" };
   } catch {
-    return { action: "store" }; // Fail-open
+    return { action: "store", reason: "unique" }; // Fail-open
   }
 }
 
@@ -623,6 +672,7 @@ export async function ingestCodexSessions(
     chunksIngested: 0,
     chunksSkipped: 0,
     chunksDeduped: 0,
+    dedupReasonCounts: createDedupReasonCounts(),
     errors: [],
   };
 
@@ -697,8 +747,9 @@ export async function ingestCodexSessions(
               continue;
             }
             if (!options.noDedup) {
-              const { action } = await dedupCheck(store, vector, batch[j], options.llm);
-              if (action === "skip") { result.chunksDeduped++; continue; }
+              const decision = await dedupCheck(store, vector, batch[j], options.llm);
+              recordDedupDecision(result, decision);
+              if (decision.action === "skip") continue;
             }
             dedupedTexts.push(batch[j]);
             dedupedVectors.push(vector);
@@ -802,6 +853,7 @@ export async function ingestGeminiSessions(
     chunksIngested: 0,
     chunksSkipped: 0,
     chunksDeduped: 0,
+    dedupReasonCounts: createDedupReasonCounts(),
     errors: [],
   };
 
@@ -877,8 +929,9 @@ export async function ingestGeminiSessions(
               continue;
             }
             if (!options.noDedup) {
-              const { action } = await dedupCheck(store, vector, batch[j], options.llm);
-              if (action === "skip") { result.chunksDeduped++; continue; }
+              const decision = await dedupCheck(store, vector, batch[j], options.llm);
+              recordDedupDecision(result, decision);
+              if (decision.action === "skip") continue;
             }
             dedupedTexts.push(batch[j]);
             dedupedVectors.push(vector);
@@ -999,6 +1052,7 @@ export async function ingestCCTranscripts(
     chunksIngested: 0,
     chunksSkipped: 0,
     chunksDeduped: 0,
+    dedupReasonCounts: createDedupReasonCounts(),
     errors: [],
   };
 
@@ -1068,11 +1122,9 @@ export async function ingestCCTranscripts(
 
             // Two-stage dedup: vector pre-filter + optional LLM
             if (!options.noDedup) {
-              const { action } = await dedupCheck(store, vector, batch[j], options.llm);
-              if (action === "skip") {
-                result.chunksDeduped++;
-                continue;
-              }
+              const decision = await dedupCheck(store, vector, batch[j], options.llm);
+              recordDedupDecision(result, decision);
+              if (decision.action === "skip") continue;
             }
 
             dedupedTexts.push(batch[j]);
@@ -1140,6 +1192,7 @@ export async function ingestMarkdownFiles(
     chunksIngested: 0,
     chunksSkipped: 0,
     chunksDeduped: 0,
+    dedupReasonCounts: createDedupReasonCounts(),
     errors: [],
   };
 
@@ -1191,8 +1244,9 @@ export async function ingestMarkdownFiles(
               continue;
             }
             if (!options.noDedup) {
-              const { action } = await dedupCheck(store, vector, batch[j], options.llm);
-              if (action === "skip") { result.chunksDeduped++; continue; }
+              const decision = await dedupCheck(store, vector, batch[j], options.llm);
+              recordDedupDecision(result, decision);
+              if (decision.action === "skip") continue;
             }
             dedupedTexts.push(batch[j]);
             dedupedVectors.push(vector);
@@ -1253,6 +1307,7 @@ export async function ingestGenericText(
     chunksIngested: 0,
     chunksSkipped: 0,
     chunksDeduped: 0,
+    dedupReasonCounts: createDedupReasonCounts(),
     errors: [],
   };
 
@@ -1317,8 +1372,9 @@ export async function ingestGenericText(
               continue;
             }
             if (!options.noDedup) {
-              const { action } = await dedupCheck(store, vector, batch[j], options.llm);
-              if (action === "skip") { result.chunksDeduped++; continue; }
+              const decision = await dedupCheck(store, vector, batch[j], options.llm);
+              recordDedupDecision(result, decision);
+              if (decision.action === "skip") continue;
             }
             dedupedTexts.push(batch[j]);
             dedupedVectors.push(vector);

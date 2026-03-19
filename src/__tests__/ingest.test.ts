@@ -44,6 +44,7 @@ describe("dedupCheck", () => {
     );
 
     expect(result.action).toBe("store");
+    expect(result.reason).toBe("unique");
     expect(result.existingText).toBe("喜欢吃麦当劳的板烧鸡腿堡");
     expect(llmCalls).toBe(0);
   });
@@ -64,6 +65,7 @@ describe("dedupCheck", () => {
     );
 
     expect(result.action).toBe("store");
+    expect(result.reason).toBe("unique");
     expect(result.existingText).toContain("麦旋风");
   });
 
@@ -84,6 +86,7 @@ describe("dedupCheck", () => {
     );
 
     expect(result.action).toBe("skip");
+    expect(result.reason).toBe("exact");
     expect(result.existingText).toBe("我喜欢吃麦当劳的麦辣鸡翅");
   });
 
@@ -111,6 +114,7 @@ describe("dedupCheck", () => {
     );
 
     expect(result.action).toBe("store");
+    expect(result.reason).toBe("unique");
     expect(result.existingText).toBe("User prefers concise, direct replies.");
     expect(llmCalls).toBe(0);
   });
@@ -139,8 +143,40 @@ describe("dedupCheck", () => {
     );
 
     expect(result.action).toBe("store");
+    expect(result.reason).toBe("unique");
     expect(result.existingText).toBe("Uses Bun over Node.");
     expect(llmCalls).toBe(0);
+  });
+
+  it("stores a borderline chunk when LLM says it should CREATE", async () => {
+    let llmCalls = 0;
+    const store = {
+      async vectorSearch() {
+        return [
+          buildSearchResult(
+            "A2A gateway 之前是先本地 smoke，再补 Claude SDK 配置。",
+            0.74,
+          ),
+        ];
+      },
+    };
+    const llm = {
+      async dedupDecision() {
+        llmCalls += 1;
+        return { action: "CREATE" as const, reason: "new implementation branch" };
+      },
+    };
+
+    const result = await dedupCheck(
+      store as any,
+      [1, 0, 0],
+      "A2A gateway 升级后要补 MCP transport 配置和 LaunchAgent 环境变量，不是原来的 smoke 流程。",
+      llm as any,
+    );
+
+    expect(result.action).toBe("store");
+    expect(result.reason).toBe("unique");
+    expect(llmCalls).toBe(1);
   });
 
   it("stores a borderline chunk when LLM says it adds new information and should MERGE", async () => {
@@ -170,7 +206,39 @@ describe("dedupCheck", () => {
     );
 
     expect(result.action).toBe("store");
+    expect(result.reason).toBe("llm-merge");
     expect(result.existingText).toContain("权限相关配置");
     expect(llmCalls).toBe(1);
+  });
+
+  it("skips a hard-threshold duplicate without calling the LLM", async () => {
+    let llmCalls = 0;
+    const store = {
+      async vectorSearch() {
+        return [
+          buildSearchResult(
+            "OpenClaw provider 配置里已经写过 `ANTHROPIC_BASE_URL` 和 `ANTHROPIC_AUTH_TOKEN` 的设置方法。",
+            0.83,
+          ),
+        ];
+      },
+    };
+    const llm = {
+      async dedupDecision() {
+        llmCalls += 1;
+        return { action: "MERGE" as const, reason: "should never be called" };
+      },
+    };
+
+    const result = await dedupCheck(
+      store as any,
+      [1, 0, 0],
+      "OpenClaw provider 配置里已经写过 `ANTHROPIC_BASE_URL` 和 `ANTHROPIC_AUTH_TOKEN` 的设置方法，但这里重复了一遍。",
+      llm as any,
+    );
+
+    expect(result.action).toBe("skip");
+    expect(result.reason).toBe("hard");
+    expect(llmCalls).toBe(0);
   });
 });

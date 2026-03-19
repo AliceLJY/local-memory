@@ -21,6 +21,9 @@ import { archiveDirtyBriefAsset, assetSummaryLine, buildBriefAsset, buildPinAsse
 import { indexAsset, indexPinnedAsset } from "./asset-sync.js";
 import { createComponents, createStoreOnly, expandHome, loadConfig, loadDotEnv, type LocalMemoryConfig } from "./runtime-config.js";
 import {
+  formatDedupReasonSummary,
+  getDedupSkipRate,
+  type IngestResult,
   ingestCCTranscripts,
   ingestCodexSessions,
   ingestGeminiSessions,
@@ -102,6 +105,17 @@ function resolveSourcePath(source: string, key: string): string {
     return join(ccPath, "memory");
   }
   throw new Error(`Cannot auto-detect path for source "${key}". Set it manually in config.json.`);
+}
+
+function formatIngestSummary(result: IngestResult): string {
+  return `${result.filesProcessed} files, ${result.chunksIngested} ingested, ${result.chunksDeduped} deduped (${formatDedupReasonSummary(result)}), ${result.errors.length} errors`;
+}
+
+function maybeWarnHighCCDedupRate(result: IngestResult): void {
+  if (result.source !== "cc") return;
+  const dedupRate = getDedupSkipRate(result);
+  if (dedupRate <= 0.85) return;
+  console.log(`  ⚠️  dedup 率异常: ${(dedupRate * 100).toFixed(1)}%`);
 }
 
 // ============================================================================
@@ -1319,9 +1333,8 @@ program
         const ccPath = resolveSourcePath(ccSource.path, "cc");
         const r = await ingestCCTranscripts(store, embedder, ccPath, ingestOpts);
         results.push(r);
-        console.log(
-          `  ✅ CC: ${r.filesProcessed} files, ${r.chunksIngested} ingested, ${r.chunksDeduped} deduped, ${r.errors.length} errors`,
-        );
+        console.log(`  ✅ CC: ${formatIngestSummary(r)}`);
+        maybeWarnHighCCDedupRate(r);
       }
     }
 
@@ -1330,9 +1343,7 @@ program
       console.log("🤖 导入 Codex 对话...");
       const r = await ingestCodexSessions(store, embedder, ingestOpts);
       results.push(r);
-      console.log(
-        `  ✅ Codex: ${r.filesProcessed} files, ${r.chunksIngested} ingested, ${r.chunksDeduped} deduped, ${r.errors.length} errors`,
-      );
+      console.log(`  ✅ Codex: ${formatIngestSummary(r)}`);
     }
 
     // Gemini Sessions (JSON format under ~/.gemini/tmp/*/chats/)
@@ -1345,9 +1356,7 @@ program
         llm,
       });
       results.push(r);
-      console.log(
-        `  ✅ Gemini: ${r.filesProcessed} files, ${r.chunksIngested} ingested, ${r.chunksDeduped} deduped, ${r.errors.length} errors`,
-      );
+      console.log(`  ✅ Gemini: ${formatIngestSummary(r)}`);
     }
 
     // Memory markdown files
@@ -1362,9 +1371,7 @@ program
           llm,
         });
         results.push(r);
-        console.log(
-          `  ✅ Memory: ${r.filesProcessed} files, ${r.chunksIngested} ingested, ${r.chunksDeduped} deduped, ${r.errors.length} errors`,
-        );
+        console.log(`  ✅ Memory: ${formatIngestSummary(r)}`);
       }
     }
 
@@ -1373,10 +1380,20 @@ program
     let totalChunks = 0;
     let totalDeduped = 0;
     let totalErrors = 0;
+    const totalDedupReasons = {
+      hard: 0,
+      exact: 0,
+      "llm-skip": 0,
+      "llm-merge": 0,
+      unique: 0,
+    } as IngestResult["dedupReasonCounts"];
     for (const r of results) {
       totalChunks += r.chunksIngested;
       totalDeduped += r.chunksDeduped;
       totalErrors += r.errors.length;
+      for (const reason of Object.keys(totalDedupReasons) as Array<keyof typeof totalDedupReasons>) {
+        totalDedupReasons[reason] += r.dedupReasonCounts[reason];
+      }
       if (r.errors.length > 0 && verbose) {
         console.log(`  ⚠️  ${r.source} errors:`);
         for (const e of r.errors.slice(0, 5)) {
@@ -1384,7 +1401,9 @@ program
         }
       }
     }
-    console.log(`  总计: ${totalChunks} chunks 已索引, ${totalDeduped} chunks 去重, ${totalErrors} errors`);
+    console.log(
+      `  总计: ${totalChunks} chunks 已索引, ${totalDeduped} chunks 去重 (hard:${totalDedupReasons.hard}, exact:${totalDedupReasons.exact}, llm-skip:${totalDedupReasons["llm-skip"]}, llm-merge:${totalDedupReasons["llm-merge"]}), ${totalErrors} errors`,
+    );
     console.log();
   });
 
