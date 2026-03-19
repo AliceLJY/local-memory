@@ -8,8 +8,8 @@
  * 4. Gemini conversations — 暂不支持（加密 protobuf，等官方开放导出）
  */
 
-import { readFileSync, readdirSync, existsSync, statSync } from "node:fs";
-import { join, basename, resolve } from "node:path";
+import { readFileSync, readdirSync, existsSync, statSync, writeFileSync } from "node:fs";
+import { join, basename, resolve, dirname } from "node:path";
 import { homedir } from "node:os";
 import type { MemoryStore, MemoryEntry } from "./store.js";
 import type { Embedder } from "./embedder.js";
@@ -349,6 +349,63 @@ async function smartExtractBatch(
   } catch {
     return texts.map(fallbackExtraction);
   }
+}
+
+// ─── Pending extraction queue (for when LLM is unavailable) ─────────────────
+
+const PENDING_EXTRACTION_FILE = resolve(
+  dirname(import.meta.url.replace("file://", "")), "..", "data", "pending-extraction.json"
+);
+
+function queueForLaterExtraction(chunks: Array<{ text: string; scope: string }>): void {
+  let pending: Array<{ text: string; scope: string; queuedAt: string }> = [];
+  try {
+    pending = JSON.parse(readFileSync(PENDING_EXTRACTION_FILE, "utf-8"));
+  } catch { /* empty or missing */ }
+  const now = new Date().toISOString();
+  for (const chunk of chunks) {
+    pending.push({ ...chunk, queuedAt: now });
+  }
+  writeFileSync(PENDING_EXTRACTION_FILE, JSON.stringify(pending, null, 2));
+}
+
+export async function drainPendingQueue(
+  store: MemoryStore,
+  embedder: Embedder,
+  llm: LLMClient,
+): Promise<{ processed: number; errors: number }> {
+  let pending: Array<{ text: string; scope: string; queuedAt: string }> = [];
+  try {
+    pending = JSON.parse(readFileSync(PENDING_EXTRACTION_FILE, "utf-8"));
+  } catch { return { processed: 0, errors: 0 }; }
+
+  if (pending.length === 0) return { processed: 0, errors: 0 };
+
+  let processed = 0, errors = 0;
+  for (let i = 0; i < pending.length; i += 20) {
+    const batch = pending.slice(i, i + 20);
+    const texts = batch.map(c => c.text);
+    const extractions = await smartExtractBatch(texts, llm);
+    const embeddingTexts = extractions.map(e => e.l1 || e.l0);
+    const vectors = await embedder.embedBatchPassage(embeddingTexts);
+    for (let j = 0; j < extractions.length; j++) {
+      try {
+        await store.store({
+          text: extractions[j].l1 || extractions[j].l0,
+          vector: vectors[j],
+          category: extractions[j].category as any,
+          scope: batch[j].scope,
+          importance: extractions[j].importance,
+          metadata: JSON.stringify({ source: batch[j].scope.split(":")[0], l0: extractions[j].l0 }),
+        });
+        processed++;
+      } catch { errors++; }
+    }
+  }
+
+  // Clear the queue
+  writeFileSync(PENDING_EXTRACTION_FILE, "[]");
+  return { processed, errors };
 }
 
 /** Determine initial tier based on category and importance */
@@ -757,19 +814,26 @@ export async function ingestCodexSessions(
           }
 
           if (dedupedTexts.length > 0) {
-            const extractions = await smartExtractBatch(dedupedTexts, options.llm);
-            for (let j = 0; j < dedupedTexts.length; j++) {
-              const chunk = dedupedChunks[j];
-              const ext = extractions[j];
-              toStore.push(buildIngestedEntry({
-                source: "codex",
-                scope: `codex:${chunk.sessionId.slice(0, 8)}`,
-                text: dedupedTexts[j],
-                vector: dedupedVectors[j],
-                extraction: ext,
-                sessionId: chunk.sessionId,
-                file: basename(filePath),
-              }));
+            if (!options.llm) {
+              queueForLaterExtraction(
+                dedupedChunks.map(c => ({ text: c.text, scope: `codex:${c.sessionId.slice(0, 8)}` }))
+              );
+              result.chunksSkipped += dedupedTexts.length;
+            } else {
+              const extractions = await smartExtractBatch(dedupedTexts, options.llm);
+              for (let j = 0; j < dedupedTexts.length; j++) {
+                const chunk = dedupedChunks[j];
+                const ext = extractions[j];
+                toStore.push(buildIngestedEntry({
+                  source: "codex",
+                  scope: `codex:${chunk.sessionId.slice(0, 8)}`,
+                  text: dedupedTexts[j],
+                  vector: dedupedVectors[j],
+                  extraction: ext,
+                  sessionId: chunk.sessionId,
+                  file: basename(filePath),
+                }));
+              }
             }
           }
 
@@ -939,19 +1003,26 @@ export async function ingestGeminiSessions(
           }
 
           if (dedupedTexts.length > 0) {
-            const extractions = await smartExtractBatch(dedupedTexts, options.llm);
-            for (let j = 0; j < dedupedTexts.length; j++) {
-              const chunk = dedupedChunks[j];
-              const ext = extractions[j];
-              toStore.push(buildIngestedEntry({
-                source: "gemini",
-                scope: `gemini:${chunk.sessionId.slice(0, 8)}`,
-                text: dedupedTexts[j],
-                vector: dedupedVectors[j],
-                extraction: ext,
-                sessionId: chunk.sessionId,
-                file: basename(filePath),
-              }));
+            if (!options.llm) {
+              queueForLaterExtraction(
+                dedupedChunks.map(c => ({ text: c.text, scope: `gemini:${c.sessionId.slice(0, 8)}` }))
+              );
+              result.chunksSkipped += dedupedTexts.length;
+            } else {
+              const extractions = await smartExtractBatch(dedupedTexts, options.llm);
+              for (let j = 0; j < dedupedTexts.length; j++) {
+                const chunk = dedupedChunks[j];
+                const ext = extractions[j];
+                toStore.push(buildIngestedEntry({
+                  source: "gemini",
+                  scope: `gemini:${chunk.sessionId.slice(0, 8)}`,
+                  text: dedupedTexts[j],
+                  vector: dedupedVectors[j],
+                  extraction: ext,
+                  sessionId: chunk.sessionId,
+                  file: basename(filePath),
+                }));
+              }
             }
           }
 
@@ -1134,7 +1205,16 @@ export async function ingestCCTranscripts(
 
           if (dedupedTexts.length === 0) continue;
 
-          // Batch smart extraction (LLM 6-category or fallback)
+          // Without LLM: queue raw chunks for later extraction instead of storing garbage
+          if (!options.llm) {
+            queueForLaterExtraction(
+              dedupedChunks.map(c => ({ text: c.text, scope: `cc:${c.sessionId.slice(0, 8)}` }))
+            );
+            result.chunksSkipped += dedupedTexts.length;
+            continue;
+          }
+
+          // Batch smart extraction (LLM 6-category)
           const extractions = await smartExtractBatch(dedupedTexts, options.llm);
 
           const toStore: Array<{text: string; vector: number[]; category: string; scope: string; importance: number; metadata: string}> = [];

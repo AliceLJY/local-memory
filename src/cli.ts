@@ -1285,6 +1285,7 @@ program
   .option("-l, --limit <n>", "限制处理文件数（调试用）")
   .option("-v, --verbose", "详细输出")
   .option("--no-dedup", "跳过向量去重")
+  .option("--no-llm", "禁用 LLM 提取（原始对话将跳过不存入，排入待处理队列）")
   .action(async (options) => {
     const config = loadConfig();
     const { store, embedder, llm } = createComponents(config);
@@ -1310,20 +1311,32 @@ program
     }
     console.log(`  ✅ ${config.embedding.model} (${testResult.dimensions}d)`);
 
-    // LLM status
-    if (llm) {
+    // LLM status — respect --no-llm flag
+    const effectiveLlm = options.noLlm ? null : llm;
+    if (options.noLlm) {
+      console.log("  ⚠️  LLM: 已通过 --no-llm 禁用，原始对话将跳过不存入");
+    } else if (llm) {
       const llmTest = await llm.test();
       console.log(llmTest.success
         ? `  ✅ LLM: ${config.llm?.model} (L0 摘要 + 语义去重)`
-        : `  ⚠️  LLM: ${config.llm?.model} 连接失败，降级为提取式摘要`);
+        : `  ⚠️  LLM: ${config.llm?.model} 连接失败，原始对话将跳过不存入`);
     } else {
-      console.log("  ℹ️  LLM: 未配置，使用提取式 L0 摘要");
+      console.log("  ⚠️  LLM: 未配置，原始对话将跳过不存入（配置 config.json → llm 以启用）");
+    }
+
+    // Drain pending queue if LLM is available
+    if (effectiveLlm) {
+      const { drainPendingQueue } = await import("./ingest.js");
+      const drained = await drainPendingQueue(store, embedder, effectiveLlm);
+      if (drained.processed > 0) {
+        console.log(`  ♻️  Pending queue: ${drained.processed} processed, ${drained.errors} errors`);
+      }
     }
 
     console.log(`  ${noDedup ? "⚠️  去重已禁用 (--no-dedup)" : "✅ 两阶段去重: vector + LLM 语义判断"}\n`);
     console.log(`🔄 开始导入记忆 (source: ${source})...\n`);
 
-    const ingestOpts = { limit, verbose, noDedup, llm };
+    const ingestOpts = { limit, verbose, noDedup, llm: effectiveLlm };
 
     // CC Transcripts
     if (source === "all" || source === "cc") {
