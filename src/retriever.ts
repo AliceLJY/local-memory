@@ -76,6 +76,8 @@ export interface RetrievalContext {
    *  calls to prevent auto-recall from strengthening noise memories.
    *  Defaults to "manual" when unset (backward-compatible). */
   source?: "manual" | "auto-recall" | "cli";
+  /** When false (default), archived records are excluded from results. */
+  includeArchived?: boolean;
 }
 
 export interface RetrievalResult extends MemorySearchResult {
@@ -307,7 +309,7 @@ export class MemoryRetriever {
   }
 
   async retrieve(context: RetrievalContext): Promise<RetrievalResult[]> {
-    const { query, limit, scopeFilter, category } = context;
+    const { query, limit, scopeFilter, category, includeArchived } = context;
     const safeLimit = clampInt(limit, 1, 20);
 
     // Adaptive retrieval: skip trivial queries to save embedding API calls
@@ -319,10 +321,10 @@ export class MemoryRetriever {
 
     // For vector-only mode, use legacy behavior
     if (this.config.mode === "vector" || !this.store.hasFtsSupport) {
-      results = await this.vectorOnlyRetrieval(query, safeLimit, scopeFilter, category);
+      results = await this.vectorOnlyRetrieval(query, safeLimit, scopeFilter, category, includeArchived);
     } else {
       // Hybrid retrieval with vector + BM25 + RRF fusion
-      results = await this.hybridRetrieval(query, safeLimit, scopeFilter, category);
+      results = await this.hybridRetrieval(query, safeLimit, scopeFilter, category, includeArchived);
     }
 
     // Record access for returned results (async, non-blocking).
@@ -338,15 +340,21 @@ export class MemoryRetriever {
     query: string,
     limit: number,
     scopeFilter?: string[],
-    category?: string
+    category?: string,
+    includeArchived?: boolean,
   ): Promise<RetrievalResult[]> {
     const queryVector = await this.embedder.embedQuery(query);
     const results = await this.store.vectorSearch(queryVector, limit, this.config.minScore, scopeFilter);
 
     // Filter by category if specified
-    const filtered = category
+    const afterCategory = category
       ? results.filter(r => r.entry.category === category)
       : results;
+
+    // Filter archived records (default: exclude)
+    const filtered = includeArchived
+      ? afterCategory
+      : afterCategory.filter(r => parseMetadata(r.entry.metadata).archived !== true);
 
     const mapped = filtered.map((result, index) => ({
       ...result,
@@ -376,7 +384,8 @@ export class MemoryRetriever {
     query: string,
     limit: number,
     scopeFilter?: string[],
-    category?: string
+    category?: string,
+    includeArchived?: boolean,
   ): Promise<RetrievalResult[]> {
     const candidatePoolSize = Math.max(this.config.candidatePoolSize, limit * 2);
 
@@ -385,8 +394,8 @@ export class MemoryRetriever {
 
     // Run vector and BM25 searches in parallel
     const [vectorResults, bm25Results] = await Promise.all([
-      this.runVectorSearch(queryVector, candidatePoolSize, scopeFilter, category),
-      this.runBM25Search(expandQuery(query), candidatePoolSize, scopeFilter, category),
+      this.runVectorSearch(queryVector, candidatePoolSize, scopeFilter, category, includeArchived),
+      this.runBM25Search(expandQuery(query), candidatePoolSize, scopeFilter, category, includeArchived),
     ]);
 
     // Fuse results using RRF (async: validates BM25-only entries exist in store)
@@ -438,7 +447,8 @@ export class MemoryRetriever {
     queryVector: number[],
     limit: number,
     scopeFilter?: string[],
-    category?: string
+    category?: string,
+    includeArchived?: boolean,
   ): Promise<Array<MemorySearchResult & { rank: number }>> {
     let results: MemorySearchResult[];
     try {
@@ -450,9 +460,14 @@ export class MemoryRetriever {
     }
 
     // Filter by category if specified
-    const filtered = category
+    const afterCategory = category
       ? results.filter(r => r.entry.category === category)
       : results;
+
+    // Filter archived records (default: exclude)
+    const filtered = includeArchived
+      ? afterCategory
+      : afterCategory.filter(r => parseMetadata(r.entry.metadata).archived !== true);
 
     return filtered.map((result, index) => ({
       ...result,
@@ -464,14 +479,20 @@ export class MemoryRetriever {
     query: string,
     limit: number,
     scopeFilter?: string[],
-    category?: string
+    category?: string,
+    includeArchived?: boolean,
   ): Promise<Array<MemorySearchResult & { rank: number }>> {
     const results = await this.store.bm25Search(query, limit, scopeFilter);
 
     // Filter by category if specified
-    const filtered = category
+    const afterCategory = category
       ? results.filter(r => r.entry.category === category)
       : results;
+
+    // Filter archived records (default: exclude)
+    const filtered = includeArchived
+      ? afterCategory
+      : afterCategory.filter(r => parseMetadata(r.entry.metadata).archived !== true);
 
     return filtered.map((result, index) => ({
       ...result,
