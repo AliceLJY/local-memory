@@ -71,7 +71,12 @@ interface AtomicPreferenceGuardDecision {
 /**
  * Two-stage dedup: vector pre-filter + optional LLM semantic decision.
  *
- * Returns: "store" | "skip" | "merge" (merge falls back to skip for now)
+ * Returns: "store" | "skip"
+ *
+ * Note: when the LLM says MERGE, we currently keep the new chunk instead of
+ * dropping it. We do not have a structured ingest-time merge path yet, and
+ * swallowing "same topic + new information" transcript chunks is worse for
+ * recall fidelity than storing an incremental near-duplicate.
  */
 function normalizeDedupText(value: string): string {
   return value
@@ -225,8 +230,11 @@ export async function dedupCheck(
     if (llm) {
       try {
         const decision = await llm.dedupDecision(text, existingText);
-        if (decision.action === "SKIP" || decision.action === "MERGE") {
+        if (decision.action === "SKIP") {
           return { action: "skip", existingText };
+        }
+        if (decision.action === "MERGE") {
+          return { action: "store", existingText };
         }
       } catch {
         // LLM failed, fall through to store

@@ -142,4 +142,35 @@ describe("dedupCheck", () => {
     expect(result.existingText).toBe("Uses Bun over Node.");
     expect(llmCalls).toBe(0);
   });
+
+  it("stores a borderline chunk when LLM says it adds new information and should MERGE", async () => {
+    let llmCalls = 0;
+    const store = {
+      async vectorSearch() {
+        return [
+          buildSearchResult(
+            "A2A 调 Claude SDK 时，可以先看 `adapters/claude.js` 里的权限相关配置。",
+            0.77,
+          ),
+        ];
+      },
+    };
+    const llm = {
+      async dedupDecision() {
+        llmCalls += 1;
+        return { action: "MERGE" as const, reason: "same topic but new implementation detail" };
+      },
+    };
+
+    const result = await dedupCheck(
+      store as any,
+      [1, 0, 0],
+      "给 A2A 调用传 permissionMode: \"dontAsk\" + allowedTools，避免 Claude SDK 在后台 HTTP handler 里卡死等权限确认。",
+      llm as any,
+    );
+
+    expect(result.action).toBe("store");
+    expect(result.existingText).toContain("权限相关配置");
+    expect(llmCalls).toBe(1);
+  });
 });
