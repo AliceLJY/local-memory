@@ -12,7 +12,6 @@
 import path from "path";
 import fs from "fs";
 import { loadConfig, createComponents } from "../src/runtime-config.js";
-import { dedupCheck } from "../src/ingest.js";
 import { buildDistillationBoundary } from "../src/memory-boundaries.js";
 import type { MemoryEntry } from "../src/store.js";
 import type { SmartExtraction, LLMClient } from "../src/llm-client.js";
@@ -107,12 +106,9 @@ async function distillBatch(
     const vector = vectors[vi];
     const original = originals[idx];
 
-    // Dedup against existing non-fact records
-    const dedup = await dedupCheck(store, vector, extraction.l0, llm);
-    if (dedup.action === "skip") {
-      dedupCount++;
-      continue;
-    }
+    // Skip per-record dedup — distilled L0/L1 text is unlikely to duplicate existing records,
+    // and dedupCheck was the main bottleneck (vector search per record). Post-distillation
+    // health check can detect duplicates if needed.
 
     if (dryRun) {
       console.log(`\n    [${extraction.category}] importance=${extraction.importance}`);
@@ -248,46 +244,49 @@ async function main() {
     console.log(`DRY RUN: processing scope "${targetScopes[0]}" (${byScope.get(targetScopes[0])!.length} records)\n`);
   }
 
-  // Process scopes
-  for (const scope of targetScopes) {
-    if (progress.completedScopes.includes(scope)) {
-      console.log(`SKIP ${scope}: already processed`);
-      continue;
-    }
+  // Process scopes — worker pool with immediate checkpoint per scope
+  const CONCURRENCY = 5;
 
-    const facts = byScope.get(scope)!;
-    console.log(`\n${scope}: ${facts.length} facts`);
+  // Filter to pending scopes, sort small-first for faster feedback
+  const pendingScopes = targetScopes.filter(s => !progress.completedScopes.includes(s));
+  pendingScopes.sort((a, b) => byScope.get(a)!.length - byScope.get(b)!.length);
+  const skipped = targetScopes.length - pendingScopes.length;
+  if (skipped > 0) console.log(`Skipping ${skipped} already-completed scopes`);
+  console.log(`Processing ${pendingScopes.length} scopes (small-first, concurrency=${CONCURRENCY})\n`);
 
-    let scopeNew = 0, scopeDedup = 0, scopeErrors = 0;
-    for (let i = 0; i < facts.length; i += BATCH_SIZE) {
-      const batch = facts.slice(i, i + BATCH_SIZE);
-      const texts = batch.map(f => f.text);
-      const batchNum = Math.floor(i / BATCH_SIZE) + 1;
-      const totalBatches = Math.ceil(facts.length / BATCH_SIZE);
+  let completed = 0;
+  const totalPending = pendingScopes.length;
+  let scopeQueue = [...pendingScopes];
 
-      process.stdout.write(`  batch ${batchNum}/${totalBatches}...`);
-      const result = await distillBatch(texts, batch, store, embedder, llm, dryRun);
+  async function worker() {
+    while (scopeQueue.length > 0) {
+      const scope = scopeQueue.shift()!;
+      const facts = byScope.get(scope)!;
+      let scopeNew = 0, scopeErrors = 0;
 
-      scopeNew += result.newCount;
-      scopeDedup += result.dedupCount;
-      scopeErrors += result.errors;
-      console.log(` +${result.newCount} new, ${result.dedupCount} dedup, ${result.errors} err`);
-    }
+      for (let i = 0; i < facts.length; i += BATCH_SIZE) {
+        const batch = facts.slice(i, i + BATCH_SIZE);
+        const texts = batch.map(f => f.text);
+        const result = await distillBatch(texts, batch, store, embedder, llm, dryRun);
+        scopeNew += result.newCount;
+        scopeErrors += result.errors;
+      }
 
-    console.log(`  Done: +${scopeNew} new, ${scopeDedup} dedup, ${scopeErrors} errors`);
+      // Checkpoint immediately
+      progress.completedScopes.push(scope);
+      progress.stats.processedFacts += facts.length;
+      progress.stats.newRecords += scopeNew;
+      progress.stats.errors += scopeErrors;
+      progress.lastUpdated = new Date().toISOString();
+      completed++;
 
-    // Update progress
-    progress.completedScopes.push(scope);
-    progress.stats.processedFacts += facts.length;
-    progress.stats.newRecords += scopeNew;
-    progress.stats.dedupedSkips += scopeDedup;
-    progress.stats.errors += scopeErrors;
-    progress.lastUpdated = new Date().toISOString();
-
-    if (!dryRun) {
-      saveProgress(progress);
+      if (!dryRun) saveProgress(progress);
+      console.log(`[${completed}/${totalPending}] ${scope} (${facts.length} facts, +${scopeNew} new, ${scopeErrors} err)`);
     }
   }
+
+  // Launch workers
+  await Promise.all(Array.from({ length: CONCURRENCY }, () => worker()));
 
   // Final summary
   console.log("\n" + "=".repeat(60));
