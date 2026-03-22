@@ -4674,6 +4674,40 @@ describe("composeResumeContext", () => {
     expect(stableJoined).toContain("RecallNest");
   });
 
+  it("supplements continuity guidance when only noise patterns are retrieved", async () => {
+    const retriever = {
+      async retrieve(context: RetrievalContext): Promise<RetrievalResult[]> {
+        if (context.category === "entities" && context.query.includes("checkpoint_session")) {
+          return [
+            buildResult("entity-rn", "entities", "RecallNest continuity revolves around three primitives."),
+          ];
+        }
+        if (context.category === "patterns") {
+          return [
+            buildResult("noise-pattern", "patterns", "从想法到验证再到记忆的创造性工作流程", {
+              scope: "memory:structured-memory",
+            }),
+          ];
+        }
+        return [];
+      },
+    };
+
+    const response = await composeResumeContext({
+      retriever,
+      checkpointStore: { async getLatest() { return null; } },
+      listPins: () => [],
+    }, {
+      task: "上次做的那个记忆功能",
+      includeLatestCheckpoint: false,
+      limitPerSection: 3,
+    });
+
+    const patternJoined = response.relevantPatterns.join(" ");
+    // Should have continuity guidance even though a noise pattern was retrieved
+    expect(patternJoined).toContain("resume_context");
+  });
+
   it("treats 记忆项目 shorthand as a continuity prompt with RecallNest hints", async () => {
     const calls: RetrievalContext[] = [];
     const retriever = {

@@ -85,9 +85,10 @@ export async function buildTaskResultSections(params: {
       looksLikeGenericWindowHandoffTask(taskSeed)
     ),
   );
+  const noCueCoverageAndNoFallback = combinedPatternCueCoverage === 0 && fallbackPatterns.length === 0;
   const continuityFallbackPatterns = !shouldProvideContinuityGuidance
     ? []
-    : combinedPatterns.length === 0
+    : combinedPatterns.length === 0 || noCueCoverageAndNoFallback
       ? buildContinuityFallbackPatterns(taskLimit)
       : combinedPatternCueCoverage < 3 && (
           combinedPatterns.length >= 2 ||
