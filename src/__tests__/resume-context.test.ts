@@ -1809,7 +1809,10 @@ describe("composeResumeContext", () => {
       limitPerSection: 3,
     });
 
-    expect(response.relevantPatterns).toEqual([]);
+    // Project-scoped transport patterns should not leak, but the task IS a
+    // continuity task ("不要让我重复前情") so built-in continuity guidance is expected.
+    const patternJoined = response.relevantPatterns.join("\n");
+    expect(patternJoined).not.toContain("RecallNest MCP transport");
     expect(response.recentCases).toEqual([]);
   });
 
@@ -4558,5 +4561,53 @@ describe("composeResumeContext", () => {
     });
 
     expect(response.recentCases).toEqual([]);
+  });
+
+  it.each([
+    "接着上个窗口的写作风格",
+    "继续上个窗口的写作偏好",
+    "resume writing style from last window",
+    "回到上次写作项目 继续调整 tone",
+  ])("mixed style+continuity prompt still gets continuity guidance: %s", async (task) => {
+    const retriever = {
+      async retrieve(context: RetrievalContext): Promise<RetrievalResult[]> {
+        if (context.category === "patterns") {
+          return [
+            withMetadata(
+              buildResult(
+                "pattern-recall",
+                "patterns",
+                "Workflow pattern: Recall before repo exploration",
+              ),
+              {
+                workflowPattern: {
+                  title: "Recall before repo exploration",
+                  trigger: "When a fresh window continues an existing project",
+                  steps: [
+                    "Call resume_context before reading local files.",
+                    "Run search_memory with project name and task nouns.",
+                  ],
+                  tools: ["resume_context", "search_memory"],
+                },
+              },
+            ),
+          ];
+        }
+        return [];
+      },
+    };
+
+    const response = await composeResumeContext({
+      retriever,
+      checkpointStore: { async getLatest() { return null; } },
+      listPins: () => [],
+    }, {
+      task,
+      includeLatestCheckpoint: false,
+      limitPerSection: 3,
+    });
+
+    expect(response.relevantPatterns.length).toBeGreaterThan(0);
+    expect(response.relevantPatterns.join("\n")).toContain("resume_context");
   });
 });
