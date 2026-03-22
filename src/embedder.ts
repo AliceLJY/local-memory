@@ -13,6 +13,8 @@ import { createHash } from "node:crypto";
 import { smartChunk } from "./chunker.js";
 import { logInfo, logWarn } from "./stderr-log.js";
 
+const EMBEDDING_RETRY_DELAYS_MS = [200, 500];
+
 // ============================================================================
 // Embedding Cache (LRU with TTL)
 // ============================================================================
@@ -138,6 +140,19 @@ function resolveEnvVars(value: string): string {
     }
     return envValue;
   });
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isTransientEmbeddingError(error: unknown): boolean {
+  if (error instanceof OpenAI.APIConnectionError || error instanceof OpenAI.APIConnectionTimeoutError) {
+    return true;
+  }
+
+  const message = error instanceof Error ? error.message : String(error);
+  return /ECONNRESET|socket connection was closed unexpectedly|connection error|timed out|network/i.test(message);
 }
 
 export function getVectorDimensions(model: string, overrideDims?: number): number {
@@ -270,6 +285,26 @@ export class Embedder {
     return payload;
   }
 
+  private async createEmbedding(input: string | string[], task?: string) {
+    let attempt = 0;
+
+    while (true) {
+      try {
+        return await this.client.embeddings.create(this.buildPayload(input, task) as any);
+      } catch (error) {
+        if (!isTransientEmbeddingError(error) || attempt >= EMBEDDING_RETRY_DELAYS_MS.length) {
+          throw error;
+        }
+
+        const delayMs = EMBEDDING_RETRY_DELAYS_MS[attempt];
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        logWarn(`Transient embedding error, retrying in ${delayMs}ms (attempt ${attempt + 1}/${EMBEDDING_RETRY_DELAYS_MS.length})`, errorMsg);
+        attempt += 1;
+        await sleep(delayMs);
+      }
+    }
+  }
+
   private async embedSingle(text: string, task?: string): Promise<number[]> {
     if (!text || text.trim().length === 0) {
       throw new Error("Cannot embed empty text");
@@ -280,7 +315,7 @@ export class Embedder {
     if (cached) return cached;
 
     try {
-      const response = await this.client.embeddings.create(this.buildPayload(text, task) as any);
+      const response = await this.createEmbedding(text, task);
       const embedding = response.data[0]?.embedding as number[] | undefined;
       if (!embedding) {
         throw new Error("No embedding returned from provider");
@@ -370,9 +405,7 @@ export class Embedder {
     }
 
     try {
-      const response = await this.client.embeddings.create(
-        this.buildPayload(validTexts, task) as any
-      );
+      const response = await this.createEmbedding(validTexts, task);
 
       // Create result array with proper length
       const results: number[][] = new Array(texts.length);
