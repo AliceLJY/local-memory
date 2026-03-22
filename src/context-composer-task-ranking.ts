@@ -165,7 +165,15 @@ export function isTaskCandidateUseful(category: TaskCategory, result: RetrievalR
   // maintenance notes that happen to mention workflow/case cues. Keep them
   // out unless they are explicitly structured.
   if (category === "patterns" && !structured) return false;
-  if (category === "cases" && !structured) return false;
+  // For non-durable cases, allow high-quality unstructured ones through:
+  // - must have case-related cue terms (problem/solution/fix/error etc.)
+  // - must have sufficient text length (not a one-liner)
+  // - must have reasonable vector similarity
+  if (category === "cases" && !structured) {
+    const hasSubstantialContent = normalized.length >= 80;
+    const hasHighSimilarity = result.score >= 0.70;
+    if (!(hasSubstantialContent && hasHighSimilarity && cueHits > 0)) return false;
+  }
 
   if (looksLikePlanishTaskResult(normalized)) return false;
   if (structured) return true;
