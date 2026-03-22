@@ -3,6 +3,7 @@ import { join, resolve } from "node:path";
 
 import type { SessionCheckpointRecord } from "./session-schema.js";
 import { SessionCheckpointRecordSchema } from "./session-schema.js";
+import { normalizeCheckpointScope } from "./session-engine.js";
 
 export interface SessionCheckpointQuery {
   sessionId?: string;
@@ -44,6 +45,7 @@ export class SessionCheckpointStore {
       .filter((name) => name.endsWith(".json"))
       .map((name) => join(this.dataDir, name));
 
+    const normalizedQueryScope = scope ? normalizeCheckpointScope(scope) : undefined;
     const items: SessionCheckpointRecord[] = [];
     for (const path of files) {
       try {
@@ -51,7 +53,10 @@ export class SessionCheckpointStore {
           JSON.parse(readFileSync(path, "utf-8")),
         );
         if (sessionId && parsed.sessionId !== sessionId) continue;
-        if (scope && parsed.resolvedScope !== scope) continue;
+        if (normalizedQueryScope) {
+          const normalizedRecordScope = normalizeCheckpointScope(parsed.resolvedScope ?? parsed.scope ?? "");
+          if (normalizedRecordScope !== normalizedQueryScope) continue;
+        }
         items.push(parsed);
       } catch {
         // Skip corrupt checkpoint files.

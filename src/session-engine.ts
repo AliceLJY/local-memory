@@ -78,8 +78,24 @@ function sanitizeCheckpointList(items: string[], fallbackWhenRemoved?: string): 
   };
 }
 
+/**
+ * Normalize checkpoint scope to a canonical form:
+ * - lowercase
+ * - bare project names (e.g. "recallnest", "RecallNest") get "project:" prefix
+ * - session:* and project:* prefixes are preserved
+ */
+export function normalizeCheckpointScope(scope: string): string {
+  const trimmed = scope.trim().toLowerCase();
+  if (trimmed.startsWith("session:") || trimmed.startsWith("project:")) return trimmed;
+  if (trimmed.startsWith("memory:") || trimmed.startsWith("eval:") || trimmed.startsWith("asset:")) return trimmed;
+  // Bare project name — add project: prefix if it looks like an identifier (no spaces, no colons)
+  if (/^[a-z0-9_-]+$/i.test(trimmed)) return `project:${trimmed}`;
+  return trimmed;
+}
+
 export function resolveCheckpointScope(input: Pick<SessionCheckpointInput, "sessionId" | "scope">): string {
-  return input.scope || `session:${input.sessionId}`;
+  const raw = input.scope || `session:${input.sessionId}`;
+  return normalizeCheckpointScope(raw);
 }
 
 export function buildSessionCheckpointResult(rawInput: unknown): SessionCheckpointBuildResult {

@@ -3,7 +3,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 
-import { buildSessionCheckpointRecord } from "./session-engine.js";
+import { buildSessionCheckpointRecord, normalizeCheckpointScope } from "./session-engine.js";
 import type { ResumeContextResponse, SessionCheckpointRecord } from "./session-schema.js";
 import { composeResumeContext } from "./context-composer.js";
 import { cleanText } from "./context-composer-text.js";
@@ -385,9 +385,10 @@ export function createContinuityEvalCheckpointStore(
 
   return {
     async getLatest(query = {}) {
+      const normalizedQueryScope = query.scope ? normalizeCheckpointScope(query.scope) : undefined;
       const filtered = records.filter((record) => {
         if (query.sessionId && record.sessionId !== query.sessionId) return false;
-        if (query.scope && record.resolvedScope !== query.scope) return false;
+        if (normalizedQueryScope && normalizeCheckpointScope(record.resolvedScope ?? "") !== normalizedQueryScope) return false;
         return true;
       });
       const [latest] = sortNewestFirst(filtered);

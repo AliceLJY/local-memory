@@ -127,10 +127,10 @@ describe("scoreContinuityCase", () => {
 
     expect(byScope).toMatchObject({
       sessionId: "eval-session-1",
-      resolvedScope: "recallnest",
+      resolvedScope: "project:recallnest",
       summary: "RecallNest Phase 3/4 checkpoint fixture with resume_context and store_memory.",
     });
-    expect(bySession?.resolvedScope).toBe("recallnest");
+    expect(bySession?.resolvedScope).toBe("project:recallnest");
     expect(missing).toBeNull();
   });
 

@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { buildSessionCheckpointRecord, buildSessionCheckpointResult, resolveCheckpointScope } from "../session-engine.js";
+import { buildSessionCheckpointRecord, buildSessionCheckpointResult, normalizeCheckpointScope, resolveCheckpointScope } from "../session-engine.js";
 import { formatCheckpointRecallSummary, formatCheckpointSaved, formatCheckpointSummary, formatResumeContext } from "../session-output.js";
 import { SessionCheckpointStore } from "../session-store.js";
 
@@ -134,5 +134,61 @@ describe("session checkpoint output", () => {
 
     expect(result.sanitization.changed).toBe(false);
     expect(result.sanitization.changedFields).toEqual([]);
+  });
+});
+
+describe("checkpoint scope normalization", () => {
+  it("normalizes bare project names to project: prefix", () => {
+    expect(normalizeCheckpointScope("recallnest")).toBe("project:recallnest");
+    expect(normalizeCheckpointScope("RecallNest")).toBe("project:recallnest");
+    expect(normalizeCheckpointScope("telegram-bridge")).toBe("project:telegram-bridge");
+  });
+
+  it("preserves existing prefixes but lowercases", () => {
+    expect(normalizeCheckpointScope("project:RecallNest")).toBe("project:recallnest");
+    expect(normalizeCheckpointScope("session:abc")).toBe("session:abc");
+    expect(normalizeCheckpointScope("eval:continuity")).toBe("eval:continuity");
+  });
+
+  it("applies normalization at save time via resolveCheckpointScope", () => {
+    expect(resolveCheckpointScope({ sessionId: "s1", scope: "RecallNest" })).toBe("project:recallnest");
+    expect(resolveCheckpointScope({ sessionId: "s1", scope: "project:RecallNest" })).toBe("project:recallnest");
+    expect(resolveCheckpointScope({ sessionId: "s1" })).toBe("session:s1");
+  });
+
+  it("matches checkpoints across scope variants in getLatest", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "recallnest-scope-norm-"));
+    try {
+      const store = new SessionCheckpointStore(dir);
+
+      // Save with bare "recallnest" — will be normalized to "project:recallnest"
+      await store.save(buildSessionCheckpointRecord({
+        sessionId: "s-bare",
+        scope: "recallnest",
+        summary: "Bare scope checkpoint",
+      }));
+
+      // Save with "project:RecallNest" — will be normalized to "project:recallnest"
+      const later = buildSessionCheckpointRecord({
+        sessionId: "s-cased",
+        scope: "project:RecallNest",
+        summary: "Cased scope checkpoint",
+      });
+      // Manually set a later timestamp
+      (later as any).updatedAt = new Date(Date.now() + 1000).toISOString().replace(/\.\d+Z$/, ".000Z");
+      await store.save(later);
+
+      // Query with canonical "project:recallnest" should find both, return latest
+      const latest = await store.getLatest({ scope: "project:recallnest" });
+      expect(latest).not.toBeNull();
+      expect(latest!.summary).toBe("Cased scope checkpoint");
+
+      // Query with bare "recallnest" should also work
+      const latestBare = await store.getLatest({ scope: "recallnest" });
+      expect(latestBare).not.toBeNull();
+      expect(latestBare!.summary).toBe("Cased scope checkpoint");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
