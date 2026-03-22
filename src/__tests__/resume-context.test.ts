@@ -4610,4 +4610,37 @@ describe("composeResumeContext", () => {
     expect(response.relevantPatterns.length).toBeGreaterThan(0);
     expect(response.relevantPatterns.join("\n")).toContain("resume_context");
   });
+
+  it("treats 记忆项目 shorthand as a continuity prompt with RecallNest hints", async () => {
+    const calls: RetrievalContext[] = [];
+    const retriever = {
+      async retrieve(context: RetrievalContext): Promise<RetrievalResult[]> {
+        calls.push(context);
+        if (context.category === "entities" && context.query.includes("checkpoint_session")) {
+          return [
+            buildResult(
+              "entity-memory-project-primitives",
+              "entities",
+              "RecallNest continuity revolves around three primitives: store_memory, checkpoint_session, and resume_context.",
+            ),
+          ];
+        }
+        return [];
+      },
+    };
+
+    const response = await composeResumeContext({
+      retriever,
+      checkpointStore: { async getLatest() { return null; } },
+      listPins: () => [],
+    }, {
+      task: "那个记忆项目，之前做到哪了",
+      includeLatestCheckpoint: false,
+      limitPerSection: 2,
+    });
+
+    const stableJoined = response.stableContext.join(" ");
+    expect(stableJoined).toContain("RecallNest");
+    expect(response.relevantPatterns.join(" ")).toContain("resume_context");
+  });
 });

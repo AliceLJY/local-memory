@@ -89,4 +89,16 @@ describe("term registry", () => {
       "resume_context",
     ]));
   });
+
+  it("treats 记忆项目 as continuity task and builds RecallNest hints", () => {
+    expect(looksLikeContinuityTask("那个记忆项目，之前做到哪了")).toBe(true);
+    expect(looksLikeContinuityTask("继续记忆项目")).toBe(true);
+    expect(buildTaskHintTerms("那个记忆项目，之前做到哪了")).toEqual(expect.arrayContaining([
+      "recallnest",
+      "resume_context",
+    ]));
+    expect(buildTaskHintTerms("continue the memory project")).toEqual(expect.arrayContaining([
+      "recallnest",
+    ]));
+  });
 });

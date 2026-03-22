@@ -26,6 +26,8 @@ const CONTINUATION_VERB_TERMS = [
   "续上",
   "回到",
   "捡起来",
+  "做到哪",
+  "之前",
 ];
 
 const CONTINUATION_CONTEXT_TERMS = [
@@ -55,6 +57,7 @@ const CONTINUATION_CONTEXT_TERMS = [
   "recall pipeline",
   "recall 管线",
   "same project",
+  "记忆项目",
 ];
 
 export const WORKFLOW_CUE_TERMS = [
@@ -538,11 +541,13 @@ export const ASSOCIATIVE_RECALL_CUE_TERMS = [
   "memory system",
   "cross-window memory",
   "multi-window memory",
+  "memory project",
   "记忆层",
   "记忆系统",
   "跨窗口记忆系统",
   "跨窗口记忆",
   "多窗口记忆",
+  "记忆项目",
   "recall pipeline",
   "recall 管线",
 ];
