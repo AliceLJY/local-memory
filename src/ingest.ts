@@ -17,6 +17,7 @@ import { chunkDocument, type ChunkerConfig } from "./chunker.js";
 import { isProcessed, markProcessed } from "./tracker.js";
 import type { LLMClient, SmartExtraction } from "./llm-client.js";
 import { resolveIngestBoundary } from "./memory-boundaries.js";
+import { isNoise } from "./noise-filter.js";
 import {
   inferReplyStylePreferenceSlot,
   inferToolChoicePreferenceSlot,
@@ -581,19 +582,29 @@ function parseCCTranscript(filePath: string): ConversationTurn[] {
  * Strategy: merge adjacent user+assistant pairs into one chunk,
  * so search can find the full context of a Q&A exchange.
  */
+/**
+ * Pre-filter turns before chunking: remove noise turns that would dilute
+ * embedding quality if stored. Applied at ingest time so noisy data never
+ * enters the vector index.
+ */
+function filterNoiseTurns(turns: ConversationTurn[]): ConversationTurn[] {
+  return turns.filter((turn) => !isNoise(turn.text));
+}
+
 function groupTurnsIntoChunks(turns: ConversationTurn[]): Array<{
   text: string;
   timestamp: string;
   sessionId: string;
 }> {
+  const filtered = filterNoiseTurns(turns);
   const chunks: Array<{ text: string; timestamp: string; sessionId: string }> = [];
 
-  for (let i = 0; i < turns.length; i++) {
-    const turn = turns[i];
+  for (let i = 0; i < filtered.length; i++) {
+    const turn = filtered[i];
 
     // If this is a user turn followed by an assistant turn, merge them
-    if (turn.role === "user" && i + 1 < turns.length && turns[i + 1].role === "assistant") {
-      const nextTurn = turns[i + 1];
+    if (turn.role === "user" && i + 1 < filtered.length && filtered[i + 1].role === "assistant") {
+      const nextTurn = filtered[i + 1];
       const merged = `[用户] ${turn.text}\n\n[助手] ${nextTurn.text}`;
 
       // If merged text is too long, chunk it
