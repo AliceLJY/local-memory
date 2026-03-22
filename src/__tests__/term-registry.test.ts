@@ -65,7 +65,10 @@ describe("term registry", () => {
     expect(looksLikeContinuityTask("接着弄 RecallNest 那个 memory layer")).toBe(true);
     expect(looksLikeContinuityTask("把记忆层这条线先续上")).toBe(true);
     expect(looksLikeContinuityTask("把之前那套 recall 管线先捡起来")).toBe(true);
+    expect(looksLikeContinuityTask("pick up where we left off on RecallNest")).toBe(true);
     expect(looksLikeContinuityTask("回到 A2A 继续做")).toBe(false);
+    // Status queries are NOT continuation tasks — entity+cases is sufficient
+    expect(looksLikeContinuityTask("RecallNest 现在啥情况")).toBe(false);
   });
 
   it("builds RecallNest continuity hints for memory-layer shorthand", () => {

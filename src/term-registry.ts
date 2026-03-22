@@ -20,6 +20,8 @@ export const CONTINUITY_TASK_TERMS = [
 
 const CONTINUATION_VERB_TERMS = [
   "continue",
+  "pick up",
+  "left off",
   "继续",
   "接着",
   "接上",
