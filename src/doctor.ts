@@ -46,6 +46,8 @@ interface ContinuityBaselineAssessment {
   missing: { patterns: string[]; cases: string[]; memories: string[] };
 }
 
+type ContinuityBaselineEntryStore = Pick<MemoryStore, "list">;
+
 function pass(name: string, message: string): CheckResult {
   return { name, status: "pass", message };
 }
@@ -208,6 +210,16 @@ export function loadContinuityBaselineSeeds(): ContinuityBaselineSeeds {
     cases: casesRaw.map((item) => normalizeCaseMemorySeed(item)),
     memories: memoriesRaw.map((item) => normalizeStoreMemorySeed(item)),
   };
+}
+
+export async function loadContinuityBaselineEntries(
+  store: ContinuityBaselineEntryStore,
+  totalCountHint: number,
+): Promise<MemoryEntry[]> {
+  const limit = Number.isFinite(totalCountHint)
+    ? Math.max(5000, Math.ceil(totalCountHint))
+    : 5000;
+  return store.list(undefined, undefined, limit, 0);
 }
 
 function seedPreview(text: string, maxLen = 80): string {
@@ -442,7 +454,7 @@ export async function runDoctor(options: { ci?: boolean } = {}): Promise<CheckRe
     }
 
     try {
-      const entries = await store.list(undefined, undefined, 5000, 0);
+      const entries = await loadContinuityBaselineEntries(store, stats.totalCount);
       const baseline = assessContinuityBaseline(entries);
       const expectedTotal = baseline.expected.patterns + baseline.expected.cases + baseline.expected.memories;
       const foundTotal = baseline.found.patterns + baseline.found.cases + baseline.found.memories;

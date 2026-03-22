@@ -181,6 +181,27 @@ describe("persistMemory", () => {
     });
   });
 
+  it("does not infer slot metadata for descriptive non-preference text", async () => {
+    const { deps, storedEntries } = createDeps();
+    const draftNote = await persistMemory(deps as any, {
+      text: "这段文案简洁直接，先别改。",
+      category: "preferences",
+      scope: TEST_SCOPE,
+      source: "manual",
+    });
+    const migrationNote = await persistMemory(deps as any, {
+      text: "文档里写了 uses Bun over Node 的迁移说明。",
+      category: "preferences",
+      scope: TEST_SCOPE,
+      source: "manual",
+    });
+
+    expect(draftNote.canonicalKey).toBe("preferences:这段文案简洁直接-先别改");
+    expect(migrationNote.canonicalKey).toBe("preferences:文档里写了-uses-bun-over-node-的迁移说明");
+    expect(JSON.parse(storedEntries[0].metadata)).not.toHaveProperty("preferenceSlot");
+    expect(JSON.parse(storedEntries[1].metadata)).not.toHaveProperty("preferenceSlot");
+  });
+
   it("dedupes an exact canonical durable write instead of storing again", async () => {
     const { deps, storedEntries } = createDeps();
     await persistMemory(deps as any, {
@@ -787,6 +808,56 @@ describe("promoteMemory", () => {
     expect(conflicts).toHaveLength(0);
   });
 
+  it("does not collapse descriptive draft text onto an existing reply-style durable owner", async () => {
+    const { deps, storedEntries, conflicts } = createDeps();
+    const durable = await persistMemory(deps as any, {
+      text: "User prefers concise, direct replies.",
+      category: "preferences",
+      scope: TEST_SCOPE,
+      source: "manual",
+    });
+    const source = await deps.store.store({
+      text: "[用户] 这段文案简洁直接，先别改。",
+      vector: [1, 2, 3],
+      category: "events",
+      scope: "cc:session-reply-style-note",
+      importance: 0.55,
+      metadata: JSON.stringify({
+        source: "cc",
+        boundary: {
+          layer: "evidence",
+          authority: "transcript-ingest",
+          conflictPolicy: "append-only",
+          originalCategory: "preferences",
+        },
+      }),
+    });
+
+    const promoted = await promoteMemory(deps as any, {
+      memoryId: source.id,
+      text: "这段文案简洁直接，先别改。",
+      category: "preferences",
+      scope: TEST_SCOPE,
+      tags: ["writing"],
+    });
+
+    expect(promoted.disposition).toBe("promoted");
+    expect(promoted.id).not.toBe(durable.id);
+    expect(promoted.canonicalKey).toBe("preferences:这段文案简洁直接-先别改");
+    expect(storedEntries).toHaveLength(3);
+    expect(JSON.parse(storedEntries[2]?.metadata || "{}")).toMatchObject({
+      canonicalKey: "preferences:这段文案简洁直接-先别改",
+      promotedFrom: {
+        memoryId: source.id,
+        scope: "cc:session-reply-style-note",
+        category: "events",
+        source: "cc",
+      },
+    });
+    expect(JSON.parse(storedEntries[2]?.metadata || "{}")).not.toHaveProperty("preferenceSlot");
+    expect(conflicts).toHaveLength(0);
+  });
+
   it("collapses same-slot tool-choice promotions onto the existing durable owner", async () => {
     const { deps, storedEntries, conflicts } = createDeps();
     const durable = await persistMemory(deps as any, {
@@ -838,6 +909,56 @@ describe("promoteMemory", () => {
         source: "cc",
       }],
     });
+    expect(conflicts).toHaveLength(0);
+  });
+
+  it("does not collapse narrative migration text onto an existing tool-choice durable owner", async () => {
+    const { deps, storedEntries, conflicts } = createDeps();
+    const durable = await persistMemory(deps as any, {
+      text: "Prefers rg over grep.",
+      category: "preferences",
+      scope: TEST_SCOPE,
+      source: "manual",
+    });
+    const source = await deps.store.store({
+      text: "[用户] 文档里写了 uses Bun over Node 的迁移说明。",
+      vector: [1, 2, 3],
+      category: "events",
+      scope: "cc:session-tool-choice-note",
+      importance: 0.55,
+      metadata: JSON.stringify({
+        source: "cc",
+        boundary: {
+          layer: "evidence",
+          authority: "transcript-ingest",
+          conflictPolicy: "append-only",
+          originalCategory: "preferences",
+        },
+      }),
+    });
+
+    const promoted = await promoteMemory(deps as any, {
+      memoryId: source.id,
+      text: "文档里写了 uses Bun over Node 的迁移说明。",
+      category: "preferences",
+      scope: TEST_SCOPE,
+      tags: ["tooling"],
+    });
+
+    expect(promoted.disposition).toBe("promoted");
+    expect(promoted.id).not.toBe(durable.id);
+    expect(promoted.canonicalKey).toBe("preferences:文档里写了-uses-bun-over-node-的迁移说明");
+    expect(storedEntries).toHaveLength(3);
+    expect(JSON.parse(storedEntries[2]?.metadata || "{}")).toMatchObject({
+      canonicalKey: "preferences:文档里写了-uses-bun-over-node-的迁移说明",
+      promotedFrom: {
+        memoryId: source.id,
+        scope: "cc:session-tool-choice-note",
+        category: "events",
+        source: "cc",
+      },
+    });
+    expect(JSON.parse(storedEntries[2]?.metadata || "{}")).not.toHaveProperty("preferenceSlot");
     expect(conflicts).toHaveLength(0);
   });
 

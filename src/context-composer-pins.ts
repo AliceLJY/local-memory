@@ -3,6 +3,7 @@ import { extractBoundaryMetadata, extractCanonicalKey } from "./memory-boundarie
 import { buildProjectScopeCueTerms, normalizeScopedValue } from "./context-composer-scope.js";
 import { cleanText, dedupeText, stripConversationMarkers } from "./context-composer-text.js";
 import {
+  TASK_CUE_EXTRACTION_LIMIT,
   buildTaskHintTerms,
   containsLowSignalStableTerm,
   extractTerms,
@@ -11,6 +12,22 @@ import {
   looksLikeStableInstruction,
   normalizeText,
 } from "./term-registry.js";
+
+function isUsefulPinnedTaskTerm(term: string): boolean {
+  const normalized = normalizeText(term);
+  if (!normalized) return false;
+  if (looksLikeStableInstruction(normalized)) return false;
+  if (containsLowSignalStableTerm(normalized)) return false;
+  if (normalized.includes("刚才")) return false;
+  if (normalized.endsWith("那个") || normalized === "那个") return false;
+  if (["窗口", "window", "系统", "system", "项目", "project"].includes(normalized)) return false;
+
+  if (/[\p{Script=Han}]/u.test(term)) {
+    return normalized.length >= 3;
+  }
+
+  return normalized.length >= 4;
+}
 
 function scorePin(asset: PinAsset, taskTerms: string[], scope?: string): number {
   let score = 0;
@@ -137,11 +154,11 @@ export function selectPinnedContext(
     return [];
   }
 
-  const taskTerms = Array.from(new Set([
-    ...extractTerms(taskSeed),
+  const taskTerms = dedupeText([
     ...buildTaskHintTerms(taskSeed),
+    ...extractTerms(taskSeed, TASK_CUE_EXTRACTION_LIMIT).filter((term) => isUsefulPinnedTaskTerm(term)),
     ...(styleFocused ? ["写作", "文章", "风格", "语气", "口语化", "不端着", "自嘲", "style", "tone", "voice"] : []),
-  ]));
+  ], 24);
   const requirePositiveMatch = taskTerms.length > 0 || Boolean(scope);
   const ranked = assets
     .filter((asset) => isUsefulPinnedAsset(asset) && isRelevantToScopedPinnedContext(asset, scope))

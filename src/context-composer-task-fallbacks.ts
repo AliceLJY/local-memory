@@ -1,4 +1,4 @@
-import { taskCueCoverage } from "./term-registry.js";
+import { containsAnyTerm, taskCueCoverage } from "./term-registry.js";
 
 export function buildWorkflowFallbackQuery(taskSeed?: string): string {
   if (taskSeed) {
@@ -9,6 +9,9 @@ export function buildWorkflowFallbackQuery(taskSeed?: string): string {
 
 export function buildCaseFallbackQuery(taskSeed?: string): string {
   if (taskSeed) {
+    if (containsAnyTerm(taskSeed, ["RecallNest", "recallnest"])) {
+      return `${taskSeed} scope fallback project scope handoff stable context cleanup continuity durable case 项目范围 交接 稳定上下文 问题 解决 方案 排查`;
+    }
     return `${taskSeed} case solution fix root cause workaround cleanup continuity 问题 解决 方案 排查`;
   }
   return "case solution fix root cause workaround cleanup continuity 问题 解决 方案 排查";

@@ -1,6 +1,11 @@
 import { describe, expect, it } from "bun:test";
 
-import { assessContinuityBaseline, assessScopeInventoryReport, formatDoctorResults } from "../doctor.js";
+import {
+  assessContinuityBaseline,
+  assessScopeInventoryReport,
+  formatDoctorResults,
+  loadContinuityBaselineEntries,
+} from "../doctor.js";
 import type { MemoryEntry } from "../store.js";
 
 function buildEntry(
@@ -143,6 +148,55 @@ describe("assessContinuityBaseline", () => {
     expect(assessment.missing.patterns).toEqual(["Recall before repo exploration"]);
     expect(assessment.missing.cases).toEqual(["RecallNest scope fallback cleanup"]);
     expect(assessment.missing.memories).toEqual(["entities:recallnest:continuity-primitives"]);
+  });
+
+  it("loads enough entries for baseline checks when the index is larger than the legacy 5000-entry window", async () => {
+    const targetEntry = buildEntry(
+      "pattern-target",
+      "patterns",
+      "Workflow pattern: RecallNest MCP transport rollout",
+      "project:recallnest",
+      { workflowPattern: { title: "RecallNest MCP transport rollout" } },
+    );
+    const entries: MemoryEntry[] = [
+      ...Array.from({ length: 5000 }, (_, index) => buildEntry(
+        `noise-${index}`,
+        "patterns",
+        `Workflow pattern: Noise ${index}`,
+        "memory:agent",
+        { workflowPattern: { title: `Noise ${index}` } },
+      )),
+      targetEntry,
+    ];
+    const listCalls: Array<[string[] | undefined, string | undefined, number | undefined, number | undefined]> = [];
+    const store = {
+      async list(scopeFilter?: string[], category?: string, limit = 20, offset = 0): Promise<MemoryEntry[]> {
+        listCalls.push([scopeFilter, category, limit, offset]);
+        return entries.slice(offset, offset + limit);
+      },
+    };
+
+    const loaded = await loadContinuityBaselineEntries(store as any, entries.length);
+    const assessment = assessContinuityBaseline(loaded, {
+      patterns: [
+        {
+          title: "RecallNest MCP transport rollout",
+          trigger: "When RecallNest continuity work touches MCP transport wiring under project scope",
+          steps: ["Call resume_context with project:recallnest before transport changes."],
+          outcome: "RecallNest transport changes stay project-scoped.",
+          tools: ["resume_context", "search_memory", "eval:continuity"],
+          source: "agent",
+          scope: "project:recallnest",
+          importance: 0.87,
+        },
+      ],
+      cases: [],
+      memories: [],
+    } as any);
+
+    expect(listCalls).toEqual([[undefined, undefined, 5001, 0]]);
+    expect(assessment.found.patterns).toBe(1);
+    expect(assessment.missing.patterns).toEqual([]);
   });
 });
 

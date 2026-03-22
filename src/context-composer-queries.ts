@@ -1,9 +1,11 @@
 import type { StableCategory } from "./context-composer-stable.js";
 import { cleanText, dedupeText } from "./context-composer-text.js";
-import type { TaskCategory } from "./context-composer-task-results.js";
+import type { TaskCategory } from "./context-composer-task-selection.js";
 import {
+  ASSOCIATIVE_RECALL_CUE_TERMS,
   containsAnyTerm,
   extractTerms,
+  looksLikeContinuityTask,
   looksLikeStyleTask,
 } from "./term-registry.js";
 
@@ -80,7 +82,17 @@ export function buildScopedEntityFallbackQuery(scope?: string, taskSeed?: string
 }
 
 export function buildAssociativeNestEntityFallbackQuery(taskSeed?: string): string {
-  if (!taskSeed || !containsAnyTerm(taskSeed, ["RecallNest", "recallnest", "Nest", "nest"])) {
+  const associativeRecallCue = Boolean(
+    taskSeed &&
+    (
+      containsAnyTerm(taskSeed, ["RecallNest", "recallnest", "Nest", "nest"]) ||
+      (
+        looksLikeContinuityTask(taskSeed) &&
+        containsAnyTerm(taskSeed, ASSOCIATIVE_RECALL_CUE_TERMS)
+      )
+    )
+  );
+  if (!taskSeed || !associativeRecallCue) {
     return "";
   }
 

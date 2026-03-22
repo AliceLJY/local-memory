@@ -7,7 +7,7 @@ import { buildSessionCheckpointRecord } from "./session-engine.js";
 import type { ResumeContextResponse, SessionCheckpointRecord } from "./session-schema.js";
 import { composeResumeContext } from "./context-composer.js";
 import { cleanText } from "./context-composer-text.js";
-import { createComponentResolver, loadConfig, loadDotEnv } from "./runtime-config.js";
+import { createComponents, loadConfig, loadDotEnv, type LocalMemoryConfig } from "./runtime-config.js";
 import { logInfo } from "./stderr-log.js";
 import { buildWorkflowObservationRecord } from "./workflow-observation-engine.js";
 import type { WorkflowObservationInput } from "./workflow-observation-schema.js";
@@ -113,6 +113,16 @@ interface EvalArgs {
 
 interface EvalCheckpointLookup {
   getLatest(query?: { sessionId?: string; scope?: string }): Promise<SessionCheckpointRecord | null>;
+}
+
+type EvalCaseComponents = Pick<ReturnType<typeof createComponents>, "retriever" | "accessTracker">;
+type EvalComponentFactory = (profileName?: string) => EvalCaseComponents;
+
+function createFreshEvalComponentsFactory(config: LocalMemoryConfig): EvalComponentFactory {
+  return function createEvalComponentsForCase(profileName?: string) {
+    const { retriever, accessTracker } = createComponents(config, profileName);
+    return { retriever, accessTracker };
+  };
 }
 
 export function buildContinuityEvalRequest(evalCase: ContinuityEvalCase) {
@@ -473,11 +483,14 @@ function markdownContinuityReport(reports: ContinuityCaseReport[]): string {
   return lines.join("\n");
 }
 
-async function runRetrievalEval(
+export async function runRetrievalEval(
   cases: RetrievalEvalCase[],
+  deps: {
+    createEvalComponents?: EvalComponentFactory;
+  } = {},
 ): Promise<RetrievalCaseReport[]> {
-  const config = loadConfig();
-  const getComponents = createComponentResolver(config);
+  const config = deps.createEvalComponents ? null : loadConfig();
+  const createEvalComponentsForCase = deps.createEvalComponents || createFreshEvalComponentsFactory(config!);
   const reports: RetrievalCaseReport[] = [];
 
   for (const [index, evalCase] of cases.entries()) {
@@ -485,32 +498,46 @@ async function runRetrievalEval(
       logInfo(`[INFO] retrieval-eval ${index + 1}/${cases.length}: ${evalCase.name}`);
     }
     const profileName = evalCase.profile || "default";
-    const { retriever } = getComponents(profileName);
-    const results = await retriever.retrieve({
-      query: evalCase.query,
-      limit: evalCase.limit || 5,
-      scopeFilter: evalCase.scope ? [evalCase.scope] : undefined,
-    });
-    const report = scoreRetrievalCase(evalCase, results);
-    reports.push(report);
-    if (cases.length > 1) {
-      logInfo(
-        `[INFO] retrieval-eval ${index + 1}/${cases.length} done: ${evalCase.name} ${formatPercent(report.score)} ${report.passed ? "pass" : "fail"}`,
-      );
+    const { retriever, accessTracker } = createEvalComponentsForCase(profileName);
+    try {
+      const results = await retriever.retrieve({
+        query: evalCase.query,
+        limit: evalCase.limit || 5,
+        scopeFilter: evalCase.scope ? [evalCase.scope] : undefined,
+        source: "auto-recall",
+      });
+      const report = scoreRetrievalCase(evalCase, results);
+      reports.push(report);
+      if (cases.length > 1) {
+        logInfo(
+          `[INFO] retrieval-eval ${index + 1}/${cases.length} done: ${evalCase.name} ${formatPercent(report.score)} ${report.passed ? "pass" : "fail"}`,
+        );
+      }
+    } finally {
+      accessTracker.destroy();
     }
   }
 
   return reports;
 }
 
-async function runContinuityEval(
+export async function runContinuityEval(
   cases: ContinuityEvalCase[],
   options: { recordObservations?: boolean; observationScope?: string; observationSource?: string } = {},
+  deps: {
+    createEvalComponents?: EvalComponentFactory;
+    checkpointStore?: EvalCheckpointLookup;
+    observationStore?: WorkflowObservationStore | null;
+    composeResumeContextFn?: typeof composeResumeContext;
+  } = {},
 ): Promise<ContinuityCaseReport[]> {
-  const config = loadConfig();
-  const getComponents = createComponentResolver(config);
-  const checkpointStore = createContinuityEvalCheckpointStore(cases);
-  const observationStore = options.recordObservations ? new WorkflowObservationStore() : null;
+  const config = deps.createEvalComponents ? null : loadConfig();
+  const createEvalComponentsForCase = deps.createEvalComponents || createFreshEvalComponentsFactory(config!);
+  const checkpointStore = deps.checkpointStore || createContinuityEvalCheckpointStore(cases);
+  const observationStore = deps.observationStore === undefined
+    ? (options.recordObservations ? new WorkflowObservationStore() : null)
+    : deps.observationStore;
+  const composeResumeContextFn = deps.composeResumeContextFn || composeResumeContext;
   const reports: ContinuityCaseReport[] = [];
 
   for (const [index, evalCase] of cases.entries()) {
@@ -518,25 +545,29 @@ async function runContinuityEval(
       logInfo(`[INFO] continuity-eval ${index + 1}/${cases.length}: ${evalCase.name}`);
     }
     const profileName = evalCase.profile || "default";
-    const { retriever } = getComponents(profileName);
-    const response = await composeResumeContext({
-      retriever,
-      checkpointStore,
-    }, buildContinuityEvalRequest(evalCase));
-    const report = scoreContinuityCase(evalCase, response);
-    reports.push(report);
-    if (cases.length > 1) {
-      logInfo(
-        `[INFO] continuity-eval ${index + 1}/${cases.length} done: ${evalCase.name} ${formatPercent(report.score)} ${report.passed ? "pass" : "fail"}`,
-      );
-    }
-    if (observationStore) {
-      await observationStore.save(buildWorkflowObservationRecord(
-        buildContinuityEvalObservationInput(evalCase, report, {
-          scope: options.observationScope,
-          source: options.observationSource,
-        }),
-      ));
+    const { retriever, accessTracker } = createEvalComponentsForCase(profileName);
+    try {
+      const response = await composeResumeContextFn({
+        retriever,
+        checkpointStore,
+      }, buildContinuityEvalRequest(evalCase));
+      const report = scoreContinuityCase(evalCase, response);
+      reports.push(report);
+      if (cases.length > 1) {
+        logInfo(
+          `[INFO] continuity-eval ${index + 1}/${cases.length} done: ${evalCase.name} ${formatPercent(report.score)} ${report.passed ? "pass" : "fail"}`,
+        );
+      }
+      if (observationStore) {
+        await observationStore.save(buildWorkflowObservationRecord(
+          buildContinuityEvalObservationInput(evalCase, report, {
+            scope: options.observationScope,
+            source: options.observationSource,
+          }),
+        ));
+      }
+    } finally {
+      accessTracker.destroy();
     }
   }
 

@@ -1,13 +1,15 @@
 const ROLE_PREFIX_RE = /^\[(用户|助手)\]\s*/gm;
 const PREFERENCE_SPLIT_RE = /(?:、|,|，|\/|以及|及|与|和| and | & )/iu;
 const PREFERENCE_CLAUSE_STOP_RE = /(?:因为|所以|但是|不过|if |when |because |but )/iu;
-const REPLY_STYLE_CONTEXT_RE = /(?:\brepl(?:y|ies)\b|\bresponse(?:s)?\b|\brespond(?:ing)?\b|\bwriting\b|\btone\b|\bvoice\b|\bstyle\b|回复|回答|语气|文案|写作|表达|风格|措辞|说话)/iu;
+const LEADING_ENGLISH_ARTICLE_RE = /^(?:the|a|an)\s+/iu;
+const REPLY_STYLE_CONTEXT_RE = /(?:\brepl(?:y|ies)\b|\bresponse(?:s)?\b|\brespond(?:ing)?\b|\bwriting\b|\btone\b|\bvoice\b|\bstyle\b|回复|回答|语气|写作|表达|风格|措辞|说话)/iu;
+const REPLY_STYLE_PREFERENCE_CUE_RE = /(?:\bprefer(?:s|red)?\b|\bwants?\b|\bplease\b|\bavoid\b|\bkeep\b|\bneed(?:s|ed)?\b|偏好|喜欢|希望|请|要|不要|不接受|避免|尽量|最好)/iu;
 const BRAND_ITEM_PREFERENCE_PATTERNS = [
-  /(?:^|[\s，,。；;！!？?])(?:我|用户)?(?:很|更|还)?(?:喜欢|爱吃|偏爱|常吃|想吃|喜欢喝|喜欢用|喜欢买)(?:吃|喝|用|买)?(?<brand>[\p{Script=Han}A-Za-z0-9&·'\-]{1,24})的(?<items>[\p{Script=Han}A-Za-z0-9&·'\-\s、,，和及与/]{1,80})/u,
+  /(?:^|[\s，,。；;！!？?])(?:我|用户)?(?:很|更|还)?(?:喜欢|爱吃|偏爱|常吃|想吃)(?:吃|喝|用|买)?(?<brand>[\p{Script=Han}A-Za-z0-9&·'\-]{1,24})的(?<items>[\p{Script=Han}A-Za-z0-9&·'\-\s、,，和及与/]{1,80})/u,
   /\b(?:i|user)?\s*(?:really\s+|still\s+|also\s+)?(?:like|love|prefer|enjoy)\s+(?<items>[a-z0-9'&\-\s]{1,80})\s+from\s+(?<brand>[a-z0-9'&\-\s]{1,40})/iu,
 ] as const;
 const TOOL_CHOICE_PREFERENCE_PATTERNS = [
-  /\b(?:use|uses|using|prefer|prefers|preferred|pick|picks|picked)\s+(?<preferred>[a-z0-9.+#/_\-\s]{1,24})\s+(?:over|instead of|rather than)\s+(?<avoided>[a-z0-9.+#/_\-\s]{1,24})/iu,
+  /^(?:\s*)(?:i|user)?\s*(?:really\s+|still\s+|also\s+)?(?:use|uses|using|prefer|prefers|preferred|pick|picks|picked)\s+(?<preferred>[a-z0-9.+#/_\-\s]{1,24})\s+(?:over|instead of|rather than)\s+(?<avoided>[a-z0-9.+#/_\-\s]{1,24})(?:\s*[.!?。！？])?\s*$/iu,
   /(?:更喜欢|喜欢|偏好|倾向|优先)(?:使用|用)?(?<preferred>[A-Za-z0-9.+#/_\-\s]{1,24})(?:\s*)(?:而不是|而非|不用|不选|代替|替代|优先于|胜过)(?:\s*)(?<avoided>[A-Za-z0-9.+#/_\-\s]{1,24})/u,
   /(?:使用|用)(?<preferred>[A-Za-z0-9.+#/_\-\s]{1,24})(?:\s*)(?:不用|代替|替代)(?<avoided>[A-Za-z0-9.+#/_\-\s]{1,24})/u,
 ] as const;
@@ -103,17 +105,34 @@ function normalizePreferenceText(value: string): string {
 }
 
 export function normalizePreferenceToken(value: string): string {
-  return normalizePreferenceText(value)
+  return normalizePreferenceTokenWithOptions(value);
+}
+
+function normalizePreferenceTokenWithOptions(
+  value: string,
+  options?: { stripLeadingEnglishArticle?: boolean },
+): string {
+  let normalized = normalizePreferenceText(value)
     .replace(/^[“"'`‘’.]+|[”"'`‘’.。！!？?，,；;:：]+$/gu, "")
+    .trim();
+
+  if (options?.stripLeadingEnglishArticle) {
+    normalized = normalized.replace(LEADING_ENGLISH_ARTICLE_RE, "");
+  }
+
+  return normalized
     .replace(/\s+/g, "")
     .toLowerCase();
 }
 
-function splitPreferenceItems(rawItems: string): string[] {
+function splitPreferenceItems(
+  rawItems: string,
+  options?: { stripLeadingEnglishArticle?: boolean },
+): string[] {
   const trimmed = rawItems.split(PREFERENCE_CLAUSE_STOP_RE)[0] || rawItems;
   return trimmed
     .split(PREFERENCE_SPLIT_RE)
-    .map((item) => normalizePreferenceToken(item))
+    .map((item) => normalizePreferenceTokenWithOptions(item, options))
     .filter((item) => item.length > 0);
 }
 
@@ -125,7 +144,11 @@ export function parseBrandItemPreference(text: string): ParsedBrandItemPreferenc
     if (!match?.groups) continue;
 
     const brand = normalizePreferenceToken(match.groups.brand || "");
-    const items = splitPreferenceItems(match.groups.items || "");
+    const items = splitPreferenceItems(match.groups.items || "", {
+      // Strip leading "the/a/an" from English item names so
+      // "the Big Mac" and "Big Mac" land on the same atomic slot.
+      stripLeadingEnglishArticle: pattern === BRAND_ITEM_PREFERENCE_PATTERNS[1],
+    });
     if (!brand || items.length === 0) continue;
 
     return {
@@ -162,7 +185,8 @@ export function inferReplyStylePreferenceSlot(text: string): ReplyStylePreferenc
   }
 
   const hasContext = REPLY_STYLE_CONTEXT_RE.test(normalizedText);
-  if (!hasContext && traits.length < 2) {
+  const hasPreferenceCue = REPLY_STYLE_PREFERENCE_CUE_RE.test(normalizedText);
+  if (!hasContext && (!hasPreferenceCue || traits.length < 2)) {
     return null;
   }
 

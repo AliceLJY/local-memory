@@ -90,6 +90,64 @@ describe("dedupCheck", () => {
     expect(result.existingText).toBe("我喜欢吃麦当劳的麦辣鸡翅");
   });
 
+  it("does not force-create when the same brand-item preference is only rephrased", async () => {
+    let llmCalls = 0;
+    const store = {
+      async vectorSearch() {
+        return [
+          buildSearchResult("我喜欢吃麦当劳的麦辣鸡翅", 0.75),
+        ];
+      },
+    };
+    const llm = {
+      async dedupDecision() {
+        llmCalls += 1;
+        return { action: "SKIP" as const, reason: "same item, rephrased" };
+      },
+    };
+
+    const result = await dedupCheck(
+      store as any,
+      [1, 0, 0],
+      "用户喜欢麦当劳的麦辣鸡翅",
+      llm as any,
+    );
+
+    expect(result.action).toBe("skip");
+    expect(result.reason).toBe("llm-skip");
+    expect(result.existingText).toBe("我喜欢吃麦当劳的麦辣鸡翅");
+    expect(llmCalls).toBe(1);
+  });
+
+  it("does not trigger the brand-item guard for non-preference text that mentions the same brand and item", async () => {
+    let llmCalls = 0;
+    const store = {
+      async vectorSearch() {
+        return [
+          buildSearchResult("我喜欢喝星巴克的抹茶拿铁", 0.75),
+        ];
+      },
+    };
+    const llm = {
+      async dedupDecision() {
+        llmCalls += 1;
+        return { action: "SKIP" as const, reason: "same context, not a new preference" };
+      },
+    };
+
+    const result = await dedupCheck(
+      store as any,
+      [1, 0, 0],
+      "我们刚讨论过星巴克的抹茶拿铁做法",
+      llm as any,
+    );
+
+    expect(result.action).toBe("skip");
+    expect(result.reason).toBe("llm-skip");
+    expect(result.existingText).toBe("我喜欢喝星巴克的抹茶拿铁");
+    expect(llmCalls).toBe(1);
+  });
+
   it("stores a new reply-style preference instead of collapsing different style traits into one topic", async () => {
     let llmCalls = 0;
     const store = {
@@ -119,6 +177,35 @@ describe("dedupCheck", () => {
     expect(llmCalls).toBe(0);
   });
 
+  it("does not trigger the reply-style guard for descriptive text about a draft", async () => {
+    let llmCalls = 0;
+    const store = {
+      async vectorSearch() {
+        return [
+          buildSearchResult("User prefers colloquial, grounded replies.", 0.75),
+        ];
+      },
+    };
+    const llm = {
+      async dedupDecision() {
+        llmCalls += 1;
+        return { action: "SKIP" as const, reason: "draft note, not a user preference" };
+      },
+    };
+
+    const result = await dedupCheck(
+      store as any,
+      [1, 0, 0],
+      "这段文案简洁直接，先别改。",
+      llm as any,
+    );
+
+    expect(result.action).toBe("skip");
+    expect(result.reason).toBe("llm-skip");
+    expect(result.existingText).toBe("User prefers colloquial, grounded replies.");
+    expect(llmCalls).toBe(1);
+  });
+
   it("stores a new tool-choice preference instead of collapsing different tool choices into one topic", async () => {
     let llmCalls = 0;
     const store = {
@@ -146,6 +233,35 @@ describe("dedupCheck", () => {
     expect(result.reason).toBe("unique");
     expect(result.existingText).toBe("Uses Bun over Node.");
     expect(llmCalls).toBe(0);
+  });
+
+  it("does not trigger the tool-choice guard for narrative migration text", async () => {
+    let llmCalls = 0;
+    const store = {
+      async vectorSearch() {
+        return [
+          buildSearchResult("Prefers rg over grep.", 0.75),
+        ];
+      },
+    };
+    const llm = {
+      async dedupDecision() {
+        llmCalls += 1;
+        return { action: "SKIP" as const, reason: "migration note, not a tool preference" };
+      },
+    };
+
+    const result = await dedupCheck(
+      store as any,
+      [1, 0, 0],
+      "文档里写了 uses Bun over Node 的迁移说明。",
+      llm as any,
+    );
+
+    expect(result.action).toBe("skip");
+    expect(result.reason).toBe("llm-skip");
+    expect(result.existingText).toBe("Prefers rg over grep.");
+    expect(llmCalls).toBe(1);
   });
 
   it("stores a borderline chunk when LLM says it should CREATE", async () => {

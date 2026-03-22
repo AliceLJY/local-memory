@@ -217,7 +217,7 @@ export async function composeResumeContext(
   const preferenceResults = mergeRetrievalResults(preferenceResultSets, Math.max(4, stableLimit * 3));
   const entityResults = mergeRetrievalResults(entityResultSets, Math.max(4, stableLimit * 3));
 
-  const continuityTask = looksLikeContinuityTask(taskSeed);
+  const continuityTask = looksLikeContinuityTask(taskSeed) && !styleFocusedTask;
   const pinAssets = (deps.listPins || listPinAssets)(Math.max(4, stableLimit * 2));
   const {
     preferenceContext,

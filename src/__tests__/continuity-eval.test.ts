@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 
-import { buildContinuityEvalObservationInput, buildContinuityEvalRequest, createContinuityEvalCheckpointStore, scoreContinuityCase } from "../eval.js";
+import { buildContinuityEvalObservationInput, buildContinuityEvalRequest, createContinuityEvalCheckpointStore, runContinuityEval, runRetrievalEval, scoreContinuityCase } from "../eval.js";
 import type { ResumeContextResponse } from "../session-schema.js";
 
 describe("scoreContinuityCase", () => {
@@ -212,5 +212,64 @@ describe("scoreContinuityCase", () => {
       tools: ["resume_context"],
     });
     expect(failed.summary).toContain("failed");
+  });
+
+  it("creates fresh continuity eval components for each case instead of sharing one resolver", async () => {
+    let componentCreations = 0;
+
+    const reports = await runContinuityEval([
+      { name: "case-a", task: "continue A" },
+      { name: "case-b", task: "continue B" },
+    ], {}, {
+      createEvalComponents: () => {
+        componentCreations += 1;
+        const instanceId = componentCreations;
+        return {
+          retriever: {
+            instanceId,
+            async retrieve() {
+              return [];
+            },
+          } as never,
+          accessTracker: {
+            destroy() {},
+          } as never,
+        };
+      },
+      composeResumeContextFn: async (deps) => ({
+        summary: `instance:${(deps.retriever as { instanceId: number }).instanceId}`,
+        stableContext: [`instance:${(deps.retriever as { instanceId: number }).instanceId}`],
+        relevantPatterns: [],
+        recentCases: [],
+        generatedAt: "2026-03-20T00:00:00.000Z",
+      }),
+    });
+
+    expect(componentCreations).toBe(2);
+    expect(reports[0]?.stablePreview[0]).toContain("instance:1");
+    expect(reports[1]?.stablePreview[0]).toContain("instance:2");
+  });
+
+  it("runs retrieval eval in auto-recall mode so eval does not reinforce access counts", async () => {
+    const seenSources: string[] = [];
+
+    const reports = await runRetrievalEval([
+      { name: "retrieval_case", query: "RecallNest" },
+    ], {
+      createEvalComponents: () => ({
+        retriever: {
+          async retrieve(context) {
+            seenSources.push(context.source || "unset");
+            return [];
+          },
+        } as never,
+        accessTracker: {
+          destroy() {},
+        } as never,
+      }),
+    });
+
+    expect(seenSources).toEqual(["auto-recall"]);
+    expect(reports).toHaveLength(1);
   });
 });

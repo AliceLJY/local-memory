@@ -157,4 +157,59 @@ describe("memory output", () => {
 
     expect(output).toContain("slot:tool-choice:bun:over:node");
   });
+
+  it("does not render slot provenance for plain preferences canonical keys", () => {
+    const output = formatSearchResults([
+      buildResult("abcd1234-0000-0000-0000-000000000004", {
+        source: "agent",
+        canonicalKey: "preferences:这段文案简洁直接-先别改",
+        boundary: {
+          layer: "durable",
+          authority: "structured-memory",
+          conflictPolicy: "latest-wins",
+          originalCategory: "preferences",
+        },
+      }),
+      buildResult("abcd1234-0000-0000-0000-000000000005", {
+        source: "agent",
+        canonicalKey: "preferences:文档里写了-uses-bun-over-node-的迁移说明",
+        boundary: {
+          layer: "durable",
+          authority: "structured-memory",
+          conflictPolicy: "latest-wins",
+          originalCategory: "preferences",
+        },
+      }),
+    ], {
+      query: "preferences",
+      profile: "default",
+    });
+
+    expect(output).toContain("key:preferences:这段文案简洁直接-先别改");
+    expect(output).toContain("key:preferences:文档里写了-uses-bun-over-node-的迁移说明");
+    expect(output).not.toContain("slot:reply-style:");
+    expect(output).not.toContain("slot:tool-choice:");
+  });
+
+  it("does not render slot provenance in explain output for plain preferences canonical keys", () => {
+    const output = formatExplainResults([
+      buildResult("abcd1234-0000-0000-0000-000000000006", {
+        source: "agent",
+        canonicalKey: "preferences:这段文案简洁直接-先别改",
+        boundary: {
+          layer: "durable",
+          authority: "structured-memory",
+          conflictPolicy: "latest-wins",
+          originalCategory: "preferences",
+        },
+      }),
+    ], {
+      query: "draft note",
+      profile: "default",
+    });
+
+    expect(output).toContain("key:preferences:这段文案简洁直接-先别改");
+    expect(output).not.toContain("slot:reply-style:");
+    expect(output).not.toContain("slot:tool-choice:");
+  });
 });

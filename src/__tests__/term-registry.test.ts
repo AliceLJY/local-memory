@@ -3,6 +3,7 @@ import { describe, expect, it } from "bun:test";
 import {
   buildTaskHintTerms,
   extractTerms,
+  looksLikeContinuityTask,
   looksLikeRecallOnlyTask,
   taskCueCoverage,
 } from "../term-registry.js";
@@ -16,6 +17,20 @@ describe("term registry", () => {
       "bridge",
       "适配",
     ]);
+  });
+
+  it("can keep later terms when a wider extraction window is requested", () => {
+    expect(
+      extractTerms(
+        "继续 RecallNest continuity helper boundary audit ranking scoring selection orchestration context composer stable query fallback profile forwarding gap runner isolation",
+        24,
+      ),
+    ).toEqual(expect.arrayContaining([
+      "profile",
+      "forwarding",
+      "runner",
+      "isolation",
+    ]));
   });
 
   it("builds task hints for writing prompts across languages", () => {
@@ -43,5 +58,35 @@ describe("term registry", () => {
         "Workflow pattern: Cross-window continuity handoff Tools: resume_context, checkpoint_session, search_memory",
       ),
     ).toEqual(["search_memory", "resume_context", "checkpoint"]);
+  });
+
+  it("treats named RecallNest and memory-layer continues as continuity tasks", () => {
+    expect(looksLikeContinuityTask("回到 RecallNest 继续做")).toBe(true);
+    expect(looksLikeContinuityTask("接着弄 RecallNest 那个 memory layer")).toBe(true);
+    expect(looksLikeContinuityTask("把记忆层这条线先续上")).toBe(true);
+    expect(looksLikeContinuityTask("把之前那套 recall 管线先捡起来")).toBe(true);
+    expect(looksLikeContinuityTask("回到 A2A 继续做")).toBe(false);
+  });
+
+  it("builds RecallNest continuity hints for memory-layer shorthand", () => {
+    expect(buildTaskHintTerms("把刚才那个 memory layer 接回去")).toEqual(expect.arrayContaining([
+      "recallnest",
+      "checkpoint_session",
+      "resume_context",
+      "store_memory",
+    ]));
+  });
+
+  it("builds RecallNest continuity hints for colloquial memory shorthand", () => {
+    expect(buildTaskHintTerms("把那条跨窗口记忆的活接着弄完")).toEqual(expect.arrayContaining([
+      "recallnest",
+      "checkpoint_session",
+      "resume_context",
+    ]));
+    expect(buildTaskHintTerms("把之前那套 recall 管线先捡起来")).toEqual(expect.arrayContaining([
+      "recallnest",
+      "checkpoint_session",
+      "resume_context",
+    ]));
   });
 });
