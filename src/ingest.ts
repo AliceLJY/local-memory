@@ -23,6 +23,11 @@ import {
   parseBrandItemPreference,
   samePreferenceSlot,
 } from "./preference-slots.js";
+import {
+  compressTranscript,
+  DEFAULT_COMPRESSOR_CONFIG,
+  type CompressorConfig,
+} from "./ingest-compressor.js";
 
 // ============================================================================
 // Types
@@ -510,8 +515,11 @@ const MARKDOWN_CHUNK_CONFIG: ChunkerConfig = {
 
 function parseCCTranscript(filePath: string): ConversationTurn[] {
   const turns: ConversationTurn[] = [];
-  const content = readFileSync(filePath, "utf-8");
-  const lines = content.split("\n").filter((l) => l.trim());
+  const rawContent = readFileSync(filePath, "utf-8");
+
+  // Pre-process: compress tool outputs, skip streaming noise
+  const { content: compressed } = compressTranscript(rawContent);
+  const lines = compressed.split("\n").filter((l) => l.trim());
 
   let sessionId = "";
 
