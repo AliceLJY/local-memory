@@ -3,7 +3,15 @@ import { join, resolve } from "node:path";
 
 import type { SessionCheckpointRecord } from "./session-schema.js";
 import { SessionCheckpointRecordSchema } from "./session-schema.js";
-import { normalizeCheckpointScope } from "./session-engine.js";
+import { normalizeCheckpointScope, type CheckpointQuality } from "./session-engine.js";
+
+const FALLBACK_SUMMARY = "Checkpoint captured current task state without repo-state details.";
+
+function classifyCheckpointQuality(record: SessionCheckpointRecord): CheckpointQuality {
+  const isFallback = record.summary === FALLBACK_SUMMARY;
+  const hasContent = record.decisions.length > 0 || record.openLoops.length > 0 || record.nextActions.length > 0;
+  return isFallback && !hasContent ? "minimal" : "rich";
+}
 
 export interface SessionCheckpointQuery {
   sessionId?: string;
@@ -67,7 +75,10 @@ export class SessionCheckpointStore {
   }
 
   async getLatest(query: SessionCheckpointQuery = {}): Promise<SessionCheckpointRecord | null> {
-    const [latest] = await this.listRecent({ ...query, limit: 1 });
-    return latest || null;
+    // Look at recent checkpoints and prefer rich ones over minimal/fallback ones
+    const recent = await this.listRecent({ ...query, limit: 5 });
+    if (recent.length === 0) return null;
+    const rich = recent.find((r) => classifyCheckpointQuality(r) === "rich");
+    return rich || recent[0];
   }
 }

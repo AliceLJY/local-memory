@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { buildSessionCheckpointRecord, buildSessionCheckpointResult, normalizeCheckpointScope, resolveCheckpointScope } from "../session-engine.js";
+import { buildSessionCheckpointRecord, buildSessionCheckpointResult, normalizeCheckpointScope, resolveCheckpointScope, type CheckpointQuality } from "../session-engine.js";
 import { formatCheckpointRecallSummary, formatCheckpointSaved, formatCheckpointSummary, formatResumeContext } from "../session-output.js";
 import { SessionCheckpointStore } from "../session-store.js";
 
@@ -187,6 +187,71 @@ describe("checkpoint scope normalization", () => {
       const latestBare = await store.getLatest({ scope: "recallnest" });
       expect(latestBare).not.toBeNull();
       expect(latestBare!.summary).toBe("Cased scope checkpoint");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("checkpoint quality gate", () => {
+  it("classifies checkpoints with fallback summary and empty fields as minimal", () => {
+    const result = buildSessionCheckpointResult({
+      sessionId: "s-empty",
+      scope: "project:recallnest",
+      summary: "git status shows 5 modified files and 3 untracked files",
+    });
+    // Summary was sanitized to fallback, no decisions/openLoops/nextActions
+    expect(result.quality).toBe("minimal");
+    expect(result.sanitization.changed).toBe(true);
+  });
+
+  it("classifies checkpoints with real content as rich", () => {
+    const result = buildSessionCheckpointResult({
+      sessionId: "s-rich",
+      scope: "project:recallnest",
+      summary: "Completed scope normalization and checkpoint quality gate.",
+      decisions: ["Normalize scope at save and query time"],
+    });
+    expect(result.quality).toBe("rich");
+  });
+
+  it("classifies checkpoints with fallback summary but structured fields as rich", () => {
+    const result = buildSessionCheckpointResult({
+      sessionId: "s-mixed",
+      scope: "project:recallnest",
+      summary: "git status shows dirty worktree",
+      decisions: ["Keep using bun for builds"],
+    });
+    // Summary sanitized to fallback but decisions non-empty → still rich
+    expect(result.quality).toBe("rich");
+  });
+
+  it("prefers rich checkpoints over minimal ones in getLatest", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "recallnest-quality-gate-"));
+    try {
+      const store = new SessionCheckpointStore(dir);
+
+      // Save a rich checkpoint first (older)
+      await store.save(buildSessionCheckpointRecord({
+        sessionId: "s-rich",
+        scope: "project:recallnest",
+        summary: "Good checkpoint with real content.",
+        decisions: ["Keep checkpoints clean"],
+        updatedAt: "2026-03-22T01:00:00.000Z",
+      }));
+
+      // Save a minimal checkpoint later (newer) — all-sanitized fallback
+      await store.save(buildSessionCheckpointRecord({
+        sessionId: "s-minimal",
+        scope: "project:recallnest",
+        summary: "Checkpoint captured current task state without repo-state details.",
+        updatedAt: "2026-03-22T02:00:00.000Z",
+      }));
+
+      const latest = await store.getLatest({ scope: "project:recallnest" });
+      expect(latest).not.toBeNull();
+      // Should return the rich one even though it's older
+      expect(latest!.summary).toBe("Good checkpoint with real content.");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

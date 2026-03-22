@@ -28,9 +28,12 @@ export interface SessionCheckpointSanitizationReport {
   changedFields: CheckpointSanitizableField[];
 }
 
+export type CheckpointQuality = "rich" | "minimal";
+
 export interface SessionCheckpointBuildResult {
   record: SessionCheckpointRecord;
   sanitization: SessionCheckpointSanitizationReport;
+  quality: CheckpointQuality;
 }
 
 function hasRepoStateText(text: string): boolean {
@@ -136,16 +139,27 @@ export function buildSessionCheckpointResult(rawInput: unknown): SessionCheckpoi
     }
   });
 
+  const record = SessionCheckpointRecordSchema.parse({
+    ...sanitizedInput,
+    checkpointId: randomUUID(),
+    resolvedScope: resolveCheckpointScope(sanitizedInput),
+  });
+
+  const FALLBACK_SUMMARY = "Checkpoint captured current task state without repo-state details.";
+  const isFallbackSummary = record.summary === FALLBACK_SUMMARY;
+  const hasStructuredContent =
+    record.decisions.length > 0 ||
+    record.openLoops.length > 0 ||
+    record.nextActions.length > 0;
+  const quality: CheckpointQuality = isFallbackSummary && !hasStructuredContent ? "minimal" : "rich";
+
   return {
-    record: SessionCheckpointRecordSchema.parse({
-      ...sanitizedInput,
-      checkpointId: randomUUID(),
-      resolvedScope: resolveCheckpointScope(sanitizedInput),
-    }),
+    record,
     sanitization: {
       changed: changedFields.length > 0,
       changedFields,
     },
+    quality,
   };
 }
 
