@@ -4611,6 +4611,69 @@ describe("composeResumeContext", () => {
     expect(response.relevantPatterns.join("\n")).toContain("resume_context");
   });
 
+  it("treats 跨终端记忆/记忆功能 shorthand as associative RecallNest cue", async () => {
+    const calls: RetrievalContext[] = [];
+    const retriever = {
+      async retrieve(context: RetrievalContext): Promise<RetrievalResult[]> {
+        calls.push(context);
+        if (context.category === "entities" && context.query.includes("checkpoint_session")) {
+          return [
+            buildResult(
+              "entity-cross-terminal-primitives",
+              "entities",
+              "RecallNest continuity revolves around three primitives: store_memory, checkpoint_session, and resume_context.",
+            ),
+          ];
+        }
+        return [];
+      },
+    };
+
+    const response = await composeResumeContext({
+      retriever,
+      checkpointStore: { async getLatest() { return null; } },
+      listPins: () => [],
+    }, {
+      task: "继续那个跨终端记忆",
+      includeLatestCheckpoint: false,
+      limitPerSection: 2,
+    });
+
+    const stableJoined = response.stableContext.join(" ");
+    expect(stableJoined).toContain("RecallNest");
+    expect(response.relevantPatterns.join(" ")).toContain("resume_context");
+  });
+
+  it("treats 记忆功能 with 上次 as continuity prompt", async () => {
+    const retriever = {
+      async retrieve(context: RetrievalContext): Promise<RetrievalResult[]> {
+        if (context.category === "entities" && context.query.includes("checkpoint_session")) {
+          return [
+            buildResult(
+              "entity-memory-function-primitives",
+              "entities",
+              "RecallNest continuity revolves around three primitives: store_memory, checkpoint_session, and resume_context.",
+            ),
+          ];
+        }
+        return [];
+      },
+    };
+
+    const response = await composeResumeContext({
+      retriever,
+      checkpointStore: { async getLatest() { return null; } },
+      listPins: () => [],
+    }, {
+      task: "上次做的那个记忆功能",
+      includeLatestCheckpoint: false,
+      limitPerSection: 2,
+    });
+
+    const stableJoined = response.stableContext.join(" ");
+    expect(stableJoined).toContain("RecallNest");
+  });
+
   it("treats 记忆项目 shorthand as a continuity prompt with RecallNest hints", async () => {
     const calls: RetrievalContext[] = [];
     const retriever = {

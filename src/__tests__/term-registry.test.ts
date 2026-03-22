@@ -101,4 +101,18 @@ describe("term registry", () => {
       "recallnest",
     ]));
   });
+
+  it("treats 跨终端记忆/记忆功能/记忆服务 shorthand as continuity cue", () => {
+    // "还搞吗" is a status question, not a continuation verb — correct to return false
+    expect(looksLikeContinuityTask("那个跨终端记忆还搞吗")).toBe(false);
+    expect(looksLikeContinuityTask("继续那个跨终端记忆")).toBe(true);
+    expect(looksLikeContinuityTask("上次做的那个记忆功能")).toBe(true);
+    expect(looksLikeContinuityTask("之前那个 MCP 记忆服务")).toBe(true);
+    expect(buildTaskHintTerms("那个跨终端记忆还搞吗")).toEqual(expect.arrayContaining([
+      "recallnest",
+    ]));
+    expect(buildTaskHintTerms("上次做的记忆功能")).toEqual(expect.arrayContaining([
+      "recallnest",
+    ]));
+  });
 });
