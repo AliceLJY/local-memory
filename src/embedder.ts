@@ -14,6 +14,7 @@ import { smartChunk } from "./chunker.js";
 import { logInfo, logWarn } from "./stderr-log.js";
 
 const EMBEDDING_RETRY_DELAYS_MS = [200, 500];
+const EMBEDDING_MAX_CONCURRENCY = 4;
 
 // ============================================================================
 // Embedding Cache (LRU with TTL)
@@ -178,6 +179,9 @@ export class Embedder {
   private client: OpenAI;
   public readonly dimensions: number;
   private readonly _cache: EmbeddingCache;
+  private readonly _maxConcurrentRequests = EMBEDDING_MAX_CONCURRENCY;
+  private _activeRequests = 0;
+  private readonly _pendingRequests: Array<() => void> = [];
 
   private readonly _model: string;
   private readonly _taskQuery?: string;
@@ -285,12 +289,31 @@ export class Embedder {
     return payload;
   }
 
+  private async withEmbeddingSlot<T>(fn: () => Promise<T>): Promise<T> {
+    if (this._activeRequests >= this._maxConcurrentRequests) {
+      await new Promise<void>((resolve) => {
+        this._pendingRequests.push(resolve);
+      });
+    }
+
+    this._activeRequests += 1;
+    try {
+      return await fn();
+    } finally {
+      this._activeRequests = Math.max(0, this._activeRequests - 1);
+      const next = this._pendingRequests.shift();
+      next?.();
+    }
+  }
+
   private async createEmbedding(input: string | string[], task?: string) {
     let attempt = 0;
 
     while (true) {
       try {
-        return await this.client.embeddings.create(this.buildPayload(input, task) as any);
+        return await this.withEmbeddingSlot(() =>
+          this.client.embeddings.create(this.buildPayload(input, task) as any)
+        );
       } catch (error) {
         if (!isTransientEmbeddingError(error) || attempt >= EMBEDDING_RETRY_DELAYS_MS.length) {
           throw error;

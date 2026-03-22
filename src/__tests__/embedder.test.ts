@@ -84,4 +84,39 @@ describe("Embedder transient retry", () => {
     await expect(embedder.embedPassage("hello")).rejects.toThrow("Failed to generate embedding: Authentication failed");
     expect(calls).toBe(1);
   });
+
+  it("limits concurrent embedding requests", async () => {
+    const embedder = new Embedder({
+      provider: "openai-compatible",
+      apiKey: "test-key",
+      model: "text-embedding-3-small",
+      dimensions: 3,
+    });
+
+    (embedder as any)._maxConcurrentRequests = 1;
+
+    let inFlight = 0;
+    let maxInFlight = 0;
+    (embedder as any).client = {
+      embeddings: {
+        create: async () => {
+          inFlight += 1;
+          maxInFlight = Math.max(maxInFlight, inFlight);
+          await new Promise((resolve) => setTimeout(resolve, 20));
+          inFlight -= 1;
+          return {
+            data: [{ embedding: [1, 2, 3] }],
+          };
+        },
+      },
+    };
+
+    await Promise.all([
+      embedder.embedPassage("first"),
+      embedder.embedPassage("second"),
+      embedder.embedPassage("third"),
+    ]);
+
+    expect(maxInFlight).toBe(1);
+  });
 });
