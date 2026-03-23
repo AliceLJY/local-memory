@@ -140,12 +140,21 @@ async function runRetrievalView(
     json?: boolean;
     profile?: string;
     explain?: boolean;
+    trace?: boolean;
   },
 ) {
   const config = loadConfig();
   const { retriever, profile } = createComponents(config, options.profile);
 
   const limit = parseLimitOption(options.limit, 5, 1, 20);
+
+  // Build trace collector when --trace is set
+  let trace: import("./retrieval-trace.js").TraceCollector | undefined;
+  if (options.trace) {
+    const { TraceCollector } = await import("./retrieval-trace.js");
+    trace = new TraceCollector();
+  }
+
   const results = await retriever.retrieve(buildRetrievalContext({
     query,
     limit,
@@ -153,6 +162,7 @@ async function runRetrievalView(
     sessionId: options.sessionId,
     allScopes: Boolean(options.allScopes),
     source: "cli",
+    trace,
   }, {
     operation: `cli:${view}`,
   }));
@@ -176,6 +186,13 @@ async function runRetrievalView(
       ),
     );
     return;
+  }
+
+  // Print trace summary before results when --trace is set
+  if (trace) {
+    const mode = retriever.getConfig().mode === "vector" ? "vector" as const : "hybrid" as const;
+    console.log(trace.summarize(query, mode));
+    console.log(""); // blank separator
   }
 
   const context = { query, profile: profile.name };
@@ -417,6 +434,7 @@ program
   .option("--all-scopes", "显式允许跨 scope 搜索")
   .option("-p, --profile <profile>", "检索画像：default / writing / debug / fact-check", "default")
   .option("--explain", "显示命中原因与检索路径")
+  .option("--trace", "显示检索管道各阶段 trace（调试用）")
   .option("--json", "JSON 格式输出")
   .action(async (query: string, options) => {
     await runRetrievalView(options.explain ? "explain" : "search", query, options);
@@ -1281,7 +1299,7 @@ program
 program
   .command("ingest")
   .description("导入对话记录到索引")
-  .option("-s, --source <source>", "数据源: cc / codex / memory / all", "all")
+  .option("-s, --source <source>", "数据源: cc / codex / memory / desktop / all", "all")
   .option("-l, --limit <n>", "限制处理文件数（调试用）")
   .option("-v, --verbose", "详细输出")
   .option("--no-dedup", "跳过向量去重")
@@ -1370,6 +1388,23 @@ program
       });
       results.push(r);
       console.log(`  ✅ Gemini: ${formatIngestSummary(r)}`);
+    }
+
+    // Claude Desktop / claude.ai web conversations (CC transcript format)
+    if (source === "all" || source === "desktop") {
+      const desktopSource = config.sources.desktop;
+      if (desktopSource) {
+        const desktopPath = resolve(import.meta.dir, "..", desktopSource.path);
+        if (existsSync(desktopPath)) {
+          console.log("🖥️  导入 Claude Desktop 对话...");
+          const r = await ingestCCTranscripts(store, embedder, desktopPath, ingestOpts);
+          results.push(r);
+          console.log(`  ✅ Desktop: ${formatIngestSummary(r)}`);
+          maybeWarnHighCCDedupRate(r);
+        } else if (source === "desktop") {
+          console.log("⚠️  Desktop 目录不存在，请先运行: bun scripts/pull-claude-desktop.ts");
+        }
+      }
     }
 
     // Memory markdown files

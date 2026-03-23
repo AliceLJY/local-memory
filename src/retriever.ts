@@ -12,6 +12,7 @@ import type { AccessTracker } from "./access-tracker.js";
 import { weibullDecay, resolveTier } from "./decay-engine.js";
 import { logWarn } from "./stderr-log.js";
 import { extractBoundaryMetadata, isDurableMemoryScope, isTranscriptScope } from "./memory-boundaries.js";
+import type { TraceCollector } from "./retrieval-trace.js";
 
 // ============================================================================
 // Types & Configuration
@@ -78,6 +79,8 @@ export interface RetrievalContext {
   source?: "manual" | "auto-recall" | "cli";
   /** When false (default), archived records are excluded from results. */
   includeArchived?: boolean;
+  /** Optional trace collector for per-stage pipeline observability. */
+  trace?: TraceCollector;
 }
 
 export interface RetrievalResult extends MemorySearchResult {
@@ -309,7 +312,7 @@ export class MemoryRetriever {
   }
 
   async retrieve(context: RetrievalContext): Promise<RetrievalResult[]> {
-    const { query, limit, scopeFilter, category, includeArchived } = context;
+    const { query, limit, scopeFilter, category, includeArchived, trace } = context;
     const safeLimit = clampInt(limit, 1, 20);
 
     // Adaptive retrieval: skip trivial queries to save embedding API calls
@@ -321,10 +324,10 @@ export class MemoryRetriever {
 
     // For vector-only mode, use legacy behavior
     if (this.config.mode === "vector" || !this.store.hasFtsSupport) {
-      results = await this.vectorOnlyRetrieval(query, safeLimit, scopeFilter, category, includeArchived);
+      results = await this.vectorOnlyRetrieval(query, safeLimit, scopeFilter, category, includeArchived, trace);
     } else {
       // Hybrid retrieval with vector + BM25 + RRF fusion
-      results = await this.hybridRetrieval(query, safeLimit, scopeFilter, category, includeArchived);
+      results = await this.hybridRetrieval(query, safeLimit, scopeFilter, category, includeArchived, trace);
     }
 
     // Record access for returned results (async, non-blocking).
@@ -342,9 +345,12 @@ export class MemoryRetriever {
     scopeFilter?: string[],
     category?: string,
     includeArchived?: boolean,
+    trace?: TraceCollector,
   ): Promise<RetrievalResult[]> {
+    trace?.startStage("vector_search", 0);
     const queryVector = await this.embedder.embedQuery(query);
     const results = await this.store.vectorSearch(queryVector, limit, this.config.minScore, scopeFilter);
+    trace?.endStage(results.length, results.map(r => r.score));
 
     // Filter by category if specified
     const afterCategory = category
@@ -363,21 +369,50 @@ export class MemoryRetriever {
       },
     } as RetrievalResult));
 
+    trace?.startStage("recency_boost", mapped.length);
     const boosted = this.applyRecencyBoost(mapped);
+    trace?.endStage(boosted.length, boosted.map(r => r.score));
+
+    trace?.startStage("importance_weight", boosted.length);
     const weighted = this.applyImportanceWeight(boosted);
+    trace?.endStage(weighted.length, weighted.map(r => r.score));
+
+    trace?.startStage("boundary_weight", weighted.length);
     const boundaryWeighted = this.applyBoundaryWeight(weighted);
+    trace?.endStage(boundaryWeighted.length, boundaryWeighted.map(r => r.score));
+
+    trace?.startStage("asset_type_weight", boundaryWeighted.length);
     const assetWeighted = this.applyAssetTypeWeight(boundaryWeighted);
+    trace?.endStage(assetWeighted.length, assetWeighted.map(r => r.score));
+
+    trace?.startStage("length_norm", assetWeighted.length);
     const lengthNormalized = this.applyLengthNormalization(assetWeighted);
+    trace?.endStage(lengthNormalized.length, lengthNormalized.map(r => r.score));
+
+    trace?.startStage("time_decay", lengthNormalized.length);
     const timeDecayed = this.applyTimeDecay(lengthNormalized);
+    trace?.endStage(timeDecayed.length, timeDecayed.map(r => r.score));
+
+    trace?.startStage("hard_min_score", timeDecayed.length);
     const hardFiltered = timeDecayed.filter(r => r.score >= this.config.hardMinScore);
+    trace?.endStage(hardFiltered.length, hardFiltered.map(r => r.score));
+
+    trace?.startStage("noise_filter", hardFiltered.length);
     const denoised = this.config.filterNoise
       ? filterNoise(hardFiltered, r => r.entry.text)
       : hardFiltered;
+    trace?.endStage(denoised.length, denoised.map(r => r.score));
 
     // MMR deduplication: avoid top-k filled with near-identical memories
+    trace?.startStage("mmr_diversity", denoised.length);
     const deduplicated = this.applyMMRDiversity(denoised);
+    trace?.endStage(deduplicated.length, deduplicated.map(r => r.score));
 
-    return deduplicated.slice(0, limit);
+    trace?.startStage("final_limit", deduplicated.length);
+    const final = deduplicated.slice(0, limit);
+    trace?.endStage(final.length, final.map(r => r.score));
+
+    return final;
   }
 
   private async hybridRetrieval(
@@ -386,6 +421,7 @@ export class MemoryRetriever {
     scopeFilter?: string[],
     category?: string,
     includeArchived?: boolean,
+    trace?: TraceCollector,
   ): Promise<RetrievalResult[]> {
     const candidatePoolSize = Math.max(this.config.candidatePoolSize, limit * 2);
 
@@ -393,54 +429,85 @@ export class MemoryRetriever {
     const queryVector = await this.embedder.embedQuery(query);
 
     // Run vector and BM25 searches in parallel
+    trace?.startStage("vector_search", 0);
     const [vectorResults, bm25Results] = await Promise.all([
       this.runVectorSearch(queryVector, candidatePoolSize, scopeFilter, category, includeArchived),
       this.runBM25Search(expandQuery(query), candidatePoolSize, scopeFilter, category, includeArchived),
     ]);
+    trace?.endStage(vectorResults.length, vectorResults.map(r => r.score));
+
+    trace?.startStage("bm25_search", 0);
+    trace?.endStage(bm25Results.length, bm25Results.map(r => r.score));
 
     // Fuse results using RRF (async: validates BM25-only entries exist in store)
+    trace?.startStage("rrf_fusion", vectorResults.length + bm25Results.length);
     const fusedResults = await this.fuseResults(vectorResults, bm25Results);
+    trace?.endStage(fusedResults.length, fusedResults.map(r => r.score));
 
     // Apply minimum score threshold
+    trace?.startStage("min_score_filter", fusedResults.length);
     const filtered = fusedResults.filter(r => r.score >= this.config.minScore);
+    trace?.endStage(filtered.length, filtered.map(r => r.score));
 
     // Rerank if enabled
+    trace?.startStage("rerank", filtered.length);
     const reranked = this.config.rerank !== "none"
       ? await this.rerankResults(query, queryVector, filtered.slice(0, limit * 2))
       : filtered;
+    trace?.endStage(reranked.length, reranked.map(r => r.score));
 
     // Apply temporal re-ranking (recency boost)
+    trace?.startStage("recency_boost", reranked.length);
     const temporalReranked = this.applyRecencyBoost(reranked);
+    trace?.endStage(temporalReranked.length, temporalReranked.map(r => r.score));
 
     // Apply importance weighting
+    trace?.startStage("importance_weight", temporalReranked.length);
     const importanceWeighted = this.applyImportanceWeight(temporalReranked);
+    trace?.endStage(importanceWeighted.length, importanceWeighted.map(r => r.score));
 
     // Prefer higher-authority durable memories over raw evidence when scores are close.
+    trace?.startStage("boundary_weight", importanceWeighted.length);
     const boundaryWeighted = this.applyBoundaryWeight(importanceWeighted);
+    trace?.endStage(boundaryWeighted.length, boundaryWeighted.map(r => r.score));
 
     // Separate pinned assets from synthesized briefs.
-    // Pins should be slightly easier to recall; briefs should stay useful
-    // without overpowering raw evidence or explicit pins.
+    trace?.startStage("asset_type_weight", boundaryWeighted.length);
     const assetWeighted = this.applyAssetTypeWeight(boundaryWeighted);
+    trace?.endStage(assetWeighted.length, assetWeighted.map(r => r.score));
 
     // Apply length normalization (penalize long entries dominating via keyword density)
+    trace?.startStage("length_norm", assetWeighted.length);
     const lengthNormalized = this.applyLengthNormalization(assetWeighted);
+    trace?.endStage(lengthNormalized.length, lengthNormalized.map(r => r.score));
 
     // Apply time decay (penalize stale entries)
+    trace?.startStage("time_decay", lengthNormalized.length);
     const timeDecayed = this.applyTimeDecay(lengthNormalized);
+    trace?.endStage(timeDecayed.length, timeDecayed.map(r => r.score));
 
     // Hard minimum score cutoff (post all scoring stages)
+    trace?.startStage("hard_min_score", timeDecayed.length);
     const hardFiltered = timeDecayed.filter(r => r.score >= this.config.hardMinScore);
+    trace?.endStage(hardFiltered.length, hardFiltered.map(r => r.score));
 
     // Filter noise
+    trace?.startStage("noise_filter", hardFiltered.length);
     const denoised = this.config.filterNoise
       ? filterNoise(hardFiltered, r => r.entry.text)
       : hardFiltered;
+    trace?.endStage(denoised.length, denoised.map(r => r.score));
 
     // MMR deduplication: avoid top-k filled with near-identical memories
+    trace?.startStage("mmr_diversity", denoised.length);
     const deduplicated = this.applyMMRDiversity(denoised);
+    trace?.endStage(deduplicated.length, deduplicated.map(r => r.score));
 
-    return deduplicated.slice(0, limit);
+    trace?.startStage("final_limit", deduplicated.length);
+    const final = deduplicated.slice(0, limit);
+    trace?.endStage(final.length, final.map(r => r.score));
+
+    return final;
   }
 
   private async runVectorSearch(

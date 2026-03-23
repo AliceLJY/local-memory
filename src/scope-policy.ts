@@ -134,6 +134,8 @@ export function buildRetrievalContext(
     limit: base.limit,
     category: base.category,
     source: base.source,
+    includeArchived: base.includeArchived,
+    trace: base.trace,
     scopeFilter: selection.scopeFilter,
   };
 }
