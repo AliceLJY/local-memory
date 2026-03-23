@@ -352,6 +352,59 @@ async function smartExtractBatch(
   }
 }
 
+/**
+ * Batch-internal cosine dedup: after extraction + embedding, remove candidates
+ * whose vectors are too similar (>threshold) to a higher-importance candidate
+ * in the same batch. This saves downstream per-entry LLM dedup calls.
+ *
+ * Returns indices of entries to KEEP (in original order).
+ */
+export function batchInternalDedup(
+  vectors: number[][],
+  importances: number[],
+  threshold = 0.85,
+): number[] {
+  if (vectors.length <= 1) return vectors.map((_, i) => i);
+
+  // Build index pairs sorted by importance descending (break ties by order)
+  const order = vectors.map((_, i) => i)
+    .sort((a, b) => (importances[b] ?? 0.5) - (importances[a] ?? 0.5) || a - b);
+
+  const kept = new Set<number>();
+  const keptVectors: number[][] = [];
+
+  for (const idx of order) {
+    const vec = vectors[idx];
+    let tooSimilar = false;
+
+    for (const kv of keptVectors) {
+      if (cosine(vec, kv) > threshold) {
+        tooSimilar = true;
+        break;
+      }
+    }
+
+    if (!tooSimilar) {
+      kept.add(idx);
+      keptVectors.push(vec);
+    }
+  }
+
+  // Return in original order
+  return vectors.map((_, i) => i).filter(i => kept.has(i));
+}
+
+function cosine(a: number[], b: number[]): number {
+  let dot = 0, na = 0, nb = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    na += a[i] * a[i];
+    nb += b[i] * b[i];
+  }
+  const norm = Math.sqrt(na) * Math.sqrt(nb);
+  return norm === 0 ? 0 : dot / norm;
+}
+
 // ─── Pending extraction queue (for when LLM is unavailable) ─────────────────
 
 const PENDING_EXTRACTION_FILE = resolve(
@@ -389,7 +442,14 @@ export async function drainPendingQueue(
     const extractions = await smartExtractBatch(texts, llm);
     const embeddingTexts = extractions.map(e => e.l1 || e.l0);
     const vectors = await embedder.embedBatchPassage(embeddingTexts);
-    for (let j = 0; j < extractions.length; j++) {
+
+    // Batch-internal dedup: drop near-duplicate candidates before storing
+    const keepIndices = batchInternalDedup(
+      vectors,
+      extractions.map(e => e.importance),
+    );
+
+    for (const j of keepIndices) {
       try {
         await store.store({
           text: extractions[j].l1 || extractions[j].l0,
