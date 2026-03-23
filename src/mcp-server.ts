@@ -72,7 +72,7 @@ import type { MemoryStore } from "./store.js";
 import { distillResults, formatExplainResults, formatSearchResults, selectBriefSeedResults, summarizeResults } from "./memory-output.js";
 import { archiveDirtyBriefAsset, assetSummaryLine, buildBriefAsset, buildPinAsset, listDirtyBriefAssets, listMemoryAssets, listPinAssets, saveBriefAsset, savePinAsset, writeExportArtifact } from "./memory-assets.js";
 import { indexAsset, indexPinnedAsset } from "./asset-sync.js";
-import { createComponentResolver, loadConfig, loadDotEnv } from "./runtime-config.js";
+import { createComponentResolver, loadConfig, loadDotEnv, resolveRecallMode } from "./runtime-config.js";
 import { DurableMemoryCategorySchema, StoreMemorySourceSchema } from "./memory-schema.js";
 import { persistCaseMemory, persistMemory, persistWorkflowPattern, promoteMemory } from "./capture-engine.js";
 import { buildSessionCheckpointResult } from "./session-engine.js";
@@ -613,8 +613,54 @@ registerTool(
     limitPerSection: z.number().int().min(1).max(6).default(3).describe("Max items per section"),
     includeLatestCheckpoint: z.boolean().default(true).describe("Whether to include the latest checkpoint summary"),
     profile: z.enum(["default", "writing", "debug", "fact-check"]).optional().describe("Retrieval profile"),
+    mode: z.enum(["full", "summary", "off"]).optional().describe("Override recall mode (default: from config.recallMode)"),
   },
-  async ({ task, scope, sessionId, limitPerSection, includeLatestCheckpoint, profile: profileName }) => {
+  async ({ task, scope, sessionId, limitPerSection, includeLatestCheckpoint, profile: profileName, mode: modeOverride }) => {
+    const effectiveMode = resolveRecallMode(config, modeOverride);
+
+    // --- off mode: no recall, guide agent to use search_memory ---
+    if (effectiveMode === "off") {
+      return {
+        content: [{
+          type: "text" as const,
+          text: "Recall mode is off. Use search_memory to retrieve specific memories on demand.",
+        }],
+      };
+    }
+
+    // --- summary mode: checkpoint only, lightweight ---
+    if (effectiveMode === "summary") {
+      const scopeSelection = resolveScopeSelection({
+        scope,
+        sessionId,
+        operation: "resume_context",
+        allowUnscoped: true,
+      });
+      const latest = await checkpointStore.getLatest({
+        sessionId,
+        scope: scopeSelection.resolvedScope,
+      });
+      const summaryText = formatCheckpointSummary(latest) +
+        "\n\nFor detailed recall, use search_memory with specific queries.";
+      await saveManagedObservation({
+        workflowId: "resume_context",
+        outcome: "success",
+        summary: `Managed resume_context returned summary-mode checkpoint${latest ? "" : " (none found)"}.`,
+        scope: scopeSelection.resolvedScope || scope || "global",
+        source: "managed:recallnest",
+        signal: "managed-resume-summary",
+        task,
+        tags: ["managed", "recallnest", "summary-mode"],
+      });
+      return {
+        content: [{
+          type: "text" as const,
+          text: summaryText,
+        }],
+      };
+    }
+
+    // --- full mode: existing compose behavior ---
     const { retriever, profile } = getComponents(profileName);
     const scopeSelection = resolveScopeSelection({
       scope,

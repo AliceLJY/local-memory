@@ -10,8 +10,11 @@ import { AccessTracker } from "./access-tracker.js";
 import { createLLMClient, type LLMClient, type LLMConfig } from "./llm-client.js";
 import { logInfo } from "./stderr-log.js";
 
+export type RecallMode = "full" | "summary" | "off";
+
 export interface LocalMemoryConfig {
   dbPath: string;
+  recallMode?: RecallMode;
   embedding: {
     provider: string;
     apiKey: string;
@@ -142,4 +145,20 @@ export function createComponentResolver(config: LocalMemoryConfig) {
     cache.set(key, created);
     return created;
   };
+}
+
+const VALID_RECALL_MODES: RecallMode[] = ["full", "summary", "off"];
+
+/**
+ * Resolve effective recall mode: per-call override > env var > config > default ("summary").
+ */
+export function resolveRecallMode(config: LocalMemoryConfig, perCallOverride?: string): RecallMode {
+  if (perCallOverride && VALID_RECALL_MODES.includes(perCallOverride as RecallMode)) {
+    return perCallOverride as RecallMode;
+  }
+  const envMode = process.env.RECALLNEST_RECALL_MODE;
+  if (envMode && VALID_RECALL_MODES.includes(envMode as RecallMode)) {
+    return envMode as RecallMode;
+  }
+  return config.recallMode ?? "summary";
 }
