@@ -82,9 +82,10 @@ function sortEscalationItems(items: ConflictEscalationResultItem[]): ConflictEsc
 export async function escalateConflicts(
   deps: EscalateConflictsDeps,
   rawInput: unknown,
+  { now: nowOverride }: { now?: Date } = {},
 ): Promise<EscalateConflictsResult> {
   const input = EscalateConflictsInputSchema.parse(rawInput);
-  const now = new Date();
+  const now = nowOverride ?? new Date();
   const records = await deps.conflictStore.listRecent({
     status: "open",
     canonicalKey: input.canonicalKey,

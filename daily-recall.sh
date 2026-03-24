@@ -50,11 +50,11 @@ echo "  今日主题 (#$((IDX+1))): $TODAY_QUERY" | tee -a "$LOG_FILE"
 
 # ── 用 lm distill 提取结构化洞察 ──────────────────────────────
 echo "  执行 distill..." | tee -a "$LOG_FILE"
-DISTILL_OUTPUT=$("$LM" distill "$TODAY_QUERY" --profile writing --limit 8 2>&1 || true)
+DISTILL_OUTPUT=$("$LM" distill "$TODAY_QUERY" --profile writing --limit 8 --all-scopes 2>&1 || true)
 
 if [ -z "$DISTILL_OUTPUT" ]; then
   echo "  [警告] distill 无输出，尝试 export..." | tee -a "$LOG_FILE"
-  DISTILL_OUTPUT=$("$LM" export "$TODAY_QUERY" --profile writing --limit 5 --format md 2>&1 || true)
+  DISTILL_OUTPUT=$("$LM" export "$TODAY_QUERY" --profile writing --limit 5 --format md --all-scopes 2>&1 || true)
 fi
 
 if [ -z "$DISTILL_OUTPUT" ]; then

@@ -84,7 +84,7 @@ describe("escalateConflicts", () => {
       limit: 100,
       top: 10,
       apply: false,
-    });
+    }, { now: new Date("2026-03-17T00:00:00.000Z") });
 
     expect(result.apply).toBe(false);
     expect(result.eligible).toBe(1);
