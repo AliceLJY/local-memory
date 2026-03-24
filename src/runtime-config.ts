@@ -31,6 +31,14 @@ export interface LocalMemoryConfig {
   };
   sources: Record<string, { path: string; glob: string; description: string }>;
   retrieval?: Partial<RetrievalConfig>;
+  /**
+   * Default depth for auto-recall injection.
+   * - "full": inject complete text (default, backward compatible)
+   * - "l1": inject L1 overview from metadata (~500 tokens)
+   * - "l0": inject L0 abstract from metadata (~100 tokens)
+   * Agent can use memory_drill_down tool to get deeper content on demand.
+   */
+  recallDepthDefault?: "l0" | "l1" | "full";
 }
 
 export function loadDotEnv(): void {

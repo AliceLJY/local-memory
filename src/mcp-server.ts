@@ -43,6 +43,7 @@ const TOOL_TIERS: Record<string, ToolTier> = {
   list_assets: "advanced",
   list_pins: "advanced",
   memory_stats: "advanced",
+  memory_drill_down: "advanced",
   export_memory: "advanced",
 
   // Governance (CLI-only, not in MCP by default)
@@ -1050,6 +1051,64 @@ registerTool(
       content: [{ type: "text" as const, text: lines.join("\n") }],
     };
   }
+);
+
+// ============================================================================
+// Memory Drill-Down Tool
+// ============================================================================
+
+registerTool(
+  "memory_drill_down",
+  "Get deeper content for a memory entry. Use after seeing compact summaries to get the full text or structured overview.",
+  {
+    id: z.string().describe("Memory ID or prefix (at least 8 hex chars)"),
+    level: z.enum(["overview", "full"]).optional().default("full")
+      .describe("Content depth: 'overview' (L1) or 'full' (L2, default)"),
+  },
+  async ({ id, level }) => {
+    try {
+      const entry = await store.getById(id);
+      if (!entry) {
+        return {
+          content: [{ type: "text" as const, text: `No memory found with ID: ${id}` }],
+        };
+      }
+
+      // Parse metadata for L0/L1/L2 content
+      let meta: Record<string, unknown> = {};
+      try {
+        meta = JSON.parse(entry.metadata || "{}");
+      } catch { /* malformed metadata, use raw text */ }
+
+      const l0 = typeof meta.l0_abstract === "string" ? meta.l0_abstract : null;
+      const l1 = typeof meta.l1_overview === "string" ? meta.l1_overview : null;
+      const l2 = typeof meta.l2_content === "string" ? meta.l2_content : entry.text;
+
+      let content: string;
+      if (level === "overview" && l1) {
+        content = `## ${entry.category} (L1 Overview)\n\n${l1}`;
+      } else {
+        content = `## ${entry.category} (Full Content)\n\n${l2}`;
+      }
+
+      const header = [
+        `**ID**: ${entry.id}`,
+        `**Category**: ${entry.category}`,
+        `**Scope**: ${entry.scope}`,
+        `**Importance**: ${entry.importance}`,
+        `**Created**: ${new Date(entry.timestamp).toISOString()}`,
+        l0 ? `**Abstract**: ${l0}` : null,
+      ].filter(Boolean).join("\n");
+
+      return {
+        content: [{ type: "text" as const, text: `${header}\n\n${content}` }],
+      };
+    } catch (err) {
+      return {
+        content: [{ type: "text" as const, text: `Error drilling down: ${String(err)}` }],
+      };
+    }
+  },
 );
 
 // ============================================================================

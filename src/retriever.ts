@@ -8,7 +8,7 @@ import type { Embedder } from "./embedder.js";
 import { filterNoise } from "./noise-filter.js";
 import { shouldSkipRetrieval } from "./adaptive-retrieval.js";
 import { expandQuery } from "./query-expander.js";
-import type { AccessTracker } from "./access-tracker.js";
+import { type AccessTracker, computeHotnessScore, parseAccessMetadata } from "./access-tracker.js";
 import { weibullDecay, resolveTier } from "./decay-engine.js";
 import { logWarn } from "./stderr-log.js";
 import { extractBoundaryMetadata, isDurableMemoryScope, isTranscriptScope } from "./memory-boundaries.js";
@@ -66,6 +66,12 @@ export interface RetrievalConfig {
    * Set 0 to disable. (default: 60)
    */
   timeDecayHalfLifeDays: number;
+  /**
+   * Hotness blend weight. Blends access-frequency hotness into final score.
+   * Formula: final = score * (1-alpha) + hotness * alpha.
+   * 0 = disabled (default), 0.15 = recommended.
+   */
+  hotnessWeight: number;
 }
 
 export interface RetrievalContext {
@@ -111,6 +117,7 @@ export const DEFAULT_RETRIEVAL_CONFIG: RetrievalConfig = {
   lengthNormAnchor: 500,
   hardMinScore: 0.35,
   timeDecayHalfLifeDays: 60,
+  hotnessWeight: 0,
 };
 
 // ============================================================================
@@ -393,8 +400,13 @@ export class MemoryRetriever {
     const timeDecayed = this.applyTimeDecay(lengthNormalized);
     trace?.endStage(timeDecayed.length, timeDecayed.map(r => r.score));
 
-    trace?.startStage("hard_min_score", timeDecayed.length);
-    const hardFiltered = timeDecayed.filter(r => r.score >= this.config.hardMinScore);
+    // Hotness blend: boost frequently + recently accessed memories
+    trace?.startStage("hotness_blend", timeDecayed.length);
+    const hotnessBlended = this.applyHotnessBlend(timeDecayed);
+    trace?.endStage(hotnessBlended.length, hotnessBlended.map(r => r.score));
+
+    trace?.startStage("hard_min_score", hotnessBlended.length);
+    const hardFiltered = hotnessBlended.filter(r => r.score >= this.config.hardMinScore);
     trace?.endStage(hardFiltered.length, hardFiltered.map(r => r.score));
 
     trace?.startStage("noise_filter", hardFiltered.length);
@@ -486,9 +498,14 @@ export class MemoryRetriever {
     const timeDecayed = this.applyTimeDecay(lengthNormalized);
     trace?.endStage(timeDecayed.length, timeDecayed.map(r => r.score));
 
+    // Hotness blend: boost frequently + recently accessed memories
+    trace?.startStage("hotness_blend", timeDecayed.length);
+    const hotnessBlended = this.applyHotnessBlend(timeDecayed);
+    trace?.endStage(hotnessBlended.length, hotnessBlended.map(r => r.score));
+
     // Hard minimum score cutoff (post all scoring stages)
-    trace?.startStage("hard_min_score", timeDecayed.length);
-    const hardFiltered = timeDecayed.filter(r => r.score >= this.config.hardMinScore);
+    trace?.startStage("hard_min_score", hotnessBlended.length);
+    const hardFiltered = hotnessBlended.filter(r => r.score >= this.config.hardMinScore);
     trace?.endStage(hardFiltered.length, hardFiltered.map(r => r.score));
 
     // Filter noise
@@ -905,6 +922,34 @@ export class MemoryRetriever {
     });
 
     return decayed.sort((a, b) => b.score - a.score);
+  }
+
+  /**
+   * Blend access-frequency hotness into retrieval scores.
+   *
+   * Formula: final = score * (1 - alpha) + hotness * alpha
+   * where hotness = sigmoid(log1p(accessCount)) * exp(-decayRate * ageDays)
+   *
+   * No-op when hotnessWeight is 0 or AccessTracker is absent.
+   */
+  private applyHotnessBlend(results: RetrievalResult[]): RetrievalResult[] {
+    const raw = this.config.hotnessWeight;
+    const alpha = Math.min(1, Math.max(0, Number.isFinite(raw) ? raw : 0));
+    if (alpha <= 0 || !this.accessTracker) return results;
+
+    const blended = results.map((r) => {
+      const { accessCount, lastAccessedAt } = parseAccessMetadata(r.entry.metadata);
+      const hotness = computeHotnessScore(
+        accessCount,
+        lastAccessedAt || r.entry.timestamp,
+      );
+      return {
+        ...r,
+        score: clamp01(r.score * (1 - alpha) + hotness * alpha, 0),
+      };
+    });
+
+    return blended.sort((a, b) => b.score - a.score);
   }
 
   /**
