@@ -1830,6 +1830,59 @@ program
   });
 
 program
+  .command("checkpoint-gc")
+  .description("Clean up old session checkpoints: archive stale rich ones, delete expired minimal ones")
+  .option("--dry-run", "Preview actions without modifying files")
+  .option("--keep-per-scope <n>", "Rich checkpoints to keep per scope (default: 5)")
+  .option("--archive-after-days <n>", "Archive rich checkpoints older than N days (default: 30)")
+  .option("--minimal-ttl-days <n>", "Delete minimal checkpoints older than N days (default: 7)")
+  .option("--archive-ttl-days <n>", "Hard-delete archived files older than N days (default: 90)")
+  .action(async (options) => {
+    const { SessionCheckpointStore } = await import("./session-store.js");
+    const store = new SessionCheckpointStore();
+    const result = store.gc({
+      dryRun: Boolean(options.dryRun),
+      keepPerScope: options.keepPerScope ? parseLimitOption(options.keepPerScope, 5, 1, 50) : undefined,
+      archiveAfterDays: options.archiveAfterDays ? parseLimitOption(options.archiveAfterDays, 30, 1, 365) : undefined,
+      minimalTtlDays: options.minimalTtlDays ? parseLimitOption(options.minimalTtlDays, 7, 1, 365) : undefined,
+      archiveTtlDays: options.archiveTtlDays ? parseLimitOption(options.archiveTtlDays, 90, 1, 730) : undefined,
+    });
+
+    console.log(options.dryRun ? "=== Checkpoint GC (dry run) ===\n" : "=== Checkpoint GC ===\n");
+
+    const archives = result.actions.filter((a) => a.action === "archive");
+    const deletes = result.actions.filter((a) => a.action === "delete");
+
+    if (archives.length > 0) {
+      console.log(`Archive (${archives.length}):`);
+      for (const a of archives) {
+        console.log(`  ${a.checkpointId.slice(0, 8)}  ${a.resolvedScope}  ${a.updatedAt.slice(0, 10)}  ${a.reason}`);
+      }
+      console.log();
+    }
+
+    if (deletes.length > 0) {
+      console.log(`Delete (${deletes.length}):`);
+      for (const a of deletes) {
+        console.log(`  ${a.checkpointId.slice(0, 8)}  ${a.resolvedScope}  ${a.updatedAt.slice(0, 10)}  ${a.reason}`);
+      }
+      console.log();
+    }
+
+    console.log([
+      `Kept     : ${result.kept}`,
+      `Archived : ${result.archived}`,
+      `Deleted  : ${result.deleted}`,
+      `Errors   : ${result.errors.length}`,
+    ].join("\n"));
+
+    if (result.errors.length > 0) {
+      console.log("\nErrors:");
+      for (const e of result.errors) console.log(`  ${e}`);
+    }
+  });
+
+program
   .command("doctor")
   .description("检查安装状态和配置")
   .option("--ci", "跳过 API key 在线验证（CI 模式）")

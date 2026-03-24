@@ -778,12 +778,12 @@ export class MemoryRetriever {
    * This ensures critical memories (importance=1.0) outrank casual ones (importance=0.5)
    * when semantic similarity is close.
    * Formula: score *= (baseWeight + (1 - baseWeight) * importance)
-   * With baseWeight=0.7: importance=1.0 → ×1.0, importance=0.5 → ×0.85, importance=0.0 → ×0.7
+   * With baseWeight=0.5: importance=1.0 → ×1.0, importance=0.7 → ×0.85, importance=0.5 → ×0.75, importance=0.0 → ×0.5
    */
   private applyImportanceWeight(results: RetrievalResult[]): RetrievalResult[] {
-    const baseWeight = 0.7;
+    const baseWeight = 0.5;
     const weighted = results.map(r => {
-      const importance = r.entry.importance ?? 0.7;
+      const importance = r.entry.importance ?? 0.5;
       const factor = baseWeight + (1 - baseWeight) * importance;
       return {
         ...r,

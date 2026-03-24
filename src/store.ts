@@ -390,7 +390,7 @@ export class MemoryStore {
     const full: MemoryEntry = {
       ...entry,
       scope: entry.scope,
-      importance: Number.isFinite(entry.importance) ? entry.importance : 0.7,
+      importance: Number.isFinite(entry.importance) ? entry.importance : 0.5,
       timestamp: Number.isFinite(entry.timestamp) ? entry.timestamp : Date.now(),
       metadata: entry.metadata || "{}",
     };
