@@ -41,7 +41,7 @@ export interface MemoryEntry {
   scope: string;
   importance: number;
   timestamp: number;
-  metadata?: string; // JSON string for extensible metadata — includes l0/l1/tier
+  metadata?: string; // JSON string for extensible metadata — includes l0_abstract/l1_overview/l2_content/tier
 }
 
 export interface MemorySearchResult {

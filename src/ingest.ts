@@ -536,7 +536,7 @@ export async function drainPendingQueue(
           category: extractions[j].category as any,
           scope: batch[j].scope,
           importance: extractions[j].importance,
-          metadata: JSON.stringify({ source: batch[j].scope.split(":")[0], l0: extractions[j].l0 }),
+          metadata: JSON.stringify({ source: batch[j].scope.split(":")[0], l0_abstract: extractions[j].l0 }),
         });
         processed++;
       } catch { errors++; }
@@ -600,8 +600,9 @@ function buildIngestedEntry(params: {
       ...(params.sessionId ? { sessionId: params.sessionId } : {}),
       file: params.file,
       ...(params.heading ? { heading: params.heading } : {}),
-      l0: params.extraction.l0,
-      l1: params.extraction.l1,
+      l0_abstract: params.extraction.l0,
+      l1_overview: params.extraction.l1,
+      l2_content: params.text,
       tier,
       boundary: resolution.boundary,
     }),
