@@ -536,7 +536,7 @@ export async function drainPendingQueue(
           category: extractions[j].category as any,
           scope: batch[j].scope,
           importance: extractions[j].importance,
-          metadata: JSON.stringify({ source: batch[j].scope.split(":")[0], l0_abstract: extractions[j].l0 }),
+          metadata: JSON.stringify({ source: batch[j].scope.split(":")[0], l0_abstract: extractions[j].l0, l1_overview: extractions[j].l1, l2_content: extractions[j].l1 || extractions[j].l0 }),
         });
         processed++;
       } catch { errors++; }

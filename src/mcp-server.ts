@@ -1080,8 +1080,9 @@ registerTool(
         meta = JSON.parse(entry.metadata || "{}");
       } catch { /* malformed metadata, use raw text */ }
 
-      const l0 = typeof meta.l0_abstract === "string" ? meta.l0_abstract : null;
-      const l1 = typeof meta.l1_overview === "string" ? meta.l1_overview : null;
+      // Support both legacy short names (l0/l1) and current long names (l0_abstract/l1_overview/l2_content)
+      const l0 = typeof meta.l0_abstract === "string" ? meta.l0_abstract : typeof meta.l0 === "string" ? meta.l0 : null;
+      const l1 = typeof meta.l1_overview === "string" ? meta.l1_overview : typeof meta.l1 === "string" ? meta.l1 : null;
       const l2 = typeof meta.l2_content === "string" ? meta.l2_content : entry.text;
 
       let content: string;
