@@ -79,9 +79,9 @@ EOF
 
 echo "  [完成] 回顾已写入: $OUTPUT_FILE" | tee -a "$LOG_FILE"
 
-# ── Checkpoint GC（dry-run，先观察一周再正式启用） ────────────
-echo "  执行 checkpoint-gc (dry-run)..." | tee -a "$LOG_FILE"
-GC_OUTPUT=$(bun run "$SCRIPT_DIR/src/cli.ts" checkpoint-gc --dry-run 2>&1 || true)
+# ── Checkpoint GC（2026-03-26 正式启用） ────────────
+echo "  执行 checkpoint-gc..." | tee -a "$LOG_FILE"
+GC_OUTPUT=$(bun run "$SCRIPT_DIR/src/cli.ts" checkpoint-gc 2>&1 || true)
 echo "  checkpoint-gc: $GC_OUTPUT" | tee -a "$LOG_FILE"
 
 echo "=== $(date '+%Y-%m-%d %H:%M:%S') daily-recall 结束 ===" | tee -a "$LOG_FILE"
