@@ -334,7 +334,7 @@ describe("dedupCheck", () => {
         return [
           buildSearchResult(
             "OpenClaw provider 配置里已经写过 `ANTHROPIC_BASE_URL` 和 `ANTHROPIC_AUTH_TOKEN` 的设置方法。",
-            0.83,
+            0.95,
           ),
         ];
       },

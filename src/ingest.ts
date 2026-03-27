@@ -61,9 +61,13 @@ interface ConversationTurn {
  *  - Above HARD: definitely duplicate, skip without LLM
  *  - Between SOFT and HARD: borderline, ask LLM if available
  *  - Below SOFT: definitely unique, store directly
+ *
+ *  2026-03-26: raised from 0.80/0.68 → 0.92/0.78.
+ *  Old thresholds caused 72% data loss — temporal events, user instructions,
+ *  and file operations on familiar topics were killed as "duplicates".
  */
-const DEDUP_HARD_THRESHOLD = 0.80;
-const DEDUP_SOFT_THRESHOLD = 0.68;
+const DEDUP_HARD_THRESHOLD = 0.92;
+const DEDUP_SOFT_THRESHOLD = 0.78;
 const DEDUP_CANDIDATE_LIMIT = 5;
 
 interface AtomicPreferenceGuardDecision {
@@ -160,6 +164,33 @@ function normalizeDedupText(value: string): string {
     .replace(/^\[(用户|助手)\]\s*/gm, "")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+/**
+ * Detect content that carries temporal events, file operations, or explicit
+ * user memory instructions. These should never be hard-deduped because they
+ * describe *new happenings* about potentially familiar topics.
+ *
+ * Categories protected:
+ * 1. Date-stamped events (2026-03-25, 昨天, 今天, etc.)
+ * 2. File operations (paths with /, mv, cp, mkdir, 整理, 搬到, 放到)
+ * 3. Explicit memory instructions (记住, remember, 以后注意, 别忘了)
+ * 4. Feedback/corrections (不要, 别再, stop doing, don't)
+ */
+function isTemporalOrActionContent(text: string): boolean {
+  // Date patterns: ISO dates, Chinese relative dates
+  const datePattern = /\b20\d{2}[-/]\d{2}[-/]\d{2}\b|昨天|今天|前天|上次|刚才|刚刚|本周|这周|上周/;
+  // File operation patterns
+  const fileOpPattern = /\/Users\/|~\/|\.md\b|\.json\b|mkdir|mv\s|cp\s|整理|搬到|放到|移到|复制到|保存到|写入|归档/;
+  // Explicit memory instructions
+  const memoryPattern = /记住|remember|以后注意|别忘了|下次[要记别]|务必|一定要|不要忘/i;
+  // Feedback/correction patterns
+  const feedbackPattern = /不要再|别再|stop\s+doing|don'?t\s+\w+|以后别|纠正|改掉|这次的教训/i;
+
+  return datePattern.test(text)
+    || fileOpPattern.test(text)
+    || memoryPattern.test(text)
+    || feedbackPattern.test(text);
 }
 
 function shouldForceCreateAtomicPreference(
@@ -296,6 +327,41 @@ export async function dedupCheck(
         reason: "unique",
         existingText: toolChoiceGuard.matchedText,
       };
+    }
+
+    // Guard: temporal events, file operations, and explicit user memory instructions
+    // bypass hard dedup — these are often about familiar topics but carry new facts.
+    if (isTemporalOrActionContent(text)) {
+      // Still allow exact dedup (handled above), but never hard-skip.
+      // Fall through to LLM judgment if available, else store.
+      const topScore = results[0].score;
+      const existingText = results[0].entry.text;
+      if (!llm) {
+        return { action: "store", reason: "unique", existingText };
+      }
+      // Let LLM decide (skip the hard threshold)
+      try {
+        const hasMulti = typeof (llm as any).dedupDecisionMulti === "function";
+        if (hasMulti) {
+          const candidates = results
+            .filter(r => r.score >= DEDUP_SOFT_THRESHOLD)
+            .slice(0, DEDUP_CANDIDATE_LIMIT)
+            .map(r => ({ id: r.entry.id, text: r.entry.text }));
+          const decision = await llm.dedupDecisionMulti(text, candidates);
+          if (decision.action === "SKIP") {
+            return { action: "skip", reason: "llm-skip", existingText };
+          }
+          return { action: "store", reason: decision.action === "MERGE" ? "llm-merge" : "unique", existingText };
+        } else {
+          const decision = await llm.dedupDecision(text, existingText);
+          if (decision.action === "SKIP") {
+            return { action: "skip", reason: "llm-skip", existingText };
+          }
+          return { action: "store", reason: decision.action === "MERGE" ? "llm-merge" : "unique", existingText };
+        }
+      } catch {
+        return { action: "store", reason: "unique", existingText };
+      }
     }
 
     const topScore = results[0].score;
@@ -441,7 +507,7 @@ async function smartExtractBatch(
 export function batchInternalDedup(
   vectors: number[][],
   importances: number[],
-  threshold = 0.85,
+  threshold = 0.93,
 ): number[] {
   if (vectors.length <= 1) return vectors.map((_, i) => i);
 
@@ -873,7 +939,7 @@ function parseCodexSession(filePath: string): ConversationTurn[] {
 export async function ingestCodexSessions(
   store: MemoryStore,
   embedder: Embedder,
-  options: { limit?: number; verbose?: boolean; noDedup?: boolean; llm?: LLMClient | null } = {},
+  options: { limit?: number; verbose?: boolean; noDedup?: boolean; llm?: LLMClient | null; recentHours?: number } = {},
 ): Promise<IngestResult> {
   const result: IngestResult = {
     source: "codex",
@@ -891,6 +957,9 @@ export async function ingestCodexSessions(
     return result;
   }
 
+  const recentMode = options.recentHours !== undefined;
+  const cutoffMs = recentMode ? Date.now() - options.recentHours! * 3600_000 : 0;
+
   // Find all .jsonl files recursively
   const allFiles: string[] = [];
   function walk(dir: string) {
@@ -906,7 +975,12 @@ export async function ingestCodexSessions(
   walk(baseDir);
   allFiles.sort();
 
-  const filesToProcess = options.limit ? allFiles.slice(0, options.limit) : allFiles;
+  // --recent: only keep files modified within N hours
+  const filteredFiles = recentMode
+    ? allFiles.filter((f) => { try { return statSync(f).mtimeMs >= cutoffMs; } catch { return false; } })
+    : allFiles;
+
+  const filesToProcess = options.limit ? filteredFiles.slice(0, options.limit) : filteredFiles;
   const total = filesToProcess.length;
 
   for (let fi = 0; fi < filesToProcess.length; fi++) {
@@ -919,7 +993,8 @@ export async function ingestCodexSessions(
         continue;
       }
 
-      if (isProcessed(filePath, stat.size, stat.mtimeMs)) {
+      // In --recent mode, skip ingested-files check — files may have new content appended
+      if (!recentMode && isProcessed(filePath, stat.size, stat.mtimeMs)) {
         result.chunksSkipped++;
         continue;
       }
@@ -1064,7 +1139,7 @@ function parseGeminiSession(filePath: string): ConversationTurn[] {
 export async function ingestGeminiSessions(
   store: MemoryStore,
   embedder: Embedder,
-  options: { limit?: number; verbose?: boolean; noDedup?: boolean; llm?: LLMClient | null } = {},
+  options: { limit?: number; verbose?: boolean; noDedup?: boolean; llm?: LLMClient | null; recentHours?: number } = {},
 ): Promise<IngestResult> {
   const result: IngestResult = {
     source: "gemini",
@@ -1083,6 +1158,9 @@ export async function ingestGeminiSessions(
     return result;
   }
 
+  const recentMode = options.recentHours !== undefined;
+  const cutoffMs = recentMode ? Date.now() - options.recentHours! * 3600_000 : 0;
+
   const allFiles: string[] = [];
   function walk(dir: string) {
     try {
@@ -1099,7 +1177,12 @@ export async function ingestGeminiSessions(
   walk(baseDir);
   allFiles.sort();
 
-  const filesToProcess = options.limit ? allFiles.slice(0, options.limit) : allFiles;
+  // --recent: only keep files modified within N hours
+  const filteredFiles = recentMode
+    ? allFiles.filter((f) => { try { return statSync(f).mtimeMs >= cutoffMs; } catch { return false; } })
+    : allFiles;
+
+  const filesToProcess = options.limit ? filteredFiles.slice(0, options.limit) : filteredFiles;
   const total = filesToProcess.length;
 
   for (let fi = 0; fi < filesToProcess.length; fi++) {
@@ -1112,7 +1195,8 @@ export async function ingestGeminiSessions(
         continue;
       }
 
-      if (isProcessed(filePath, stat.size, stat.mtimeMs)) {
+      // In --recent mode, skip ingested-files check — files may have new content appended
+      if (!recentMode && isProcessed(filePath, stat.size, stat.mtimeMs)) {
         result.chunksSkipped++;
         continue;
       }
@@ -1273,7 +1357,7 @@ export async function ingestCCTranscripts(
   store: MemoryStore,
   embedder: Embedder,
   sourcePath: string,
-  options: { limit?: number; verbose?: boolean; noDedup?: boolean; llm?: LLMClient | null } = {},
+  options: { limit?: number; verbose?: boolean; noDedup?: boolean; llm?: LLMClient | null; recentHours?: number } = {},
 ): Promise<IngestResult> {
   const result: IngestResult = {
     source: "cc",
@@ -1291,9 +1375,19 @@ export async function ingestCCTranscripts(
     return result;
   }
 
-  const files = readdirSync(dir)
+  const recentMode = options.recentHours !== undefined;
+  const cutoffMs = recentMode ? Date.now() - options.recentHours! * 3600_000 : 0;
+
+  let files = readdirSync(dir)
     .filter((f) => f.endsWith(".jsonl"))
     .sort();
+
+  // --recent: only keep files modified within N hours
+  if (recentMode) {
+    files = files.filter((f) => {
+      try { return statSync(join(dir, f)).mtimeMs >= cutoffMs; } catch { return false; }
+    });
+  }
 
   const filesToProcess = options.limit ? files.slice(0, options.limit) : files;
   const total = filesToProcess.length;
@@ -1311,7 +1405,8 @@ export async function ingestCCTranscripts(
       }
 
       // Skip already processed files (incremental mode)
-      if (isProcessed(filePath, stat.size, stat.mtimeMs)) {
+      // In --recent mode, skip this check — files may have new content appended
+      if (!recentMode && isProcessed(filePath, stat.size, stat.mtimeMs)) {
         result.chunksSkipped++;
         continue;
       }
@@ -1425,7 +1520,7 @@ export async function ingestMarkdownFiles(
   embedder: Embedder,
   sourcePath: string,
   scope: string,
-  options: { verbose?: boolean; noDedup?: boolean; llm?: LLMClient | null } = {},
+  options: { verbose?: boolean; noDedup?: boolean; llm?: LLMClient | null; recentHours?: number } = {},
 ): Promise<IngestResult> {
   const result: IngestResult = {
     source: scope,
@@ -1443,14 +1538,25 @@ export async function ingestMarkdownFiles(
     return result;
   }
 
-  const files = readdirSync(dir).filter((f) => f.endsWith(".md"));
+  const recentMode = options.recentHours !== undefined;
+  const cutoffMs = recentMode ? Date.now() - options.recentHours! * 3600_000 : 0;
+
+  let files = readdirSync(dir).filter((f) => f.endsWith(".md"));
+
+  // --recent: only keep files modified within N hours
+  if (recentMode) {
+    files = files.filter((f) => {
+      try { return statSync(join(dir, f)).mtimeMs >= cutoffMs; } catch { return false; }
+    });
+  }
 
   for (const file of files) {
     const filePath = join(dir, file);
 
     try {
       const stat = statSync(filePath);
-      if (isProcessed(filePath, stat.size, stat.mtimeMs)) {
+      // In --recent mode, skip ingested-files check — files may have new content appended
+      if (!recentMode && isProcessed(filePath, stat.size, stat.mtimeMs)) {
         result.chunksSkipped++;
         continue;
       }

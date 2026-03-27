@@ -1304,6 +1304,7 @@ program
   .option("-v, --verbose", "详细输出")
   .option("--no-dedup", "跳过向量去重")
   .option("--no-llm", "禁用 LLM 提取（原始对话将跳过不存入，排入待处理队列）")
+  .option("--recent [hours]", "快速模式：只处理最近 N 小时修改的文件（默认 2 小时），跳过 ingested-files 检查")
   .action(async (options) => {
     const config = loadConfig();
     const { store, embedder, llm } = createComponents(config);
@@ -1314,6 +1315,15 @@ program
       : undefined;
     const verbose = options.verbose || false;
     const noDedup = options.dedup === false; // --no-dedup
+    // --recent: quick mode — only process files modified within N hours, skip ingested-files check
+    const recentHours: number | undefined = options.recent !== undefined
+      ? (options.recent === true ? 2 : Number(options.recent))
+      : undefined;
+    if (recentHours !== undefined && (isNaN(recentHours) || recentHours <= 0)) {
+      console.error("❌ --recent 参数必须是正数（小时数）");
+      process.exitCode = 1;
+      return;
+    }
     const results: any[] = [];
 
     // Pre-flight: validate embedding API before processing any files
@@ -1351,10 +1361,14 @@ program
       }
     }
 
-    console.log(`  ${noDedup ? "⚠️  去重已禁用 (--no-dedup)" : "✅ 两阶段去重: vector + LLM 语义判断"}\n`);
+    console.log(`  ${noDedup ? "⚠️  去重已禁用 (--no-dedup)" : "✅ 两阶段去重: vector + LLM 语义判断"}`);
+    if (recentHours !== undefined) {
+      console.log(`  ⚡ 快速模式: 只处理最近 ${recentHours} 小时修改的文件，跳过 ingested-files 检查`);
+    }
+    console.log();
     console.log(`🔄 开始导入记忆 (source: ${source})...\n`);
 
-    const ingestOpts = { limit, verbose, noDedup, llm: effectiveLlm };
+    const ingestOpts = { limit, verbose, noDedup, llm: effectiveLlm, recentHours };
 
     // CC Transcripts
     if (source === "all" || source === "cc") {
@@ -1385,6 +1399,7 @@ program
         verbose,
         noDedup,
         llm,
+        recentHours,
       });
       results.push(r);
       console.log(`  ✅ Gemini: ${formatIngestSummary(r)}`);
@@ -1417,6 +1432,7 @@ program
           verbose,
           noDedup,
           llm,
+          recentHours,
         });
         results.push(r);
         console.log(`  ✅ Memory: ${formatIngestSummary(r)}`);
