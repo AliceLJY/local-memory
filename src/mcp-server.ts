@@ -33,6 +33,7 @@ const TOOL_TIERS: Record<string, ToolTier> = {
   latest_checkpoint: "core",
 
   // Advanced
+  auto_capture: "advanced",
   store_case: "advanced",
   store_workflow_pattern: "advanced",
   promote_memory: "advanced",
@@ -56,6 +57,7 @@ const TOOL_TIERS: Record<string, ToolTier> = {
   escalate_conflicts: "governance",
   list_dirty_briefs: "governance",
   clean_dirty_briefs: "governance",
+  consolidate_memories: "governance",
 };
 
 function shouldRegisterTool(toolName: string): boolean {
@@ -75,7 +77,10 @@ import { archiveDirtyBriefAsset, assetSummaryLine, buildBriefAsset, buildPinAsse
 import { indexAsset, indexPinnedAsset } from "./asset-sync.js";
 import { createComponentResolver, loadConfig, loadDotEnv, resolveRecallMode } from "./runtime-config.js";
 import { DurableMemoryCategorySchema, StoreMemorySourceSchema } from "./memory-schema.js";
-import { persistCaseMemory, persistMemory, persistWorkflowPattern, promoteMemory } from "./capture-engine.js";
+import { persistCaseMemory, persistMemory, persistMemoryBatch, persistWorkflowPattern, promoteMemory } from "./capture-engine.js";
+import { autoCapture } from "./capture-heuristic.js";
+import { ConsolidationEngine, formatConsolidationResult } from "./consolidation-engine.js";
+import { renderMemories, type RenderMode } from "./context-renderer.js";
 import { buildSessionCheckpointResult } from "./session-engine.js";
 import { SessionCheckpointStore } from "./session-store.js";
 import { composeResumeContext } from "./context-composer.js";
@@ -320,6 +325,70 @@ registerTool(
           `Tags: ${stored.tags.join(", ") || "-"}`,
           ...(stored.conflictId ? [`Conflict: ${stored.conflictId.slice(0, 8)}`] : []),
           `Stored at: ${stored.storedAt}`,
+        ].join("\n"),
+      }],
+    };
+  }
+);
+
+registerTool(
+  "auto_capture",
+  "Extract memory-worthy items from a conversation turn using lightweight heuristics (zero LLM calls). Detects preferences, identity facts, decisions, corrections, explicit memory instructions, and workflow patterns. Items that pass salience filtering are stored as durable memories. Use this when you want to analyze a block of conversation text and automatically capture any signals worth remembering.",
+  {
+    text: z.string().min(1).max(8000).describe("Conversation text to analyze for memory-worthy signals"),
+    scope: z.string().min(1).max(160).describe("Required scope such as project:recallnest or session:abc123"),
+    source: StoreMemorySourceSchema.default("agent").describe("How this memory was captured"),
+  },
+  async ({ text, scope, source }) => {
+    const result = autoCapture(text);
+
+    if (result.skippedSalience) {
+      return {
+        content: [{
+          type: "text" as const,
+          text: "Skipped: text did not pass salience filter (too short, noise, or greeting)",
+        }],
+      };
+    }
+
+    if (result.items.length === 0) {
+      return {
+        content: [{
+          type: "text" as const,
+          text: "No memory-worthy signals detected in this text",
+        }],
+      };
+    }
+
+    const { store, embedder } = getComponents();
+    const stored = await persistMemoryBatch({
+      store,
+      embedder,
+      conflictStore,
+    }, {
+      scope,
+      source,
+      defaultImportance: 0.7,
+      memories: result.items.map((item) => ({
+        text: item.text,
+        category: item.category,
+        importance: item.importance,
+        tags: [`auto-capture:${item.sourceContext.replace(/\s+/g, "-")}`],
+      })),
+    });
+
+    const lines = stored.map((r, i) => {
+      const item = result.items[i];
+      return `${i + 1}. [${item.sourceContext}] ${r.disposition} → ${r.category} (${r.id.slice(0, 8)})`;
+    });
+
+    return {
+      content: [{
+        type: "text" as const,
+        text: [
+          `Auto-captured ${stored.length} item(s) from ${result.items.length} signal(s):`,
+          ...lines,
+          `Scope: ${scope}`,
         ].join("\n"),
       }],
     };
@@ -707,8 +776,9 @@ registerTool(
     allScopes: z.boolean().default(false).describe("When true, explicitly allow cross-scope search"),
     category: DurableMemoryCategorySchema.optional().describe("Filter by memory category: profile (identity/background), preferences (habits/style), entities (projects/tools/people), events (past happenings), cases (problem-solution pairs), patterns (reusable workflows)"),
     profile: z.enum(["default", "writing", "debug", "fact-check"]).optional().describe("Retrieval profile"),
+    render: z.enum(["verbatim", "highlight"]).default("verbatim").optional().describe("Result rendering mode: verbatim (default, original order) or highlight (reorder by contextual relevance to query)"),
   },
-  async ({ query, limit, scope, sessionId, allScopes, category, profile: profileName }) => {
+  async ({ query, limit, scope, sessionId, allScopes, category, profile: profileName, render }) => {
     const { retriever, profile } = getComponents(profileName);
     const results = await retriever.retrieve(buildRetrievalContext({
       query,
@@ -720,6 +790,18 @@ registerTool(
     }, {
       operation: "search_memory",
     }));
+
+    // Apply context-aware rendering when requested
+    if (render === "highlight" && results.length > 0) {
+      const rendered = renderMemories(
+        results.map(r => ({ id: r.entry.id, text: r.entry.text, score: r.score, category: r.entry.category })),
+        query,
+        "highlight",
+      );
+      // Reorder results to match rendered order
+      const idOrder = new Map(rendered.memories.map((m, i) => [m.id, i]));
+      results.sort((a, b) => (idOrder.get(a.entry.id) ?? 999) - (idOrder.get(b.entry.id) ?? 999));
+    }
 
     return {
       content: [{
@@ -993,6 +1075,48 @@ registerTool(
       content: [{
         type: "text" as const,
         text: `Dirty briefs: ${rows.length}\nArchived: ${archived}\nIndex rows deleted: ${deleted}`,
+      }],
+    };
+  }
+);
+
+registerTool(
+  "consolidate_memories",
+  "Run semantic consolidation on a scope: cluster similar memories, merge near-duplicates, link related entries, and detect contradictions. Dry-run by default — set apply=true to actually archive merged entries.",
+  {
+    scope: z.string().min(1).max(160).describe("Scope to consolidate (e.g. project:recallnest)"),
+    clusterThreshold: z.number().min(0.5).max(1.0).default(0.82).describe("Min similarity to form a cluster (default 0.82)"),
+    mergeThreshold: z.number().min(0.5).max(1.0).default(0.92).describe("Min similarity to merge/archive (default 0.92)"),
+    maxEntries: z.number().min(10).max(2000).default(500).describe("Max entries to scan (default 500)"),
+    apply: z.boolean().default(false).describe("When false, preview only (scan + report without archiving). When true, actually merge/archive."),
+  },
+  async ({ scope, clusterThreshold, mergeThreshold, maxEntries, apply }) => {
+    const { store } = getComponents();
+
+    if (!apply) {
+      // Dry-run: use a read-only wrapper that blocks writes
+      const readOnlyStore = {
+        list: store.list.bind(store),
+        getById: store.getById.bind(store),
+        vectorSearch: store.vectorSearch.bind(store),
+        update: async () => null, // no-op in dry-run
+      };
+      const engine = new ConsolidationEngine(readOnlyStore, { clusterThreshold, mergeThreshold, maxEntriesPerRun: maxEntries });
+      const result = await engine.run(scope);
+      return {
+        content: [{
+          type: "text" as const,
+          text: `[DRY-RUN] ${formatConsolidationResult(result)}\n\nRe-run with apply=true to execute merges.`,
+        }],
+      };
+    }
+
+    const engine = new ConsolidationEngine(store, { clusterThreshold, mergeThreshold, maxEntriesPerRun: maxEntries });
+    const result = await engine.run(scope);
+    return {
+      content: [{
+        type: "text" as const,
+        text: formatConsolidationResult(result),
       }],
     };
   }

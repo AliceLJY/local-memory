@@ -3,7 +3,7 @@
  */
 
 import type * as LanceDB from "@lancedb/lancedb";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync, accessSync, constants, mkdirSync, realpathSync, lstatSync } from "node:fs";
 import { dirname } from "node:path";
 import { logWarn } from "./stderr-log.js";
@@ -69,6 +69,27 @@ export interface LegacyScopeAudit {
   totalCount: number;
   counts: Record<LegacyScopeIssueKind, number>;
   samples: LegacyScopeAuditSample[];
+}
+
+// ============================================================================
+// Deterministic ID
+// ============================================================================
+
+const RECALLNEST_NS = "recallnest:v1";
+
+/**
+ * Generate a deterministic UUID-formatted ID from scope + text.
+ * Same inputs always produce the same ID — prevents duplicate entries
+ * with different random UUIDs.
+ *
+ * Format: 8-4-4-4-12 hex (same shape as crypto.randomUUID).
+ */
+export function deterministicId(scope: string, text: string): string {
+  const hash = createHash("sha256")
+    .update(`${RECALLNEST_NS}\0${scope}\0${text}`)
+    .digest("hex");
+  // Format as UUID: 8-4-4-4-12
+  return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-${hash.slice(12, 16)}-${hash.slice(16, 20)}-${hash.slice(20, 32)}`;
 }
 
 // ============================================================================
@@ -319,12 +340,12 @@ export class MemoryStore {
     }
   }
 
-  async store(entry: Omit<MemoryEntry, "id" | "timestamp">): Promise<MemoryEntry> {
+  async store(entry: Omit<MemoryEntry, "id" | "timestamp"> & { id?: string }): Promise<MemoryEntry> {
     await this.ensureInitialized();
 
     const fullEntry: MemoryEntry = {
       ...entry,
-      id: randomUUID(),
+      id: entry.id || randomUUID(),
       timestamp: Date.now(),
       metadata: entry.metadata || "{}",
     };

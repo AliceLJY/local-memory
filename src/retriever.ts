@@ -72,6 +72,12 @@ export interface RetrievalConfig {
    * 0 = disabled (default), 0.15 = recommended.
    */
   hotnessWeight: number;
+  /**
+   * Per-category score thresholds. When a result's category matches a key,
+   * that threshold is used instead of hardMinScore. Categories not listed
+   * fall back to hardMinScore. (default: see DEFAULT_CATEGORY_MIN_SCORES)
+   */
+  categoryMinScores?: Record<string, number>;
 }
 
 export interface RetrievalContext {
@@ -101,6 +107,20 @@ export interface RetrievalResult extends MemorySearchResult {
 // ============================================================================
 // Default Configuration
 // ============================================================================
+
+/**
+ * Per-category minimum scores. Lower threshold = easier to recall.
+ * profile/preferences: low bar because identity & preferences are almost always relevant.
+ * cases/patterns: higher bar because they are more specific and noisy matches are costly.
+ */
+export const DEFAULT_CATEGORY_MIN_SCORES: Record<string, number> = {
+  profile: 0.25,
+  preferences: 0.25,
+  entities: 0.30,
+  events: 0.35,
+  cases: 0.40,
+  patterns: 0.45,
+};
 
 export const DEFAULT_RETRIEVAL_CONFIG: RetrievalConfig = {
   mode: "hybrid",
@@ -318,6 +338,12 @@ export class MemoryRetriever {
     this.accessTracker = tracker;
   }
 
+  /** Resolve the minimum score for a given category, falling back to hardMinScore. */
+  private minScoreFor(category: string): number {
+    const map = this.config.categoryMinScores ?? DEFAULT_CATEGORY_MIN_SCORES;
+    return map[category] ?? this.config.hardMinScore;
+  }
+
   async retrieve(context: RetrievalContext): Promise<RetrievalResult[]> {
     const { query, limit, scopeFilter, category, includeArchived, trace } = context;
     const safeLimit = clampInt(limit, 1, 20);
@@ -406,7 +432,7 @@ export class MemoryRetriever {
     trace?.endStage(hotnessBlended.length, hotnessBlended.map(r => r.score));
 
     trace?.startStage("hard_min_score", hotnessBlended.length);
-    const hardFiltered = hotnessBlended.filter(r => r.score >= this.config.hardMinScore);
+    const hardFiltered = hotnessBlended.filter(r => r.score >= this.minScoreFor(r.entry.category));
     trace?.endStage(hardFiltered.length, hardFiltered.map(r => r.score));
 
     trace?.startStage("noise_filter", hardFiltered.length);
@@ -505,7 +531,7 @@ export class MemoryRetriever {
 
     // Hard minimum score cutoff (post all scoring stages)
     trace?.startStage("hard_min_score", hotnessBlended.length);
-    const hardFiltered = hotnessBlended.filter(r => r.score >= this.config.hardMinScore);
+    const hardFiltered = hotnessBlended.filter(r => r.score >= this.minScoreFor(r.entry.category));
     trace?.endStage(hardFiltered.length, hardFiltered.map(r => r.score));
 
     // Filter noise

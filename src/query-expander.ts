@@ -6,7 +6,10 @@
  * v1.1: Word-boundary matching for English triggers (prevents "download" matching "down").
  *       MAX_EXPANSION_TERMS cap to prevent query bloat hurting BM25 precision.
  *       Structured synonym entries separating CN (substring) from EN (word-boundary).
+ * v1.2: Entity resolution pre-pass normalizes aliases before synonym expansion.
  */
+
+import { resolveQueryEntities } from "./entity-resolver.js";
 
 interface SynonymEntry {
   /** Chinese triggers: matched by substring (CJK has no word boundaries) */
@@ -64,7 +67,9 @@ const MAX_EXPANSION_TERMS = 5;
 export function expandQuery(query: string): string {
   if (!query || query.trim().length < 2) return query;
 
-  const lower = query.toLowerCase();
+  // Entity resolution pre-pass: normalize aliases before synonym expansion
+  const resolved = resolveQueryEntities(query);
+  const lower = resolved.toLowerCase();
   const additions = new Set<string>();
 
   for (const entry of SYNONYM_MAP) {
@@ -85,9 +90,9 @@ export function expandQuery(query: string): string {
     }
   }
 
-  if (additions.size === 0) return query;
+  if (additions.size === 0) return resolved;
 
   // Cap expansion terms to prevent query bloat
   const limited = [...additions].slice(0, MAX_EXPANSION_TERMS);
-  return `${query} ${limited.join(" ")}`;
+  return `${resolved} ${limited.join(" ")}`;
 }

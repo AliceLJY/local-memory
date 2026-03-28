@@ -18,7 +18,7 @@ import {
   DURABLE_MEMORY_CATEGORIES,
   type WriteDisposition,
 } from "./memory-schema.js";
-import type { MemoryEntry, MemoryStore } from "./store.js";
+import { deterministicId, type MemoryEntry, type MemoryStore } from "./store.js";
 import {
   buildDefaultCanonicalKey,
   buildStructuredMemoryBoundary,
@@ -537,6 +537,9 @@ async function writeDurableEntry(
   }
 
   const stored = await deps.store.store({
+    id: params.canonicalKey
+      ? deterministicId(params.scope, params.canonicalKey)
+      : undefined,
     text: params.text,
     vector: params.vector,
     category: params.category,
