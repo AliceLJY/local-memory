@@ -21,6 +21,8 @@ export interface AutoCaptureItem {
   category: "profile" | "preferences" | "events" | "cases" | "patterns";
   importance: number;
   sourceContext: string;
+  /** Replay priority for consolidation: higher = consolidate first. */
+  replayPriority: number;
 }
 
 export interface AutoCaptureResult {
@@ -63,6 +65,8 @@ interface SignalPattern {
   category: AutoCaptureItem["category"];
   importance: number;
   sourceContext: string;
+  /** Replay priority: corrections/explicit-memory > decisions > preferences/patterns. */
+  replayPriority: number;
 }
 
 const SIGNAL_PATTERNS: SignalPattern[] = [
@@ -72,6 +76,7 @@ const SIGNAL_PATTERNS: SignalPattern[] = [
     category: "preferences",
     importance: 0.8,
     sourceContext: "preference signal",
+    replayPriority: 0.5,
   },
   // --- Identity / profile signals (0.9) ---
   {
@@ -79,6 +84,7 @@ const SIGNAL_PATTERNS: SignalPattern[] = [
     category: "profile",
     importance: 0.9,
     sourceContext: "identity signal",
+    replayPriority: 0.6,
   },
   // --- Decision signals (0.7) ---
   {
@@ -86,6 +92,7 @@ const SIGNAL_PATTERNS: SignalPattern[] = [
     category: "events",
     importance: 0.7,
     sourceContext: "decision signal",
+    replayPriority: 0.7,
   },
   // --- Correction signals (0.85 — high value, user explicitly correcting agent) ---
   {
@@ -93,6 +100,7 @@ const SIGNAL_PATTERNS: SignalPattern[] = [
     category: "cases",
     importance: 0.85,
     sourceContext: "correction signal",
+    replayPriority: 0.9,
   },
   // --- Explicit memory instruction signals (0.85) ---
   {
@@ -100,6 +108,7 @@ const SIGNAL_PATTERNS: SignalPattern[] = [
     category: "events",
     importance: 0.85,
     sourceContext: "explicit memory instruction",
+    replayPriority: 0.9,
   },
   // --- Pattern / workflow signals (0.75) ---
   {
@@ -107,6 +116,7 @@ const SIGNAL_PATTERNS: SignalPattern[] = [
     category: "patterns",
     importance: 0.75,
     sourceContext: "pattern signal",
+    replayPriority: 0.6,
   },
 ];
 
@@ -144,6 +154,7 @@ export function extractHeuristic(text: string): AutoCaptureItem[] {
           category: pattern.category,
           importance: pattern.importance,
           sourceContext: pattern.sourceContext,
+          replayPriority: pattern.replayPriority,
         });
         break; // first matching pattern wins for this sentence
       }

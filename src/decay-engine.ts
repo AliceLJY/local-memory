@@ -128,6 +128,25 @@ export function resolveTier(metadata?: string): MemoryTier {
  * Evaluate whether a memory should be promoted or demoted.
  * Returns the new tier (may be the same as current).
  */
+/**
+ * Synaptic homeostasis: when core tier exceeds capacity, raise promotion thresholds.
+ * Prevents "everything is important = nothing is important" problem.
+ */
+export function homeostasisAdjustedThresholds(
+  coreCount: number,
+  thresholds: TierThresholds = DEFAULT_TIER_THRESHOLDS,
+  coreCap = 500,
+): TierThresholds {
+  if (coreCount <= coreCap) return thresholds;
+  // Scale factor: 1.0 at cap, up to 2.0 at 3x cap
+  const overflow = Math.min(coreCount / coreCap, 3.0);
+  return {
+    ...thresholds,
+    coreAccessMin: Math.ceil(thresholds.coreAccessMin * overflow),
+    coreImportanceMin: Math.min(thresholds.coreImportanceMin * (0.5 + 0.5 * overflow), 0.98),
+  };
+}
+
 export function evaluateTierChange(
   currentTier: MemoryTier,
   accessCount: number,

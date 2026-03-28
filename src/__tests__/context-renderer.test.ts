@@ -70,9 +70,9 @@ describe("renderMemories", () => {
     expect(result.memories[0].id).toBe("b");
   });
 
-  it("synthesize falls back to highlight", () => {
+  it("synthesize mode processes memories", () => {
     const result = renderMemories(MEMORIES, "TypeScript preferences", "synthesize");
-    expect(result.mode).toBe("highlight");
+    expect(result.mode).toBe("synthesize");
     expect(result.memories.length).toBe(3);
   });
 

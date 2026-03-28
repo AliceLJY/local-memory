@@ -79,6 +79,51 @@ export function computeTermOverlap(a: Set<string>, b: Set<string>): number {
 }
 
 // ---------------------------------------------------------------------------
+// Temporal helpers
+// ---------------------------------------------------------------------------
+
+/** Detect whether a query asks for a specific date/time. */
+export function isTemporalQuery(query: string): boolean {
+  return /^when\b|what (date|time|day|year|month)\b|how long ago\b/i.test(query);
+}
+
+/** Extract a bracketed date anchor from memory text, e.g. "[1:56 pm on 7 May, 2023]". */
+function extractAnchorDate(text: string): { dateStr: string; year: number; month: number } | null {
+  const m = text.match(/\[(?:\d{1,2}:\d{2}\s*(?:am|pm)\s+on\s+)?(\d{1,2})\s+(\w+),?\s+(\d{4})\]/i);
+  if (!m) return null;
+  const monthMap: Record<string, number> = {
+    january: 1, february: 2, march: 3, april: 4, may: 5, june: 6,
+    july: 7, august: 8, september: 9, october: 10, november: 11, december: 12,
+  };
+  const month = monthMap[m[2].toLowerCase()];
+  if (!month) return null;
+  return { dateStr: m[0], year: parseInt(m[3], 10), month };
+}
+
+/**
+ * Annotate relative time expressions with absolute dates.
+ * E.g. "last year" in text dated [7 May, 2023] → "last year (i.e., 2022)"
+ */
+export function resolveRelativeDates(text: string): string {
+  const anchor = extractAnchorDate(text);
+  if (!anchor) return text;
+
+  const { year, month } = anchor;
+  const MONTHS = ["", "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December"];
+
+  return text
+    .replace(/\blast year\b/gi, `last year (i.e., ${year - 1})`)
+    .replace(/\bnext year\b/gi, `next year (i.e., ${year + 1})`)
+    .replace(/\blast month\b/gi, `last month (i.e., ${MONTHS[month === 1 ? 12 : month - 1]} ${month === 1 ? year - 1 : year})`)
+    .replace(/\bnext month\b/gi, `next month (i.e., ${MONTHS[month === 12 ? 1 : month + 1]} ${month === 12 ? year + 1 : year})`)
+    .replace(/\b(\d+)\s+years?\s+ago\b/gi, (match, n) => `${match} (i.e., ${year - parseInt(n, 10)})`)
+    .replace(/\ba few years ago\b/gi, `a few years ago (i.e., around ${year - 3})`)
+    .replace(/\blast week\b/gi, `last week (i.e., the week before ${anchor.dateStr})`)
+    .replace(/\blast saturday\b/gi, `last Saturday (i.e., the Saturday before ${anchor.dateStr})`);
+}
+
+// ---------------------------------------------------------------------------
 // Renderer
 // ---------------------------------------------------------------------------
 
@@ -87,7 +132,7 @@ export function computeTermOverlap(a: Set<string>, b: Set<string>): number {
  *
  * - verbatim: return as-is in original order (default)
  * - highlight: reorder by contextual relevance (60% vector score + 40% term overlap)
- * - synthesize: reserved for future LLM pass (currently falls back to highlight)
+ * - synthesize: highlight + temporal date annotation for "when" queries
  */
 export function renderMemories(
   memories: RenderableMemory[],
@@ -107,18 +152,22 @@ export function renderMemories(
     };
   }
 
-  // synthesize not yet implemented — fall back to highlight
-  const effectiveMode: RenderMode = mode === "synthesize" ? "highlight" : mode;
-
+  const temporal = isTemporalQuery(query);
   const queryTerms = extractTerms(query + (taskContext ? " " + taskContext : ""));
 
   const scored = memories.map(m => {
     const memTerms = extractTerms(m.text);
     const overlap = computeTermOverlap(queryTerms, memTerms);
     const relevance = 0.6 * m.score + 0.4 * overlap;
+
+    // In synthesize mode for temporal queries, annotate relative dates
+    const renderedText = (mode === "synthesize" && temporal)
+      ? resolveRelativeDates(m.text)
+      : m.text;
+
     return {
       id: m.id,
-      text: m.text,
+      text: renderedText,
       category: m.category,
       relevance: Math.round(relevance * 1000) / 1000,
     };
@@ -126,5 +175,5 @@ export function renderMemories(
 
   scored.sort((a, b) => b.relevance - a.relevance);
 
-  return { mode: effectiveMode, memories: scored };
+  return { mode, memories: scored };
 }

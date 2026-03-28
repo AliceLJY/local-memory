@@ -345,7 +345,7 @@ export class MemoryStore {
 
     const fullEntry: MemoryEntry = {
       ...entry,
-      id: entry.id || randomUUID(),
+      id: entry.id || deterministicId(entry.scope, entry.text),
       timestamp: Date.now(),
       metadata: entry.metadata || "{}",
     };
@@ -372,7 +372,7 @@ export class MemoryStore {
 
     const fullEntries: MemoryEntry[] = entries.map(entry => ({
       ...entry,
-      id: randomUUID(),
+      id: deterministicId(entry.scope, entry.text),
       timestamp: Date.now(),
       metadata: entry.metadata || "{}",
     }));

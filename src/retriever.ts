@@ -13,6 +13,7 @@ import { weibullDecay, resolveTier } from "./decay-engine.js";
 import { logWarn } from "./stderr-log.js";
 import { extractBoundaryMetadata, isDurableMemoryScope, isTranscriptScope } from "./memory-boundaries.js";
 import type { TraceCollector } from "./retrieval-trace.js";
+import { filterInterference } from "./rif.js";
 
 // ============================================================================
 // Types & Configuration
@@ -78,6 +79,12 @@ export interface RetrievalConfig {
    * fall back to hardMinScore. (default: see DEFAULT_CATEGORY_MIN_SCORES)
    */
   categoryMinScores?: Record<string, number>;
+  /** Enable Retrieval Interference Filter (RIF) — demotes near-duplicate weak results. Default: false. */
+  enableRIF?: boolean;
+  /** RIF cosine similarity threshold for "near-duplicate" (default: 0.85). */
+  rifThreshold?: number;
+  /** RIF score ratio: demote if score < ratio * stronger result's score (default: 0.80). */
+  rifScoreRatio?: number;
 }
 
 export interface RetrievalContext {
@@ -326,6 +333,12 @@ function cosineSimilarity(a: number[], b: number[]): number {
 
 export class MemoryRetriever {
   private accessTracker?: AccessTracker;
+  /**
+   * Session-scoped suppression list (dopamine-inspired "do not disturb").
+   * IDs in this set get a score penalty during retrieval but are NOT deleted.
+   * Call clearSessionSuppression() to reset (e.g. at session end).
+   */
+  private sessionSuppressed = new Set<string>();
 
   constructor(
     private store: MemoryStore,
@@ -336,6 +349,16 @@ export class MemoryRetriever {
   /** Attach an AccessTracker to enable reinforcement-based decay. */
   setAccessTracker(tracker: AccessTracker): void {
     this.accessTracker = tracker;
+  }
+
+  /** Suppress a memory ID for the current session (score × 0.3). */
+  suppressForSession(id: string): void {
+    this.sessionSuppressed.add(id);
+  }
+
+  /** Clear all session suppressions. */
+  clearSessionSuppression(): void {
+    this.sessionSuppressed.clear();
   }
 
   /** Resolve the minimum score for a given category, falling back to hardMinScore. */
@@ -431,8 +454,11 @@ export class MemoryRetriever {
     const hotnessBlended = this.applyHotnessBlend(timeDecayed);
     trace?.endStage(hotnessBlended.length, hotnessBlended.map(r => r.score));
 
-    trace?.startStage("hard_min_score", hotnessBlended.length);
-    const hardFiltered = hotnessBlended.filter(r => r.score >= this.minScoreFor(r.entry.category));
+    // Session suppression: temporarily penalize "do not disturb" memories
+    const afterSuppression = this.applySessionSuppression(hotnessBlended);
+
+    trace?.startStage("hard_min_score", afterSuppression.length);
+    const hardFiltered = afterSuppression.filter(r => r.score >= this.minScoreFor(r.entry.category));
     trace?.endStage(hardFiltered.length, hardFiltered.map(r => r.score));
 
     trace?.startStage("noise_filter", hardFiltered.length);
@@ -441,9 +467,14 @@ export class MemoryRetriever {
       : hardFiltered;
     trace?.endStage(denoised.length, denoised.map(r => r.score));
 
+    // RIF: demote near-duplicate weak results to improve diversity
+    const afterRif = this.config.enableRIF
+      ? filterInterference(denoised, this.config.rifThreshold ?? 0.85, this.config.rifScoreRatio ?? 0.80)
+      : denoised;
+
     // MMR deduplication: avoid top-k filled with near-identical memories
-    trace?.startStage("mmr_diversity", denoised.length);
-    const deduplicated = this.applyMMRDiversity(denoised);
+    trace?.startStage("mmr_diversity", afterRif.length);
+    const deduplicated = this.applyMMRDiversity(afterRif);
     trace?.endStage(deduplicated.length, deduplicated.map(r => r.score));
 
     trace?.startStage("final_limit", deduplicated.length);
@@ -541,9 +572,14 @@ export class MemoryRetriever {
       : hardFiltered;
     trace?.endStage(denoised.length, denoised.map(r => r.score));
 
+    // RIF: demote near-duplicate weak results to improve diversity
+    const afterRif = this.config.enableRIF
+      ? filterInterference(denoised, this.config.rifThreshold ?? 0.85, this.config.rifScoreRatio ?? 0.80)
+      : denoised;
+
     // MMR deduplication: avoid top-k filled with near-identical memories
-    trace?.startStage("mmr_diversity", denoised.length);
-    const deduplicated = this.applyMMRDiversity(denoised);
+    trace?.startStage("mmr_diversity", afterRif.length);
+    const deduplicated = this.applyMMRDiversity(afterRif);
     trace?.endStage(deduplicated.length, deduplicated.map(r => r.score));
 
     trace?.startStage("final_limit", deduplicated.length);
@@ -990,6 +1026,20 @@ export class MemoryRetriever {
    * (e.g. 3 similar "SVG style" memories) while keeping them available
    * if the pool is small.
    */
+  /**
+   * Session-level "do not disturb": penalize suppressed memories (score × 0.3).
+   * Inspired by dopamine-mediated transient inhibition — memory isn't deleted,
+   * just temporarily quieted so it doesn't dominate irrelevant sessions.
+   */
+  private applySessionSuppression(results: RetrievalResult[]): RetrievalResult[] {
+    if (this.sessionSuppressed.size === 0) return results;
+    return results.map(r =>
+      this.sessionSuppressed.has(r.entry.id)
+        ? { ...r, score: r.score * 0.3 }
+        : r,
+    ).sort((a, b) => b.score - a.score);
+  }
+
   private applyMMRDiversity(results: RetrievalResult[], similarityThreshold = 0.85): RetrievalResult[] {
     if (results.length <= 1) return results;
 
