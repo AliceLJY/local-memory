@@ -16,4 +16,4 @@
 ## 测试
 
 - 改完代码必须跑 `bun test`，全量通过才能 commit
-- 当前基线：572 tests / 0 fail
+- 当前基线：643 tests / 0 fail
