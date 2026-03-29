@@ -149,3 +149,86 @@ export function cosineSimilarity(a: number[], b: number[]): number {
   const denom = Math.sqrt(normA) * Math.sqrt(normB);
   return denom === 0 ? 0 : dot / denom;
 }
+
+// ---------------------------------------------------------------------------
+// Text-Overlap Scoring (lightweight proxy for L0/L1 vector similarity)
+// ---------------------------------------------------------------------------
+
+const CJK_RANGE = /[\u4e00-\u9fff\u3400-\u4dbf]/;
+const STOP_WORDS_EN = new Set(["a","an","the","is","are","was","were","be","been","being","have","has","had","do","does","did","will","would","shall","should","may","might","can","could","of","in","to","for","with","on","at","by","from","and","or","but","not","no","so","if","as","it","i","my","me","we","our","us","you","your","he","she","they","them","this","that","what","which","who","how","when","where","why"]);
+const STOP_WORDS_ZH = new Set(["的","了","在","是","我","有","和","就","不","人","都","一","一个","上","也","很","到","说","要","去","你","会","着","没有","看","好","自己","这"]);
+
+/** Tokenize text into words, CJK-aware. Returns lowercased tokens with stop words removed. */
+export function tokenize(text: string): string[] {
+  const tokens: string[] = [];
+  const lower = text.toLowerCase();
+
+  // Walk character-by-character: CJK chars → individual tokens, Latin runs → whole-word tokens
+  let currentWord = "";
+  for (const ch of lower) {
+    if (CJK_RANGE.test(ch)) {
+      // Flush any accumulated Latin word
+      if (currentWord.length > 1 && !STOP_WORDS_EN.has(currentWord)) tokens.push(currentWord);
+      currentWord = "";
+      // CJK char as individual token
+      if (!STOP_WORDS_ZH.has(ch)) tokens.push(ch);
+    } else if (/\w/.test(ch)) {
+      currentWord += ch;
+    } else {
+      // Punctuation/whitespace: flush Latin word
+      if (currentWord.length > 1 && !STOP_WORDS_EN.has(currentWord)) tokens.push(currentWord);
+      currentWord = "";
+    }
+  }
+  // Flush trailing Latin word
+  if (currentWord.length > 1 && !STOP_WORDS_EN.has(currentWord)) tokens.push(currentWord);
+
+  return tokens;
+}
+
+/**
+ * Compute term-overlap score between query and candidate text.
+ * Returns [0, 1] blending coverage (query terms found) and density
+ * (query terms / candidate length). Density rewards concise abstracts
+ * over verbose full-text, which is exactly the L0>L1>L2 gradient we want.
+ */
+export function textOverlapScore(query: string, candidateText: string): number {
+  const qTokens = tokenize(query);
+  if (qTokens.length === 0) return 0;
+
+  const cTokens = tokenize(candidateText);
+  if (cTokens.length === 0) return 0;
+
+  const cSet = new Set(cTokens);
+  let hits = 0;
+  for (const t of qTokens) {
+    if (cSet.has(t)) hits++;
+  }
+
+  // Coverage: what fraction of query terms appear in candidate [0, 1]
+  const coverage = hits / qTokens.length;
+
+  // Density: query term hits / candidate token count — rewards concise text [0, 1]
+  const density = hits / cTokens.length;
+
+  // Blend: coverage dominant (70%), density as tiebreaker (30%)
+  return coverage * 0.7 + density * 0.3;
+}
+
+/**
+ * Adaptive blend weights based on query length.
+ * Short/conceptual queries → weight L0/L1 more.
+ * Long/detailed queries → weight L2 (main vector) more.
+ */
+export function adaptiveBlendConfig(queryTokenCount: number): MultiVectorBlendConfig {
+  if (queryTokenCount <= 3) {
+    // Topic-level: boost L0/L1
+    return { vectorWeight: 0.50, l0Weight: 0.25, l1Weight: 0.25 };
+  }
+  if (queryTokenCount <= 10) {
+    // Default balanced
+    return DEFAULT_BLEND_CONFIG;
+  }
+  // Detailed query: rely on L2 main vector
+  return { vectorWeight: 0.80, l0Weight: 0.10, l1Weight: 0.10 };
+}

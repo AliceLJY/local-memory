@@ -7,6 +7,9 @@ import {
   embedMultiVector,
   extractMultiVectorText,
   isMultiVectorEnabled,
+  tokenize,
+  textOverlapScore,
+  adaptiveBlendConfig,
 } from "../multi-vector.js";
 
 describe("isMultiVectorEnabled", () => {
@@ -143,5 +146,97 @@ describe("cosineSimilarity", () => {
 
   it("returns 0 for mismatched dimensions", () => {
     expect(cosineSimilarity([1, 0], [1, 0, 0])).toBe(0);
+  });
+});
+
+// ===========================================================================
+// Tier 4.3: Text-overlap multi-vector scoring
+// ===========================================================================
+
+describe("tokenize", () => {
+  it("tokenizes English text, removes stop words", () => {
+    const tokens = tokenize("The user prefers TypeScript for projects");
+    expect(tokens).toContain("user");
+    expect(tokens).toContain("prefers");
+    expect(tokens).toContain("typescript");
+    expect(tokens).toContain("projects");
+    expect(tokens).not.toContain("the");
+    expect(tokens).not.toContain("for");
+  });
+
+  it("tokenizes Chinese text into unigrams, removes stop words", () => {
+    const tokens = tokenize("用户喜欢使用TypeScript编程");
+    expect(tokens).toContain("用");
+    expect(tokens).toContain("户");
+    expect(tokens).toContain("喜");
+    expect(tokens).toContain("欢");
+    expect(tokens).toContain("typescript");
+    expect(tokens).not.toContain("的");
+  });
+
+  it("handles mixed CJK and English", () => {
+    const tokens = tokenize("RecallNest 记忆服务 is great");
+    expect(tokens).toContain("recallnest");
+    expect(tokens).toContain("记");
+    expect(tokens).toContain("忆");
+    expect(tokens).toContain("服");
+    expect(tokens).toContain("务");
+    expect(tokens).toContain("great");
+  });
+
+  it("returns empty for empty/whitespace input", () => {
+    expect(tokenize("")).toEqual([]);
+    expect(tokenize("   ")).toEqual([]);
+  });
+});
+
+describe("textOverlapScore", () => {
+  it("returns 1.0 when query fully matches a concise abstract", () => {
+    const score = textOverlapScore("TypeScript preference", "TypeScript preference");
+    expect(score).toBeGreaterThan(0.8);
+  });
+
+  it("returns higher score for L0 abstract than L2 full text on topic query", () => {
+    const query = "TypeScript projects";
+    const l0 = "User prefers TypeScript for all projects";
+    const l2 = "The user mentioned that they have been working with React and JavaScript for three years. They recently started using TypeScript for their projects because of type safety. They also mentioned Python for data science work.";
+
+    const l0Score = textOverlapScore(query, l0);
+    const l2Score = textOverlapScore(query, l2);
+    expect(l0Score).toBeGreaterThan(l2Score);
+  });
+
+  it("returns 0 for completely unrelated texts", () => {
+    const score = textOverlapScore("TypeScript projects", "天气很好适合出去玩");
+    expect(score).toBe(0);
+  });
+
+  it("returns 0 for empty query", () => {
+    expect(textOverlapScore("", "some text")).toBe(0);
+  });
+
+  it("returns 0 for empty candidate", () => {
+    expect(textOverlapScore("some query", "")).toBe(0);
+  });
+});
+
+describe("adaptiveBlendConfig", () => {
+  it("boosts L0/L1 for short queries (≤3 tokens)", () => {
+    const config = adaptiveBlendConfig(2);
+    expect(config.l0Weight).toBe(0.25);
+    expect(config.l1Weight).toBe(0.25);
+    expect(config.vectorWeight).toBe(0.50);
+  });
+
+  it("uses default for medium queries (4-10 tokens)", () => {
+    const config = adaptiveBlendConfig(7);
+    expect(config).toEqual(DEFAULT_BLEND_CONFIG);
+  });
+
+  it("favors L2 for long queries (>10 tokens)", () => {
+    const config = adaptiveBlendConfig(15);
+    expect(config.vectorWeight).toBe(0.80);
+    expect(config.l0Weight).toBe(0.10);
+    expect(config.l1Weight).toBe(0.10);
   });
 });

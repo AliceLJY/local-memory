@@ -16,6 +16,15 @@ import type { TraceCollector } from "./retrieval-trace.js";
 import { filterInterference } from "./rif.js";
 import { applyConfidenceWeight } from "./confidence-tracker.js";
 import { deduplicateByVersionGroup } from "./version-manager.js";
+import {
+  isMultiVectorEnabled,
+  extractMultiVectorText,
+  textOverlapScore,
+  blendMultiVectorScores,
+  adaptiveBlendConfig,
+  tokenize,
+} from "./multi-vector.js";
+import { parseTemporalQuery, matchesTemporalConstraint, type TemporalConstraint } from "./temporal-parser.js";
 
 // ============================================================================
 // Types & Configuration
@@ -410,8 +419,12 @@ export class MemoryRetriever {
     includeArchived?: boolean,
     trace?: TraceCollector,
   ): Promise<RetrievalResult[]> {
+    // Temporal reasoning for vector-only mode
+    const temporal = parseTemporalQuery(query);
+    const searchQuery = temporal.constraint ? temporal.cleanedQuery : query;
+
     trace?.startStage("vector_search", 0);
-    const queryVector = await this.embedder.embedQuery(query);
+    const queryVector = await this.embedder.embedQuery(searchQuery);
     const results = await this.store.vectorSearch(queryVector, limit, this.config.minScore, scopeFilter);
     trace?.endStage(results.length, results.map(r => r.score));
 
@@ -421,9 +434,14 @@ export class MemoryRetriever {
       : results;
 
     // Filter archived records (default: exclude)
-    const filtered = includeArchived
+    const afterArchive = includeArchived
       ? afterCategory
       : afterCategory.filter(r => parseMetadata(r.entry.metadata).archived !== true);
+
+    // Temporal filter
+    const filtered = temporal.constraint
+      ? afterArchive.filter(r => matchesTemporalConstraint(r.entry.timestamp, temporal.constraint!))
+      : afterArchive;
 
     const mapped = filtered.map((result, index) => ({
       ...result,
@@ -508,14 +526,18 @@ export class MemoryRetriever {
   ): Promise<RetrievalResult[]> {
     const candidatePoolSize = Math.max(this.config.candidatePoolSize, limit * 2);
 
+    // Temporal reasoning: extract time constraint and clean query for semantic search
+    const temporal = parseTemporalQuery(query);
+    const searchQuery = temporal.constraint ? temporal.cleanedQuery : query;
+
     // Compute query embedding once, reuse for vector search + reranking
-    const queryVector = await this.embedder.embedQuery(query);
+    const queryVector = await this.embedder.embedQuery(searchQuery);
 
     // Run vector and BM25 searches in parallel
     trace?.startStage("vector_search", 0);
     const [vectorResults, bm25Results] = await Promise.all([
       this.runVectorSearch(queryVector, candidatePoolSize, scopeFilter, category, includeArchived),
-      this.runBM25Search(expandQuery(query), candidatePoolSize, scopeFilter, category, includeArchived),
+      this.runBM25Search(expandQuery(searchQuery), candidatePoolSize, scopeFilter, category, includeArchived),
     ]);
     trace?.endStage(vectorResults.length, vectorResults.map(r => r.score));
 
@@ -527,9 +549,21 @@ export class MemoryRetriever {
     const fusedResults = await this.fuseResults(vectorResults, bm25Results);
     trace?.endStage(fusedResults.length, fusedResults.map(r => r.score));
 
+    // Temporal filter: when query has a time constraint, remove non-matching candidates
+    trace?.startStage("temporal_filter", fusedResults.length);
+    const temporalFiltered = temporal.constraint
+      ? fusedResults.filter(r => matchesTemporalConstraint(r.entry.timestamp, temporal.constraint!))
+      : fusedResults;
+    trace?.endStage(temporalFiltered.length, temporalFiltered.map(r => r.score));
+
+    // Multi-vector L0/L1 blend: re-score candidates using metadata abstracts/overviews
+    trace?.startStage("multi_vector_blend", temporalFiltered.length);
+    const multiVecBlended = this.applyMultiVectorBlend(temporalFiltered, searchQuery);
+    trace?.endStage(multiVecBlended.length, multiVecBlended.map(r => r.score));
+
     // Apply minimum score threshold
-    trace?.startStage("min_score_filter", fusedResults.length);
-    const filtered = fusedResults.filter(r => r.score >= this.config.minScore);
+    trace?.startStage("min_score_filter", multiVecBlended.length);
+    const filtered = multiVecBlended.filter(r => r.score >= this.config.minScore);
     trace?.endStage(filtered.length, filtered.map(r => r.score));
 
     // Rerank if enabled
@@ -846,6 +880,34 @@ export class MemoryRetriever {
       logWarn("Reranking failed, returning original results:", error);
       return results;
     }
+  }
+
+  /**
+   * Multi-vector L0/L1 blend: re-score candidates using text overlap
+   * between query and L0 abstract / L1 overview stored in metadata.
+   *
+   * Short/conceptual queries get higher L0/L1 weight (topic matching).
+   * Detailed queries stay dominated by L2 main vector score.
+   * Feature-gated: RECALLNEST_MULTI_VECTOR=true.
+   */
+  private applyMultiVectorBlend(results: RetrievalResult[], query: string): RetrievalResult[] {
+    if (!isMultiVectorEnabled() || results.length === 0) return results;
+
+    const qTokenCount = tokenize(query).length;
+    const blendConfig = adaptiveBlendConfig(qTokenCount);
+
+    return results.map(r => {
+      const { l0, l1 } = extractMultiVectorText(r.entry.metadata);
+
+      const l0Score = l0 ? textOverlapScore(query, l0) : null;
+      const l1Score = l1 ? textOverlapScore(query, l1) : null;
+
+      // Skip blending if no L0/L1 available
+      if (l0Score === null && l1Score === null) return r;
+
+      const blendedScore = blendMultiVectorScores(r.score, l0Score, l1Score, blendConfig);
+      return { ...r, score: blendedScore };
+    });
   }
 
   /**

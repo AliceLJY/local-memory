@@ -100,6 +100,7 @@ import { formatWorkflowEvidencePack, formatWorkflowHealthDashboard, formatWorkfl
 import { WorkflowObservationStore } from "./workflow-observation-store.js";
 import { buildManagedCheckpointObservation, buildManagedResumeObservation } from "./workflow-observation-managed.js";
 import { buildRetrievalContext, resolveScopeSelection } from "./scope-policy.js";
+import { matchesTemporalConstraint, type TemporalConstraint } from "./temporal-parser.js";
 import { setReminder, checkTriggers, fireReminder, formatReminders } from "./prospective-memory.js";
 
 function entryToRetrievalResult(entry: Awaited<ReturnType<MemoryStore["get"]>>): RetrievalResult {
@@ -808,12 +809,14 @@ registerTool(
     category: DurableMemoryCategorySchema.optional().describe("Filter by memory category: profile (identity/background), preferences (habits/style), entities (projects/tools/people), events (past happenings), cases (problem-solution pairs), patterns (reusable workflows)"),
     profile: z.enum(["default", "writing", "debug", "fact-check"]).optional().describe("Retrieval profile"),
     render: z.enum(["verbatim", "highlight"]).default("verbatim").optional().describe("Result rendering mode: verbatim (default, original order) or highlight (reorder by contextual relevance to query)"),
+    after: z.string().optional().describe("Filter memories stored after this date (ISO format YYYY-MM-DD, or relative like '最近30天', 'last 7 days')"),
+    before: z.string().optional().describe("Filter memories stored before this date (ISO format YYYY-MM-DD, or relative)"),
   },
-  async ({ query, limit, scope, sessionId, allScopes, category, profile: profileName, render }) => {
+  async ({ query, limit, scope, sessionId, allScopes, category, profile: profileName, render, after, before }) => {
     const { retriever, profile } = getComponents(profileName);
-    const results = await retriever.retrieve(buildRetrievalContext({
+    let results = await retriever.retrieve(buildRetrievalContext({
       query,
-      limit,
+      limit: (after || before) ? limit * 3 : limit, // Over-fetch when temporal filtering will reduce results
       category,
       scope,
       sessionId,
@@ -821,6 +824,21 @@ registerTool(
     }, {
       operation: "search_memory",
     }));
+
+    // Explicit temporal filtering from after/before params
+    if (after || before) {
+      const constraint: TemporalConstraint = {
+        type: (after && before) ? "range" : (after ? "after" : "before"),
+        startMs: after ? new Date(after).getTime() || undefined : undefined,
+        endMs: before ? new Date(before).getTime() || undefined : undefined,
+        anchor: `${after || ""}..${before || ""}`,
+      };
+      if (constraint.startMs || constraint.endMs) {
+        results = results
+          .filter(r => matchesTemporalConstraint(r.entry.timestamp, constraint))
+          .slice(0, limit);
+      }
+    }
 
     // Apply context-aware rendering when requested
     if (render === "highlight" && results.length > 0) {

@@ -14,6 +14,7 @@ import { homedir } from "node:os";
 import type { MemoryStore, MemoryEntry } from "./store.js";
 import type { Embedder } from "./embedder.js";
 import { chunkDocument, type ChunkerConfig } from "./chunker.js";
+import { segmentEvents, type EventSegmenterConfig, DEFAULT_EVENT_SEGMENTER_CONFIG } from "./event-segmenter.js";
 import { isProcessed, markProcessed } from "./tracker.js";
 import type { LLMClient, SmartExtraction } from "./llm-client.js";
 import { resolveIngestBoundary } from "./memory-boundaries.js";
@@ -843,15 +844,22 @@ function groupTurnsIntoChunks(turns: ConversationTurn[]): Array<{
       // Compress tool output noise before chunking (git boilerplate, passing tests, base64)
       const merged = compressToolOutput(`[用户] ${turn.text}\n\n[助手] ${nextTurn.text}`);
 
-      // If merged text is too long, chunk it
+      // If merged text is too long, segment by events then fallback to chunker
       if (merged.length > CONVERSATION_CHUNK_CONFIG.maxChunkSize) {
-        const chunkResult = chunkDocument(merged, CONVERSATION_CHUNK_CONFIG);
-        for (const chunk of chunkResult.chunks) {
-          chunks.push({
-            text: chunk,
-            timestamp: turn.timestamp,
-            sessionId: turn.sessionId,
-          });
+        const segments = segmentEvents(merged, {
+          maxSegmentSize: CONVERSATION_CHUNK_CONFIG.maxChunkSize,
+          minSegmentSize: CONVERSATION_CHUNK_CONFIG.minChunkSize,
+        });
+        for (const seg of segments) {
+          // If a segment is still too long, chunk it further
+          if (seg.text.length > CONVERSATION_CHUNK_CONFIG.maxChunkSize) {
+            const chunkResult = chunkDocument(seg.text, CONVERSATION_CHUNK_CONFIG);
+            for (const chunk of chunkResult.chunks) {
+              chunks.push({ text: chunk, timestamp: turn.timestamp, sessionId: turn.sessionId });
+            }
+          } else {
+            chunks.push({ text: seg.text, timestamp: turn.timestamp, sessionId: turn.sessionId });
+          }
         }
       } else {
         chunks.push({
@@ -868,13 +876,19 @@ function groupTurnsIntoChunks(turns: ConversationTurn[]): Array<{
       const text = compressToolOutput(`${prefix} ${turn.text}`);
 
       if (text.length > CONVERSATION_CHUNK_CONFIG.maxChunkSize) {
-        const chunkResult = chunkDocument(text, CONVERSATION_CHUNK_CONFIG);
-        for (const chunk of chunkResult.chunks) {
-          chunks.push({
-            text: chunk,
-            timestamp: turn.timestamp,
-            sessionId: turn.sessionId,
-          });
+        const segments = segmentEvents(text, {
+          maxSegmentSize: CONVERSATION_CHUNK_CONFIG.maxChunkSize,
+          minSegmentSize: CONVERSATION_CHUNK_CONFIG.minChunkSize,
+        });
+        for (const seg of segments) {
+          if (seg.text.length > CONVERSATION_CHUNK_CONFIG.maxChunkSize) {
+            const chunkResult = chunkDocument(seg.text, CONVERSATION_CHUNK_CONFIG);
+            for (const chunk of chunkResult.chunks) {
+              chunks.push({ text: chunk, timestamp: turn.timestamp, sessionId: turn.sessionId });
+            }
+          } else {
+            chunks.push({ text: seg.text, timestamp: turn.timestamp, sessionId: turn.sessionId });
+          }
         }
       } else {
         chunks.push({
