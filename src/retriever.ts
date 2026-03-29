@@ -14,6 +14,7 @@ import { logWarn } from "./stderr-log.js";
 import { extractBoundaryMetadata, isDurableMemoryScope, isTranscriptScope } from "./memory-boundaries.js";
 import type { TraceCollector } from "./retrieval-trace.js";
 import { filterInterference } from "./rif.js";
+import { applyConfidenceWeight } from "./confidence-tracker.js";
 
 // ============================================================================
 // Types & Configuration
@@ -433,8 +434,12 @@ export class MemoryRetriever {
     const weighted = this.applyImportanceWeight(boosted);
     trace?.endStage(weighted.length, weighted.map(r => r.score));
 
-    trace?.startStage("boundary_weight", weighted.length);
-    const boundaryWeighted = this.applyBoundaryWeight(weighted);
+    trace?.startStage("confidence_weight", weighted.length);
+    const confidenceWeighted = this.applyConfidence(weighted);
+    trace?.endStage(confidenceWeighted.length, confidenceWeighted.map(r => r.score));
+
+    trace?.startStage("boundary_weight", confidenceWeighted.length);
+    const boundaryWeighted = this.applyBoundaryWeight(confidenceWeighted);
     trace?.endStage(boundaryWeighted.length, boundaryWeighted.map(r => r.score));
 
     trace?.startStage("asset_type_weight", boundaryWeighted.length);
@@ -535,9 +540,14 @@ export class MemoryRetriever {
     const importanceWeighted = this.applyImportanceWeight(temporalReranked);
     trace?.endStage(importanceWeighted.length, importanceWeighted.map(r => r.score));
 
+    // Viewpoint confidence: penalize corrected/contradicted memories
+    trace?.startStage("confidence_weight", importanceWeighted.length);
+    const confidenceWeighted = this.applyConfidence(importanceWeighted);
+    trace?.endStage(confidenceWeighted.length, confidenceWeighted.map(r => r.score));
+
     // Prefer higher-authority durable memories over raw evidence when scores are close.
-    trace?.startStage("boundary_weight", importanceWeighted.length);
-    const boundaryWeighted = this.applyBoundaryWeight(importanceWeighted);
+    trace?.startStage("boundary_weight", confidenceWeighted.length);
+    const boundaryWeighted = this.applyBoundaryWeight(confidenceWeighted);
     trace?.endStage(boundaryWeighted.length, boundaryWeighted.map(r => r.score));
 
     // Separate pinned assets from synthesized briefs.
@@ -869,6 +879,19 @@ export class MemoryRetriever {
         score: clamp01(r.score * factor, r.score * baseWeight),
       };
     });
+    return weighted.sort((a, b) => b.score - a.score);
+  }
+
+  /**
+   * Viewpoint confidence: corrected/contradicted memories are penalized,
+   * confirmed memories are untouched. Same multiplicative pattern as importance.
+   * Formula: score *= (0.5 + 0.5 * confidence)
+   */
+  private applyConfidence(results: RetrievalResult[]): RetrievalResult[] {
+    const weighted = results.map(r => ({
+      ...r,
+      score: applyConfidenceWeight(r.score, r.entry),
+    }));
     return weighted.sort((a, b) => b.score - a.score);
   }
 
