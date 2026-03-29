@@ -44,6 +44,7 @@ import {
 } from "./preference-slots.js";
 import { matchPreference, applyPreferenceMatch } from "./preference-matcher.js";
 import type { LLMClient } from "./llm-client.js";
+import type { KGExtractor } from "./kg-extractor.js";
 
 type StoreDeps = Pick<MemoryStore, "store"> & Partial<Pick<MemoryStore, "list" | "update" | "getById" | "get" | "vectorSearch">>;
 type ConflictStoreDeps = Pick<ConflictCandidateStore, "save" | "replace" | "getOpenByFingerprint" | "getLatestByFingerprint">;
@@ -54,6 +55,8 @@ interface PersistMemoryDeps {
   conflictStore?: ConflictStoreDeps;
   /** Tier 3.6: Optional LLM for preference matching */
   llm?: LLMClient | null;
+  /** Tier 4.1: Optional KG triple extractor (async, non-blocking) */
+  kgExtractor?: KGExtractor | null;
 }
 
 interface DurableWriteInput {
@@ -745,6 +748,14 @@ export async function persistMemory(
     canonicalKey,
     source: input.source,
   });
+
+  // Tier 4.1: Async KG triple extraction (non-blocking)
+  if (deps.kgExtractor && disposition !== "deduped") {
+    deps.kgExtractor
+      .extractAndStore(input.text, entry.id, resolvedScope)
+      .catch(() => {}); // Silently ignore — KG extraction must never block memory writes
+  }
+
   return toStoredRecord(input, entry, disposition, canonicalKey, conflictId);
 }
 

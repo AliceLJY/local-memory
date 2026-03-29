@@ -454,6 +454,33 @@ export class LLMClient {
     }
   }
 
+  /**
+   * Chat + JSON parse helper for structured extraction.
+   * Returns null on failure (LLM error or invalid JSON).
+   */
+  async chatJson<T>(system: string, user: string): Promise<T | null> {
+    const raw = await this.chat(system, user);
+    if (!raw) return null;
+    try {
+      // Extract JSON from markdown fences if present
+      const fenceMatch = raw.match(/```(?:json)?\s*\n?([\s\S]*?)```/);
+      const jsonStr = fenceMatch ? fenceMatch[1].trim() : raw;
+      return JSON.parse(jsonStr) as T;
+    } catch {
+      // Try to find JSON object in the response
+      const start = raw.indexOf("{");
+      const end = raw.lastIndexOf("}");
+      if (start >= 0 && end > start) {
+        try {
+          return JSON.parse(raw.slice(start, end + 1)) as T;
+        } catch {
+          return null;
+        }
+      }
+      return null;
+    }
+  }
+
   // --------------------------------------------------------------------------
   // Internals
   // --------------------------------------------------------------------------

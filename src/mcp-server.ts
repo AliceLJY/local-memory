@@ -88,6 +88,8 @@ import { SessionCheckpointStore } from "./session-store.js";
 import { composeResumeContext } from "./context-composer.js";
 import { formatCheckpointSaved, formatCheckpointSummary, formatResumeContext } from "./session-output.js";
 import { ConflictStatusSchema } from "./conflict-schema.js";
+import { KGStore } from "./kg-store.js";
+import { createKGExtractor, isKGModeEnabled, type KGExtractor } from "./kg-extractor.js";
 import { resolveConflictCandidate } from "./conflict-engine.js";
 import { escalateConflicts } from "./conflict-escalation.js";
 import { ConflictCandidateStore } from "./conflict-store.js";
@@ -132,10 +134,22 @@ async function saveManagedObservation(observation: Parameters<typeof buildWorkfl
 loadDotEnv();
 const config = loadConfig();
 const getComponents = createComponentResolver(config);
-const { store } = getComponents();
+const { store, llm } = getComponents();
 const checkpointStore = new SessionCheckpointStore();
 const conflictStore = new ConflictCandidateStore();
 const workflowObservationStore = new WorkflowObservationStore();
+
+// Tier 4.1: Knowledge Graph triple extraction (gated by RECALLNEST_KG_MODE=true)
+let kgExtractor: KGExtractor | null = null;
+if (isKGModeEnabled() && llm) {
+  try {
+    const kgStore = new KGStore({ dbPath: store.dbPath });
+    kgExtractor = createKGExtractor({ llmClient: llm, kgStore });
+    console.error("[RecallNest] KG triple extraction enabled");
+  } catch (err) {
+    console.error("[RecallNest] KG init failed:", err);
+  }
+}
 
 const server = new McpServer({
   name: "recallnest",
@@ -256,6 +270,7 @@ registerTool(
       store,
       embedder,
       conflictStore,
+      kgExtractor,
     }, {
       text,
       category,
@@ -304,6 +319,7 @@ registerTool(
       store,
       embedder,
       conflictStore,
+      kgExtractor,
     }, {
       title,
       trigger,
@@ -397,6 +413,7 @@ registerTool(
       store,
       embedder,
       conflictStore,
+      kgExtractor,
     }, {
       scope,
       source,
@@ -449,6 +466,7 @@ registerTool(
       store,
       embedder,
       conflictStore,
+      kgExtractor,
     }, {
       title,
       problem,
@@ -500,6 +518,7 @@ registerTool(
       store,
       embedder,
       conflictStore,
+      kgExtractor,
     }, {
       memoryId,
       text,
