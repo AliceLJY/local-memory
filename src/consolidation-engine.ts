@@ -18,6 +18,7 @@
  */
 
 import type { MemoryEntry, MemorySearchResult, MemoryStore } from "./store.js";
+import { createVersionGroup } from "./version-manager.js";
 
 // ---------------------------------------------------------------------------
 // Config & Types
@@ -196,15 +197,9 @@ export class ConsolidationEngine {
           const sim = scoreMap.get(member.id) ?? clusterThreshold;
 
           if (sim >= mergeThreshold) {
-            // Merge: archive the weaker member
-            const meta = parseMetadata(member);
-            meta.state = "archived";
-            meta.superseded_by = canonical.id;
-            meta.consolidation = {
-              trigger: `merged into ${canonical.id.slice(0, 8)} (sim=${sim.toFixed(3)})`,
-              date: new Date().toISOString().slice(0, 10),
-            };
-            await this.store.update(member.id, { metadata: JSON.stringify(meta) }, [scope]);
+            // Tier 3.3: Version coexistence instead of SUPERSEDE.
+            // Both entries stay active but are grouped — retrieval picks the best.
+            await createVersionGroup(this.store, canonical, member, scope);
             mergedCount++;
           } else {
             // Link: add clustered_with relation
@@ -247,7 +242,7 @@ export function formatConsolidationResult(result: ConsolidationResult): string {
     `Consolidation complete for scope: ${result.scope}`,
     `Scanned: ${result.originalCount} active entries`,
     `Clusters found: ${result.clustersFound}`,
-    `Merged (archived): ${result.mergedCount}`,
+    `Merged (versioned): ${result.mergedCount}`,
     `Relations added: ${result.relationsAdded}`,
     `Conflicts detected: ${result.conflictsDetected.length}`,
   ];

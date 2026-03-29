@@ -96,12 +96,18 @@ describe("ConsolidationEngine", () => {
 
     expect(result.clustersFound).toBe(1);
     expect(result.mergedCount).toBe(1);
-    // The weaker entry (B, importance 0.5) should be archived
-    const archiveUpdate = updates.find(u => u.id === "b");
-    expect(archiveUpdate).toBeTruthy();
-    const meta = JSON.parse(archiveUpdate!.metadata);
-    expect(meta.state).toBe("archived");
-    expect(meta.superseded_by).toBe("a");
+    // Tier 3.3: Both entries now coexist in a version group instead of archiving.
+    // Both A and B should have version_group metadata.
+    const updateA = updates.find(u => u.id === "a");
+    const updateB = updates.find(u => u.id === "b");
+    expect(updateA).toBeTruthy();
+    expect(updateB).toBeTruthy();
+    const metaA = JSON.parse(updateA!.metadata);
+    const metaB = JSON.parse(updateB!.metadata);
+    expect(metaA.version_group).toBeTruthy();
+    expect(metaB.version_group).toBe(metaA.version_group);
+    // Canonical (A, higher importance) should have higher rank
+    expect(metaA.version_rank).toBeGreaterThan(metaB.version_rank);
   });
 
   it("links related entries below mergeThreshold but above clusterThreshold", async () => {
@@ -169,7 +175,7 @@ describe("formatConsolidationResult", () => {
     const text = formatConsolidationResult(result);
     expect(text).toContain("Scanned: 100");
     expect(text).toContain("Clusters found: 5");
-    expect(text).toContain("Merged (archived): 3");
+    expect(text).toContain("Merged (versioned): 3");
     expect(text).toContain("Conflicts:");
   });
 });

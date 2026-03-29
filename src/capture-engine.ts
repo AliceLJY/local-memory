@@ -42,14 +42,18 @@ import {
   type ReplyStylePreferenceSlot,
   type ToolChoicePreferenceSlot,
 } from "./preference-slots.js";
+import { matchPreference, applyPreferenceMatch } from "./preference-matcher.js";
+import type { LLMClient } from "./llm-client.js";
 
-type StoreDeps = Pick<MemoryStore, "store"> & Partial<Pick<MemoryStore, "list" | "update" | "getById" | "get">>;
+type StoreDeps = Pick<MemoryStore, "store"> & Partial<Pick<MemoryStore, "list" | "update" | "getById" | "get" | "vectorSearch">>;
 type ConflictStoreDeps = Pick<ConflictCandidateStore, "save" | "replace" | "getOpenByFingerprint" | "getLatestByFingerprint">;
 
 interface PersistMemoryDeps {
   store: StoreDeps;
   embedder: Pick<Embedder, "embedPassage">;
   conflictStore?: ConflictStoreDeps;
+  /** Tier 3.6: Optional LLM for preference matching */
+  llm?: LLMClient | null;
 }
 
 interface DurableWriteInput {
@@ -690,6 +694,47 @@ export async function persistMemory(
     text: input.text,
     canonicalKey: input.canonicalKey,
   });
+
+  // Tier 3.6: For preferences, check if similar preference already exists.
+  // If matched, merge into existing or skip — avoids duplicate accumulation.
+  if (
+    input.category === "preferences" &&
+    deps.store.vectorSearch
+  ) {
+    const matchResult = await matchPreference(
+      input.text,
+      vector,
+      resolvedScope,
+      deps.store as MemoryStore,
+      deps.llm ?? null,
+    );
+    if (matchResult.action !== "create") {
+      const applied = await applyPreferenceMatch(
+        matchResult,
+        deps.store as MemoryStore,
+        resolvedScope,
+      );
+      if (applied.handled) {
+        const entry = applied.entry ?? {
+          id: "skipped",
+          text: input.text,
+          vector,
+          category: input.category,
+          scope: resolvedScope,
+          importance: input.importance,
+          timestamp: Date.now(),
+          metadata: "{}",
+        };
+        return toStoredRecord(
+          input,
+          entry,
+          matchResult.action === "merge" ? "updated" : "deduped",
+          canonicalKey,
+        );
+      }
+    }
+  }
+
   const { entry, disposition, conflictId } = await writeDurableEntry(deps, {
     text: input.text,
     vector,

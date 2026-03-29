@@ -1,5 +1,5 @@
 import { extractBoundaryMetadata, extractCanonicalKey } from "./memory-boundaries.js";
-import { cleanText, stripConversationMarkers } from "./context-composer-text.js";
+import { bestSummaryText, cleanText, stripConversationMarkers } from "./context-composer-text.js";
 import type { RetrievalResult } from "./retriever.js";
 import {
   CASE_CUE_TERMS,
@@ -93,7 +93,8 @@ export function formatTaskResult(result: RetrievalResult): string {
   if (result.entry.category === "patterns") {
     return formatWorkflowPatternResult(result);
   }
-  return cleanText(stripConversationMarkers(result.entry.text), 220);
+  const text = bestSummaryText(result.entry.text, result.entry.metadata);
+  return cleanText(text, 220);
 }
 
 export function isDurableMemoryScope(scope: string): boolean {

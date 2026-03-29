@@ -15,6 +15,7 @@ import { extractBoundaryMetadata, isDurableMemoryScope, isTranscriptScope } from
 import type { TraceCollector } from "./retrieval-trace.js";
 import { filterInterference } from "./rif.js";
 import { applyConfidenceWeight } from "./confidence-tracker.js";
+import { deduplicateByVersionGroup } from "./version-manager.js";
 
 // ============================================================================
 // Types & Configuration
@@ -389,8 +390,13 @@ export class MemoryRetriever {
 
     // Record access for returned results (async, non-blocking).
     // Only reinforce on manual retrieval — auto-recall must not strengthen noise.
+    // Tier 3.2: pass similarity scores for novelty gating — only novel retrievals
+    // (high query-result distance) trigger access reinforcement.
     if (this.accessTracker && results.length > 0 && context.source !== "auto-recall") {
-      this.accessTracker.recordAccess(results.map(r => r.entry.id));
+      this.accessTracker.recordAccess(
+        results.map(r => r.entry.id),
+        results.map(r => r.score),
+      );
     }
 
     return results;
@@ -482,8 +488,11 @@ export class MemoryRetriever {
     const deduplicated = this.applyMMRDiversity(afterRif);
     trace?.endStage(deduplicated.length, deduplicated.map(r => r.score));
 
-    trace?.startStage("final_limit", deduplicated.length);
-    const final = deduplicated.slice(0, limit);
+    // Tier 3.3: Version group dedup — keep only the top-ranked version per group
+    const versionDeduped = deduplicateByVersionGroup(deduplicated);
+
+    trace?.startStage("final_limit", versionDeduped.length);
+    const final = versionDeduped.slice(0, limit);
     trace?.endStage(final.length, final.map(r => r.score));
 
     return final;
@@ -592,8 +601,11 @@ export class MemoryRetriever {
     const deduplicated = this.applyMMRDiversity(afterRif);
     trace?.endStage(deduplicated.length, deduplicated.map(r => r.score));
 
-    trace?.startStage("final_limit", deduplicated.length);
-    const final = deduplicated.slice(0, limit);
+    // Tier 3.3: Version group dedup — keep only the top-ranked version per group
+    const versionDeduped = deduplicateByVersionGroup(deduplicated);
+
+    trace?.startStage("final_limit", versionDeduped.length);
+    const final = versionDeduped.slice(0, limit);
     trace?.endStage(final.length, final.map(r => r.score));
 
     return final;

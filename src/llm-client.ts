@@ -353,6 +353,96 @@ export class LLMClient {
   }
 
   /**
+   * Generate a core summary (≤200 chars) for a memory chunk.
+   * More detailed than L0 (~80 chars), more concise than L1 (~500 chars).
+   * Used by Tier 3.1 to produce token-efficient context output.
+   *
+   * @returns Core summary string, or null on failure
+   */
+  async generateCoreSummary(text: string): Promise<string | null> {
+    try {
+      return await this.chat(
+        "你是记忆精炼助手。把以下内容提炼为一段核心摘要（不超过200字）。\n" +
+        "要求：保留关键事实、人名、数字、时间等；去除冗余修辞；直接输出摘要，不加前缀。",
+        text.slice(0, 2000),
+      );
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Batch generate core summaries for multiple texts.
+   * Packs up to 3 texts per request for efficiency.
+   */
+  async generateCoreSummaryBatch(texts: string[]): Promise<(string | null)[]> {
+    if (texts.length === 0) return [];
+    if (texts.length === 1) return [await this.generateCoreSummary(texts[0])];
+
+    const results: (string | null)[] = new Array(texts.length).fill(null);
+    const batchSize = 3;
+
+    for (let i = 0; i < texts.length; i += batchSize) {
+      const batch = texts.slice(i, i + batchSize);
+      const numbered = batch.map((t, idx) => `[${idx + 1}] ${t.slice(0, 800)}`).join("\n---\n");
+
+      try {
+        const raw = await this.chat(
+          "你是记忆精炼助手。为每段内容生成核心摘要（每条不超过200字）。\n" +
+          "输出 JSON 数组：[\"摘要1\", \"摘要2\", ...]",
+          numbered,
+        );
+        if (raw) {
+          const parsed = JSON.parse(
+            raw.replace(/^```(?:json)?\s*\n?/i, "").replace(/\n?```\s*$/, ""),
+          );
+          if (Array.isArray(parsed)) {
+            for (let j = 0; j < Math.min(parsed.length, batch.length); j++) {
+              results[i + j] = typeof parsed[j] === "string" ? parsed[j] : null;
+            }
+          }
+        }
+      } catch {
+        // Individual fallback
+        for (let j = 0; j < batch.length; j++) {
+          results[i + j] = await this.generateCoreSummary(batch[j]);
+        }
+      }
+    }
+
+    return results;
+  }
+
+  /**
+   * Synthesize multiple memory fragments into a coherent narrative.
+   * Used by Tier 3.5 result-synthesizer to produce readable context.
+   *
+   * @param fragments Array of memory text snippets
+   * @param query     The original query for context
+   * @param maxLen    Max output length in chars (default: 500)
+   * @returns Synthesized text, or null on failure
+   */
+  async synthesizeFragments(
+    fragments: string[],
+    query: string,
+    maxLen = 500,
+  ): Promise<string | null> {
+    if (fragments.length === 0) return null;
+    if (fragments.length === 1) return fragments[0];
+
+    const numbered = fragments.map((f, i) => `[${i + 1}] ${f}`).join("\n");
+    return this.chat(
+      `你是记忆整合助手。把多条碎片记忆整合成一段连贯的叙述。\n` +
+      `要求：\n` +
+      `- 不超过${maxLen}字\n` +
+      `- 去除重复信息，保留所有不同的事实\n` +
+      `- 保持客观，不添加原文没有的信息\n` +
+      `- 直接输出整合后的文本，不加前缀或解释`,
+      `查询：${query}\n\n记忆碎片：\n${numbered}`,
+    );
+  }
+
+  /**
    * Test LLM connectivity.
    */
   async test(): Promise<{ success: boolean; error?: string }> {

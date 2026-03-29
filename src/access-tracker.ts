@@ -26,6 +26,11 @@ export interface AccessTrackerConfig {
   maxMultiplier: number;
   /** Half-life for access count freshness decay (days). Default: 30 */
   accessFreshnessHalfLifeDays: number;
+  /** Novelty threshold: only reinforce when query-result distance > this (default: 0.35).
+   *  Higher = stricter, fewer reinforcements. 0 = disabled (always reinforce). */
+  noveltyThreshold: number;
+  /** Cooldown period per entry ID in ms. Same entry won't be reinforced twice within this window (default: 300000 = 5 min). */
+  cooldownMs: number;
 }
 
 export const DEFAULT_ACCESS_TRACKER_CONFIG: AccessTrackerConfig = {
@@ -33,6 +38,8 @@ export const DEFAULT_ACCESS_TRACKER_CONFIG: AccessTrackerConfig = {
   reinforcementFactor: 0.5,
   maxMultiplier: 3.0,
   accessFreshnessHalfLifeDays: 30,
+  noveltyThreshold: 0.35,
+  cooldownMs: 300_000, // 5 minutes
 };
 
 // ============================================================================
@@ -43,6 +50,8 @@ export class AccessTracker {
   private pending = new Map<string, number>();
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
   private flushPromise: Promise<void> | null = null;
+  /** Cooldown map: entryId → last reinforced timestamp */
+  private cooldownMap = new Map<string, number>();
 
   constructor(
     private store: MemoryStore,
@@ -50,15 +59,65 @@ export class AccessTracker {
   ) {}
 
   /**
+   * Determine whether a retrieval result should trigger access reinforcement.
+   * Gated by two conditions:
+   *   1. Novelty: the result's similarity score must indicate sufficient distance
+   *      (score ≤ 1 - noveltyThreshold) — i.e. not a near-exact repeat of the query.
+   *      Lower similarity = higher novelty = worth reinforcing.
+   *   2. Cooldown: the same entry ID must not have been reinforced within cooldownMs.
+   *
+   * @param entryId  The memory entry ID
+   * @param similarityScore  Cosine similarity between query and result (0-1)
+   * @returns true if this entry should be reinforced
+   */
+  shouldReinforce(entryId: string, similarityScore: number): boolean {
+    const { noveltyThreshold, cooldownMs } = this.config;
+
+    // Gate 1: Novelty — only reinforce if the retrieval is "surprising" enough.
+    // A very high similarity means the user is asking nearly the same thing as
+    // what's stored, so there's no new learning signal.
+    if (noveltyThreshold > 0) {
+      const novelty = 1 - similarityScore;
+      if (novelty < noveltyThreshold) return false;
+    }
+
+    // Gate 2: Cooldown — prevent same entry from being reinforced too frequently
+    if (cooldownMs > 0) {
+      const lastReinforced = this.cooldownMap.get(entryId);
+      if (lastReinforced && Date.now() - lastReinforced < cooldownMs) return false;
+    }
+
+    return true;
+  }
+
+  /**
    * Record that these memory IDs were returned in a search result.
    * Accumulates deltas in memory; flushed to store after debounce.
+   *
+   * @param ids  Memory entry IDs to record access for
+   * @param scores  Optional parallel array of similarity scores for novelty gating.
+   *                When provided, only entries passing shouldReinforce() are recorded.
    */
-  recordAccess(ids: string[]): void {
+  recordAccess(ids: string[], scores?: number[]): void {
     if (ids.length === 0) return;
 
-    for (const id of ids) {
+    const now = Date.now();
+
+    for (let i = 0; i < ids.length; i++) {
+      const id = ids[i];
+      const score = scores?.[i];
+
+      // If scores provided, apply novelty + cooldown gating
+      if (score !== undefined && !this.shouldReinforce(id, score)) {
+        continue;
+      }
+
       this.pending.set(id, (this.pending.get(id) || 0) + 1);
+      this.cooldownMap.set(id, now);
     }
+
+    // Nothing passed the gate → skip flush scheduling
+    if (this.pending.size === 0) return;
 
     // Debounce: schedule flush if not already pending
     if (!this.flushTimer) {
@@ -180,13 +239,14 @@ export class AccessTracker {
   }
 
   /**
-   * Clean up timers.
+   * Clean up timers and cooldown state.
    */
   destroy(): void {
     if (this.flushTimer) {
       clearTimeout(this.flushTimer);
       this.flushTimer = null;
     }
+    this.cooldownMap.clear();
   }
 
   get pendingCount(): number {

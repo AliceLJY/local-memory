@@ -22,6 +22,8 @@ import {
   looksLikeRecallOnlyTask,
   looksLikeStyleTask,
 } from "./term-registry.js";
+import { synthesizeSection } from "./result-synthesizer.js";
+import type { LLMClient } from "./llm-client.js";
 type ResumeCategory = "profile" | "preferences" | "entities" | "patterns" | "cases";
 
 interface ResumeRetriever {
@@ -36,6 +38,8 @@ export interface ResumeContextDeps {
   retriever: ResumeRetriever;
   checkpointStore: CheckpointLookup;
   listPins?: (limit?: number) => Array<PinAsset & { path: string }>;
+  /** Optional LLM client for Tier 3.5 result synthesis. */
+  llm?: LLMClient | null;
 }
 
 async function retrieveCandidates(
@@ -252,17 +256,27 @@ export async function composeResumeContext(
     strongWorkflowCueTerms: STRONG_WORKFLOW_CUE_TERMS,
   });
 
+  // Tier 3.5: Optionally synthesize sections into coherent narratives via LLM.
+  // Only activates when RECALLNEST_SYNTHESIZE=true and llm is provided.
+  const llm = deps.llm ?? null;
+  const queryHint = taskSeed || resolvedScope || "general";
+  const [synthStable, synthPatterns, synthCases] = await Promise.all([
+    synthesizeSection(stableContext, queryHint, llm),
+    synthesizeSection(relevantPatterns, queryHint, llm),
+    synthesizeSection(recentCases, queryHint, llm),
+  ]);
+
   const response = {
     summary: buildSummary({
-      stableContext,
-      relevantPatterns,
-      recentCases,
+      stableContext: synthStable,
+      relevantPatterns: synthPatterns,
+      recentCases: synthCases,
       latestCheckpoint,
     }),
     resolvedScope,
-    stableContext,
-    relevantPatterns,
-    recentCases,
+    stableContext: synthStable,
+    relevantPatterns: synthPatterns,
+    recentCases: synthCases,
     latestCheckpoint: latestCheckpoint
       ? {
         sessionId: latestCheckpoint.sessionId,

@@ -32,6 +32,8 @@ const TOOL_TIERS: Record<string, ToolTier> = {
   checkpoint_session: "core",
   latest_checkpoint: "core",
 
+  set_reminder: "core",
+
   // Advanced
   auto_capture: "advanced",
   store_case: "advanced",
@@ -98,6 +100,7 @@ import { formatWorkflowEvidencePack, formatWorkflowHealthDashboard, formatWorkfl
 import { WorkflowObservationStore } from "./workflow-observation-store.js";
 import { buildManagedCheckpointObservation, buildManagedResumeObservation } from "./workflow-observation-managed.js";
 import { buildRetrievalContext, resolveScopeSelection } from "./scope-policy.js";
+import { setReminder, checkTriggers, fireReminder, formatReminders } from "./prospective-memory.js";
 
 function entryToRetrievalResult(entry: Awaited<ReturnType<MemoryStore["get"]>>): RetrievalResult {
   if (!entry) {
@@ -325,6 +328,34 @@ registerTool(
           `Tags: ${stored.tags.join(", ") || "-"}`,
           ...(stored.conflictId ? [`Conflict: ${stored.conflictId.slice(0, 8)}`] : []),
           `Stored at: ${stored.storedAt}`,
+        ].join("\n"),
+      }],
+    };
+  }
+);
+
+registerTool(
+  "set_reminder",
+  "Set a prospective memory reminder: 'next time X comes up, remind me about Y'. The reminder is stored and automatically triggered during future retrievals when the trigger condition is matched.",
+  {
+    trigger: z.string().min(1).max(200).describe("Trigger condition — keywords that should activate this reminder"),
+    action: z.string().min(1).max(500).describe("What to remind about when the trigger fires"),
+    scope: z.string().min(1).max(160).describe("Required scope"),
+    expiresInDays: z.number().min(1).max(365).optional().describe("Optional: auto-expire after N days"),
+  },
+  async ({ trigger, action, scope, expiresInDays }) => {
+    const { store, embedder } = getComponents();
+    const entry = await setReminder(store, embedder, { trigger, action, scope, expiresInDays });
+
+    return {
+      content: [{
+        type: "text" as const,
+        text: [
+          `Reminder set: ${entry.id.slice(0, 8)}`,
+          `Trigger: "${trigger}"`,
+          `Action: ${action}`,
+          `Scope: ${scope}`,
+          ...(expiresInDays ? [`Expires in: ${expiresInDays} days`] : []),
         ].join("\n"),
       }],
     };
@@ -803,10 +834,27 @@ registerTool(
       results.sort((a, b) => (idOrder.get(a.entry.id) ?? 999) - (idOrder.get(b.entry.id) ?? 999));
     }
 
+    // Tier 3.4: Check for triggered reminders alongside search results
+    const { store, embedder } = getComponents();
+    const scopeFilter = scope ? [scope] : undefined;
+    const triggered = await checkTriggers(store, embedder, query, scopeFilter);
+    let reminderText = "";
+    if (triggered.length > 0) {
+      const firedActions: string[] = [];
+      for (const reminder of triggered) {
+        const action = await fireReminder(store, reminder.entryId, scopeFilter);
+        if (action) firedActions.push(action);
+      }
+      if (firedActions.length > 0) {
+        reminderText = "\n\n--- Triggered Reminders ---\n" +
+          firedActions.map(a => `- ${a}`).join("\n");
+      }
+    }
+
     return {
       content: [{
         type: "text" as const,
-        text: formatSearchResults(results, { query, profile: profile.name }),
+        text: formatSearchResults(results, { query, profile: profile.name }) + reminderText,
       }],
     };
   }

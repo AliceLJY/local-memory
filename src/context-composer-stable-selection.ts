@@ -1,6 +1,6 @@
 import { extractBoundaryMetadata, extractCanonicalKey, shouldUseStableMemoryResult } from "./memory-boundaries.js";
 import { buildProjectScopeCueTerms, normalizeScopedValue } from "./context-composer-scope.js";
-import { cleanText, dedupeText, stripConversationMarkers } from "./context-composer-text.js";
+import { bestSummaryText, cleanText, dedupeText, stripConversationMarkers } from "./context-composer-text.js";
 import type { RetrievalResult } from "./retriever.js";
 import {
   GENERIC_ENTITY_TASK_TERMS,
@@ -157,7 +157,8 @@ function hasUnsupportedPreferenceSpecificity(result: RetrievalResult, taskSeed?:
 }
 
 function formatStableResult(category: StableCategory, result: RetrievalResult): string {
-  return cleanText(`${STABLE_CATEGORY_LABELS[category]}: ${stripConversationMarkers(result.entry.text)}`, 220);
+  const text = bestSummaryText(result.entry.text, result.entry.metadata);
+  return cleanText(`${STABLE_CATEGORY_LABELS[category]}: ${text}`, 220);
 }
 
 export function selectStableResults(

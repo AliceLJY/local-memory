@@ -498,6 +498,32 @@ async function smartExtractBatch(
 }
 
 /**
+ * Tier 3.1: Check if core summary generation is enabled.
+ */
+function isCoreSummaryEnabled(): boolean {
+  return process.env.RECALLNEST_CORE_SUMMARY === "true";
+}
+
+/**
+ * Tier 3.1: Generate core summaries for a batch of texts.
+ * Only runs when RECALLNEST_CORE_SUMMARY=true and LLM is available.
+ * Returns null array when disabled (no overhead).
+ */
+async function generateCoreSummaries(
+  texts: string[],
+  llm?: LLMClient | null,
+): Promise<(string | null)[]> {
+  if (!isCoreSummaryEnabled() || !llm) {
+    return new Array(texts.length).fill(null);
+  }
+  try {
+    return await llm.generateCoreSummaryBatch(texts);
+  } catch {
+    return new Array(texts.length).fill(null);
+  }
+}
+
+/**
  * Batch-internal cosine dedup: after extraction + embedding, remove candidates
  * whose vectors are too similar (>threshold) to a higher-importance candidate
  * in the same batch. This saves downstream per-entry LLM dedup calls.
@@ -635,6 +661,8 @@ function buildIngestedEntry(params: {
   file: string;
   sessionId?: string;
   heading?: string;
+  /** Tier 3.1: optional core summary (≤200 chars) for token-efficient context output */
+  coreSummary?: string | null;
 }): {
   text: string;
   vector: number[];
@@ -669,6 +697,7 @@ function buildIngestedEntry(params: {
       l0_abstract: params.extraction.l0,
       l1_overview: params.extraction.l1,
       l2_content: params.text,
+      ...(params.coreSummary ? { core_summary: params.coreSummary } : {}),
       tier,
       boundary: resolution.boundary,
     }),
@@ -1051,6 +1080,7 @@ export async function ingestCodexSessions(
               result.chunksSkipped += dedupedTexts.length;
             } else {
               const extractions = await smartExtractBatch(dedupedTexts, options.llm);
+              const coreSummaries = await generateCoreSummaries(dedupedTexts, options.llm);
               for (let j = 0; j < dedupedTexts.length; j++) {
                 const chunk = dedupedChunks[j];
                 const ext = extractions[j];
@@ -1062,6 +1092,7 @@ export async function ingestCodexSessions(
                   extraction: ext,
                   sessionId: chunk.sessionId,
                   file: basename(filePath),
+                  coreSummary: coreSummaries[j],
                 }));
               }
             }
@@ -1252,6 +1283,7 @@ export async function ingestGeminiSessions(
               result.chunksSkipped += dedupedTexts.length;
             } else {
               const extractions = await smartExtractBatch(dedupedTexts, options.llm);
+              const coreSummaries = await generateCoreSummaries(dedupedTexts, options.llm);
               for (let j = 0; j < dedupedTexts.length; j++) {
                 const chunk = dedupedChunks[j];
                 const ext = extractions[j];
@@ -1263,6 +1295,7 @@ export async function ingestGeminiSessions(
                   extraction: ext,
                   sessionId: chunk.sessionId,
                   file: basename(filePath),
+                  coreSummary: coreSummaries[j],
                 }));
               }
             }
@@ -1472,6 +1505,7 @@ export async function ingestCCTranscripts(
 
           // Batch smart extraction (LLM 6-category)
           const extractions = await smartExtractBatch(dedupedTexts, options.llm);
+          const coreSummaries = await generateCoreSummaries(dedupedTexts, options.llm);
 
           const toStore: Array<{text: string; vector: number[]; category: string; scope: string; importance: number; metadata: string}> = [];
           for (let j = 0; j < dedupedTexts.length; j++) {
@@ -1485,6 +1519,7 @@ export async function ingestCCTranscripts(
               extraction: ext,
               sessionId: chunk.sessionId,
               file,
+              coreSummary: coreSummaries[j],
             }));
           }
 
@@ -1605,6 +1640,7 @@ export async function ingestMarkdownFiles(
 
           if (dedupedTexts.length > 0) {
             const extractions = await smartExtractBatch(dedupedTexts, options.llm);
+            const coreSummaries = await generateCoreSummaries(dedupedTexts, options.llm);
             for (let j = 0; j < dedupedTexts.length; j++) {
               const ext = extractions[j];
               toStore.push(buildIngestedEntry({
@@ -1615,6 +1651,7 @@ export async function ingestMarkdownFiles(
                 extraction: ext,
                 file,
                 heading: dedupedSections[j].heading,
+                coreSummary: coreSummaries[j],
               }));
             }
           }
@@ -1735,6 +1772,7 @@ export async function ingestGenericText(
 
           if (dedupedTexts.length > 0) {
             const extractions = await smartExtractBatch(dedupedTexts, options.llm);
+            const coreSummaries = await generateCoreSummaries(dedupedTexts, options.llm);
             const toStore: Array<{text: string; vector: number[]; category: string; scope: string; importance: number; metadata: string}> = [];
 
             for (let j = 0; j < dedupedTexts.length; j++) {
@@ -1746,6 +1784,7 @@ export async function ingestGenericText(
                 vector: dedupedVectors[j],
                 extraction: ext,
                 file,
+                coreSummary: coreSummaries[j],
               }));
             }
 
