@@ -25,6 +25,11 @@ import {
   tokenize,
 } from "./multi-vector.js";
 import { parseTemporalQuery, matchesTemporalConstraint, type TemporalConstraint } from "./temporal-parser.js";
+import type { KGStore } from "./kg-store.js";
+import { isKGModeEnabled } from "./kg-extractor.js";
+import { detectEntities } from "./query-entity-detector.js";
+import { buildGraph, pprTraverse } from "./ppr-traversal.js";
+import { logInfo } from "./stderr-log.js";
 
 // ============================================================================
 // Types & Configuration
@@ -111,12 +116,15 @@ export interface RetrievalContext {
   includeArchived?: boolean;
   /** Optional trace collector for per-stage pipeline observability. */
   trace?: TraceCollector;
+  /** Enable KG graph traversal (PPR) as an additional retrieval signal. */
+  graph?: boolean;
 }
 
 export interface RetrievalResult extends MemorySearchResult {
   sources: {
     vector?: { score: number; rank: number };
     bm25?: { score: number; rank: number };
+    graph?: { score: number; rank: number };
     fused?: { score: number };
     reranked?: { score: number };
   };
@@ -344,6 +352,7 @@ function cosineSimilarity(a: number[], b: number[]): number {
 
 export class MemoryRetriever {
   private accessTracker?: AccessTracker;
+  private kgStore?: KGStore;
   /**
    * Session-scoped suppression list (dopamine-inspired "do not disturb").
    * IDs in this set get a score penalty during retrieval but are NOT deleted.
@@ -360,6 +369,11 @@ export class MemoryRetriever {
   /** Attach an AccessTracker to enable reinforcement-based decay. */
   setAccessTracker(tracker: AccessTracker): void {
     this.accessTracker = tracker;
+  }
+
+  /** Attach a KGStore to enable graph-based retrieval (PPR). */
+  setKGStore(kgStore: KGStore): void {
+    this.kgStore = kgStore;
   }
 
   /** Suppress a memory ID for the current session (score × 0.3). */
@@ -379,7 +393,7 @@ export class MemoryRetriever {
   }
 
   async retrieve(context: RetrievalContext): Promise<RetrievalResult[]> {
-    const { query, limit, scopeFilter, category, includeArchived, trace } = context;
+    const { query, limit, scopeFilter, category, includeArchived, trace, graph } = context;
     const safeLimit = clampInt(limit, 1, 20);
 
     // Adaptive retrieval: skip trivial queries to save embedding API calls
@@ -393,8 +407,8 @@ export class MemoryRetriever {
     if (this.config.mode === "vector" || !this.store.hasFtsSupport) {
       results = await this.vectorOnlyRetrieval(query, safeLimit, scopeFilter, category, includeArchived, trace);
     } else {
-      // Hybrid retrieval with vector + BM25 + RRF fusion
-      results = await this.hybridRetrieval(query, safeLimit, scopeFilter, category, includeArchived, trace);
+      // Hybrid retrieval with vector + BM25 + RRF fusion (+ optional PPR graph)
+      results = await this.hybridRetrieval(query, safeLimit, scopeFilter, category, includeArchived, trace, graph);
     }
 
     // Record access for returned results (async, non-blocking).
@@ -523,6 +537,7 @@ export class MemoryRetriever {
     category?: string,
     includeArchived?: boolean,
     trace?: TraceCollector,
+    graph?: boolean,
   ): Promise<RetrievalResult[]> {
     const candidatePoolSize = Math.max(this.config.candidatePoolSize, limit * 2);
 
@@ -533,11 +548,17 @@ export class MemoryRetriever {
     // Compute query embedding once, reuse for vector search + reranking
     const queryVector = await this.embedder.embedQuery(searchQuery);
 
-    // Run vector and BM25 searches in parallel
+    // Run vector, BM25, and optionally PPR searches in parallel
+    const useGraph = graph && isKGModeEnabled() && this.kgStore;
+    const pprPromise = useGraph
+      ? this.runPPRSearch(query, scopeFilter?.[0], trace)
+      : Promise.resolve([] as RetrievalResult[]);
+
     trace?.startStage("vector_search", 0);
-    const [vectorResults, bm25Results] = await Promise.all([
+    const [vectorResults, bm25Results, pprResults] = await Promise.all([
       this.runVectorSearch(queryVector, candidatePoolSize, scopeFilter, category, includeArchived),
       this.runBM25Search(expandQuery(searchQuery), candidatePoolSize, scopeFilter, category, includeArchived),
+      pprPromise,
     ]);
     trace?.endStage(vectorResults.length, vectorResults.map(r => r.score));
 
@@ -545,8 +566,8 @@ export class MemoryRetriever {
     trace?.endStage(bm25Results.length, bm25Results.map(r => r.score));
 
     // Fuse results using RRF (async: validates BM25-only entries exist in store)
-    trace?.startStage("rrf_fusion", vectorResults.length + bm25Results.length);
-    const fusedResults = await this.fuseResults(vectorResults, bm25Results);
+    trace?.startStage("rrf_fusion", vectorResults.length + bm25Results.length + pprResults.length);
+    const fusedResults = await this.fuseResults(vectorResults, bm25Results, pprResults);
     trace?.endStage(fusedResults.length, fusedResults.map(r => r.score));
 
     // Temporal filter: when query has a time constraint, remove non-matching candidates
@@ -702,13 +723,94 @@ export class MemoryRetriever {
     }));
   }
 
+  /**
+   * Run PPR graph traversal: detect entities -> BFS neighborhood -> PPR -> map to MemoryEntry.
+   * Returns RetrievalResult[] with graph source scores.
+   */
+  private async runPPRSearch(
+    query: string,
+    scope?: string,
+    trace?: TraceCollector,
+  ): Promise<RetrievalResult[]> {
+    if (!this.kgStore) return [];
+
+    try {
+      trace?.startStage("ppr_entity_detect", 0);
+      const detected = await detectEntities(query, this.kgStore, scope);
+      trace?.endStage(detected.entities.length, []);
+
+      if (detected.entities.length === 0) return [];
+
+      // BFS neighborhood from KG
+      trace?.startStage("ppr_neighborhood", detected.entities.length);
+      const hopLimit = detected.isMultiHop ? 3 : 2;
+      const neighborhood = await this.kgStore.getNeighborhood(detected.entities, hopLimit, scope);
+      trace?.endStage(neighborhood.length, []);
+
+      if (neighborhood.length === 0) return [];
+
+      // Run PPR
+      trace?.startStage("ppr_traverse", neighborhood.length);
+      const graph = buildGraph(neighborhood);
+      const pprResults = pprTraverse(graph, detected.entities, { hopLimit, topK: 20 });
+      trace?.endStage(pprResults.length, pprResults.map(r => r.score));
+
+      if (pprResults.length === 0) return [];
+
+      // Collect all source_memory_ids from triples related to PPR-scored entities
+      const entityScoreMap = new Map(pprResults.map(r => [r.entity, r.score]));
+      const memoryScoreMap = new Map<string, number>();
+
+      for (const nr of neighborhood) {
+        for (const triple of nr.triples) {
+          const subjectScore = entityScoreMap.get(triple.subject) ?? 0;
+          const objectScore = entityScoreMap.get(triple.object) ?? 0;
+          const tripleScore = Math.max(subjectScore, objectScore) * triple.confidence;
+
+          if (tripleScore > 0 && triple.source_memory_id) {
+            const existing = memoryScoreMap.get(triple.source_memory_id) ?? 0;
+            memoryScoreMap.set(triple.source_memory_id, Math.max(existing, tripleScore));
+          }
+        }
+      }
+
+      // Fetch memory entries for the top scored memories
+      const sortedMemories = [...memoryScoreMap.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 20);
+
+      const results: RetrievalResult[] = [];
+      let rank = 0;
+      for (const [memId, score] of sortedMemories) {
+        const entry = await this.store.getById(memId);
+        if (!entry) continue;
+        rank++;
+        results.push({
+          entry,
+          score,
+          sources: {
+            graph: { score, rank },
+          },
+        });
+      }
+
+      logInfo(`[PPR] ${detected.entities.length} seed entities -> ${pprResults.length} PPR nodes -> ${results.length} memories`);
+      return results;
+    } catch (err) {
+      logWarn(`[PPR] graph traversal failed, continuing without graph results: ${String(err)}`);
+      return [];
+    }
+  }
+
   private async fuseResults(
     vectorResults: Array<MemorySearchResult & { rank: number }>,
-    bm25Results: Array<MemorySearchResult & { rank: number }>
+    bm25Results: Array<MemorySearchResult & { rank: number }>,
+    graphResults: RetrievalResult[] = [],
   ): Promise<RetrievalResult[]> {
     // Create maps for quick lookup
     const vectorMap = new Map<string, MemorySearchResult & { rank: number }>();
     const bm25Map = new Map<string, MemorySearchResult & { rank: number }>();
+    const graphMap = new Map<string, RetrievalResult>();
 
     vectorResults.forEach(result => {
       vectorMap.set(result.entry.id, result);
@@ -718,8 +820,12 @@ export class MemoryRetriever {
       bm25Map.set(result.entry.id, result);
     });
 
+    graphResults.forEach(result => {
+      graphMap.set(result.entry.id, result);
+    });
+
     // Get all unique document IDs
-    const allIds = new Set([...vectorMap.keys(), ...bm25Map.keys()]);
+    const allIds = new Set([...vectorMap.keys(), ...bm25Map.keys(), ...graphMap.keys()]);
 
     // Calculate RRF scores
     const fusedResults: RetrievalResult[] = [];
@@ -727,11 +833,12 @@ export class MemoryRetriever {
     for (const id of allIds) {
       const vectorResult = vectorMap.get(id);
       const bm25Result = bm25Map.get(id);
+      const graphResult = graphMap.get(id);
 
       // FIX(#15): BM25-only results may be "ghost" entries whose vector data was
       // deleted but whose FTS index entry lingers until the next index rebuild.
       // Validate that the entry actually exists in the store before including it.
-      if (!vectorResult && bm25Result) {
+      if (!vectorResult && !graphResult && bm25Result) {
         try {
           const exists = await this.store.hasId(id);
           if (!exists) continue; // Skip ghost entry
@@ -740,21 +847,30 @@ export class MemoryRetriever {
         }
       }
 
-      // Use the result with more complete data (prefer vector result if both exist)
-      const baseResult = vectorResult || bm25Result!;
+      // Use the result with more complete data (prefer vector > graph > BM25)
+      const baseResult = vectorResult || graphResult || bm25Result!;
 
       // Use vector similarity as the base score.
       // BM25 hit acts as a bonus (keyword match confirms relevance).
+      // Graph hit acts as a bonus (entity relationship confirms relevance).
       const vectorScore = vectorResult ? vectorResult.score : 0;
       const bm25Hit = bm25Result ? 1 : 0;
+      const graphScore = graphResult?.sources.graph?.score ?? 0;
 
-      // Base = vector score; BM25 hit boosts by up to 15%
-      // BM25-only results use their raw BM25 score so exact keyword matches
-      // (e.g. searching "JINA_API_KEY") still surface. The previous floor of 0.5
-      // was too generous and allowed ghost entries to survive hardMinScore (0.35).
-      const fusedScore = vectorResult
-        ? clamp01(vectorScore + (bm25Hit * 0.15 * vectorScore), 0.1)
-        : clamp01(bm25Result!.score, 0.1);
+      // Base = vector score; BM25 hit boosts by up to 15%; graph boosts by up to 20%
+      // Graph-only results use their PPR score so entity-connected memories surface.
+      let fusedScore: number;
+      if (vectorResult) {
+        fusedScore = clamp01(
+          vectorScore + (bm25Hit * 0.15 * vectorScore) + (graphScore * 0.20),
+          0.1,
+        );
+      } else if (graphResult) {
+        // Graph-only: use graph score as base, BM25 boosts
+        fusedScore = clamp01(graphScore + (bm25Hit * 0.10), 0.1);
+      } else {
+        fusedScore = clamp01(bm25Result!.score, 0.1);
+      }
 
       fusedResults.push({
         entry: baseResult.entry,
@@ -762,6 +878,7 @@ export class MemoryRetriever {
         sources: {
           vector: vectorResult ? { score: vectorResult.score, rank: vectorResult.rank } : undefined,
           bm25: bm25Result ? { score: bm25Result.score, rank: bm25Result.rank } : undefined,
+          graph: graphResult?.sources.graph,
           fused: { score: fusedScore },
         },
       });

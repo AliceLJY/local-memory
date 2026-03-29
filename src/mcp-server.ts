@@ -141,11 +141,15 @@ const workflowObservationStore = new WorkflowObservationStore();
 
 // Tier 4.1: Knowledge Graph triple extraction (gated by RECALLNEST_KG_MODE=true)
 let kgExtractor: KGExtractor | null = null;
+let kgStoreInstance: KGStore | null = null;
 if (isKGModeEnabled() && llm) {
   try {
-    const kgStore = new KGStore({ dbPath: store.dbPath });
-    kgExtractor = createKGExtractor({ llmClient: llm, kgStore });
-    console.error("[RecallNest] KG triple extraction enabled");
+    kgStoreInstance = new KGStore({ dbPath: store.dbPath });
+    kgExtractor = createKGExtractor({ llmClient: llm, kgStore: kgStoreInstance });
+    // Attach KG store to default retriever for PPR graph traversal
+    const { retriever } = getComponents();
+    retriever.setKGStore(kgStoreInstance);
+    console.error("[RecallNest] KG triple extraction + graph traversal enabled");
   } catch (err) {
     console.error("[RecallNest] KG init failed:", err);
   }
@@ -830,9 +834,12 @@ registerTool(
     render: z.enum(["verbatim", "highlight"]).default("verbatim").optional().describe("Result rendering mode: verbatim (default, original order) or highlight (reorder by contextual relevance to query)"),
     after: z.string().optional().describe("Filter memories stored after this date (ISO format YYYY-MM-DD, or relative like '最近30天', 'last 7 days')"),
     before: z.string().optional().describe("Filter memories stored before this date (ISO format YYYY-MM-DD, or relative)"),
+    graph: z.boolean().default(false).optional().describe("Enable KG graph traversal (PPR) for relationship-aware search. Use when query involves entity relationships (e.g. 'what tools does Alice use', 'Bob的朋友')."),
   },
-  async ({ query, limit, scope, sessionId, allScopes, category, profile: profileName, render, after, before }) => {
+  async ({ query, limit, scope, sessionId, allScopes, category, profile: profileName, render, after, before, graph }) => {
     const { retriever, profile } = getComponents(profileName);
+    // Ensure KG store is attached to non-default profile retrievers for PPR
+    if (graph && kgStoreInstance) retriever.setKGStore(kgStoreInstance);
     let results = await retriever.retrieve(buildRetrievalContext({
       query,
       limit: (after || before) ? limit * 3 : limit, // Over-fetch when temporal filtering will reduce results
@@ -840,6 +847,7 @@ registerTool(
       scope,
       sessionId,
       allScopes,
+      graph,
     }, {
       operation: "search_memory",
     }));

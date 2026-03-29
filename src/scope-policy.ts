@@ -136,6 +136,7 @@ export function buildRetrievalContext(
     source: base.source,
     includeArchived: base.includeArchived,
     trace: base.trace,
+    graph: base.graph,
     scopeFilter: selection.scopeFilter,
   };
 }
