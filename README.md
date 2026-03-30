@@ -12,7 +12,8 @@ A local-first memory system backed by LanceDB that turns scattered conversation 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Bun](https://img.shields.io/badge/Runtime-Bun-f9f1e1?logo=bun)](https://bun.sh)
 [![LanceDB](https://img.shields.io/badge/LanceDB-Vector+FTS-orange)](https://lancedb.com)
-[![MCP](https://img.shields.io/badge/MCP-25_tools-blue)](https://modelcontextprotocol.io)
+[![MCP](https://img.shields.io/badge/MCP-29_tools-blue)](https://modelcontextprotocol.io)
+[![CC Plugin](https://img.shields.io/badge/Claude_Code-Plugin-blueviolet)](https://github.com/AliceLJY/recallnest)
 
 **English** | [简体中文](README_CN.md) | [Roadmap](ROADMAP.md)
 
@@ -56,6 +57,7 @@ That's the difference: **one memory shared across terminals**, with context that
 
 | | Capability |
 |---|---|
+| **CC Plugin** | Install in Claude Code with one command — no manual config |
 | **Shared Index** | One LanceDB store for Claude Code, Codex, and Gemini CLI |
 | **Dual Interface** | MCP (stdio) for CLI tools + HTTP API for custom agents |
 | **One-Click Setup** | Integration scripts install MCP access and continuity rules |
@@ -71,6 +73,19 @@ That's the difference: **one memory shared across terminals**, with context that
 ---
 
 ## Quick Start
+
+### Option A: Claude Code Plugin (recommended)
+
+```bash
+/plugin marketplace add AliceLJY/recallnest
+/plugin install recallnest@AliceLJY
+```
+
+RecallNest starts automatically with Claude Code. No manual MCP config needed.
+
+> **Requires:** [Bun](https://bun.sh) runtime. Dependencies install on first start.
+
+### Option B: Manual setup
 
 ```bash
 git clone https://github.com/AliceLJY/recallnest.git
@@ -142,7 +157,7 @@ bun run src/cli.ts doctor
 │                   Integration Layer                       │
 │  ┌─────────────────────┐  ┌────────────────────────────┐ │
 │  │  MCP Server         │  │  HTTP API Server           │ │
-│  │  25 tools           │  │  19 endpoints              │ │
+│  │  29 tools           │  │  19 endpoints              │ │
 │  └─────────┬───────────┘  └──────────┬─────────────────┘ │
 └────────────┼─────────────────────────┼───────────────────┘
              └──────────┬──────────────┘
@@ -265,7 +280,7 @@ Details: [`docs/memory-categories.md`](docs/memory-categories.md)
 ---
 
 <details>
-<summary><strong>MCP Tools (25 tools)</strong></summary>
+<summary><strong>MCP Tools (29 tools)</strong></summary>
 
 | Tool | Description |
 |------|-------------|
@@ -294,6 +309,10 @@ Details: [`docs/memory-categories.md`](docs/memory-categories.md)
 | `list_dirty_briefs` | Preview outdated brief assets created before the cleanup rules |
 | `clean_dirty_briefs` | Archive dirty brief assets and remove their indexed rows |
 | `memory_stats` | Show index statistics |
+| `memory_drill_down` | Inspect a specific memory entry with full metadata and provenance |
+| `auto_capture` | Heuristically extract and store memory signals from text (zero LLM calls) |
+| `set_reminder` | Set a prospective memory reminder to surface in a future session |
+| `consolidate_memories` | Cluster near-duplicate memories and merge them (dry-run by default) |
 
 </details>
 
