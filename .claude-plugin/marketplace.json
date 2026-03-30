@@ -1,0 +1,18 @@
+{
+  "name": "AliceLJY",
+  "owner": {
+    "name": "Alice Jin Ye"
+  },
+  "metadata": {
+    "description": "RecallNest — shared memory layer for Claude Code, Codex, and Gemini CLI",
+    "homepage": "https://github.com/AliceLJY/recallnest"
+  },
+  "plugins": [
+    {
+      "name": "recallnest",
+      "version": "1.4.1",
+      "source": "./",
+      "description": "Local-first memory system: store, search, and recall context across sessions and terminals. Powered by LanceDB with hybrid retrieval."
+    }
+  ]
+}
