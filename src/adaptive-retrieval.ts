@@ -44,15 +44,16 @@ export function shouldSkipRetrieval(query: string, minLength?: number): boolean 
   // Force retrieve if query has memory-related intent (BEFORE length check)
   if (FORCE_RETRIEVE_PATTERNS.some(p => p.test(trimmed))) return false;
 
-  // Very short = skip
-  if (trimmed.length < 4) return true;
+  // CJK-aware: Chinese chars carry much more semantic density than ASCII.
+  // 2 Chinese chars ("轮巡") is a meaningful query equivalent to "daily patrol".
+  const hasCJK = /[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff]/.test(trimmed);
+  const absoluteMin = hasCJK ? 2 : 4;
+  if (trimmed.length < absoluteMin) return true;
 
   // Pattern-based skip
   if (SKIP_PATTERNS.some(p => p.test(trimmed))) return true;
 
-  // CJK-aware minimum length: Chinese chars carry more semantic density
-  const hasCJK = /[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff]/.test(trimmed);
-  const effectiveMinLength = minLength ?? (hasCJK ? 6 : 15);
+  const effectiveMinLength = minLength ?? (hasCJK ? 2 : 15);
 
   // Short non-question messages are skipped; questions (? ？) are always worth checking
   if (trimmed.length < effectiveMinLength &&
