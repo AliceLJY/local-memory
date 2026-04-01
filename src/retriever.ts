@@ -14,6 +14,7 @@ import { logWarn } from "./stderr-log.js";
 import { extractBoundaryMetadata, isDurableMemoryScope, isTranscriptScope } from "./memory-boundaries.js";
 import type { TraceCollector } from "./retrieval-trace.js";
 import { filterInterference } from "./rif.js";
+import { FrequencyTracker } from "./frequency-tracker.js";
 import { applyConfidenceWeight } from "./confidence-tracker.js";
 import { deduplicateByVersionGroup } from "./version-manager.js";
 import {
@@ -178,6 +179,38 @@ function clampInt(value: number, min: number, max: number): number {
 function clamp01(value: number, fallback: number): number {
   if (!Number.isFinite(value)) return Number.isFinite(fallback) ? fallback : 0;
   return Math.min(1, Math.max(0, value));
+}
+
+/** P0.1: Short query detection — ≤ 4 tokens (CJK chars count as 1 token each). */
+const SHORT_QUERY_TOKEN_THRESHOLD = 4;
+
+function isShortQuery(query: string): boolean {
+  return tokenize(query).length <= SHORT_QUERY_TOKEN_THRESHOLD;
+}
+
+/** P0.1: Minimum score discount for short queries to widen the candidate pool. */
+const SHORT_QUERY_MIN_SCORE_FACTOR = 0.6;
+
+/** P0.1: Anchor boost factor — how much a perfect anchor match boosts score. */
+const ANCHOR_BOOST_MAX = 0.25;
+
+/**
+ * P0.1: Boost scores for candidates whose metadata.anchor matches the query.
+ * Uses textOverlapScore (token coverage + density) — same as multi-vector blend.
+ * Short queries benefit most because anchor text is also short (≤80 chars).
+ */
+function applyAnchorBoost(results: RetrievalResult[], query: string): RetrievalResult[] {
+  if (results.length === 0) return results;
+  return results.map(r => {
+    const meta = parseMetadata(r.entry.metadata);
+    const anchor = meta.anchor;
+    if (typeof anchor !== "string" || !anchor) return r;
+    const overlap = textOverlapScore(query, anchor);
+    if (overlap <= 0) return r;
+    // Boost proportional to overlap quality, capped at ANCHOR_BOOST_MAX
+    const boost = 1 + overlap * ANCHOR_BOOST_MAX;
+    return { ...r, score: r.score * boost };
+  });
 }
 
 function parseMetadata(raw?: string): Record<string, unknown> {
@@ -353,6 +386,7 @@ function cosineSimilarity(a: number[], b: number[]): number {
 export class MemoryRetriever {
   private accessTracker?: AccessTracker;
   private kgStore?: KGStore;
+  private frequencyTracker?: FrequencyTracker;
   /**
    * Session-scoped suppression list (dopamine-inspired "do not disturb").
    * IDs in this set get a score penalty during retrieval but are NOT deleted.
@@ -376,6 +410,11 @@ export class MemoryRetriever {
     this.kgStore = kgStore;
   }
 
+  /** P0.2: Attach a FrequencyTracker for hit-count based boosting. */
+  setFrequencyTracker(tracker: FrequencyTracker): void {
+    this.frequencyTracker = tracker;
+  }
+
   /** Suppress a memory ID for the current session (score × 0.3). */
   suppressForSession(id: string): void {
     this.sessionSuppressed.add(id);
@@ -386,10 +425,12 @@ export class MemoryRetriever {
     this.sessionSuppressed.clear();
   }
 
-  /** Resolve the minimum score for a given category, falling back to hardMinScore. */
-  private minScoreFor(category: string): number {
+  /** Resolve the minimum score for a given category, falling back to hardMinScore.
+   *  P0.1: When shortQuery is true, thresholds are lowered to widen the candidate pool. */
+  private minScoreFor(category: string, shortQuery = false): number {
     const map = this.config.categoryMinScores ?? DEFAULT_CATEGORY_MIN_SCORES;
-    return map[category] ?? this.config.hardMinScore;
+    const base = map[category] ?? this.config.hardMinScore;
+    return shortQuery ? base * SHORT_QUERY_MIN_SCORE_FACTOR : base;
   }
 
   async retrieve(context: RetrievalContext): Promise<RetrievalResult[]> {
@@ -422,6 +463,11 @@ export class MemoryRetriever {
       );
     }
 
+    // P0.2: Record frequency hits for returned results (manual queries only)
+    if (this.frequencyTracker && results.length > 0 && context.source !== "auto-recall") {
+      this.frequencyTracker.recordHits(results.map(r => r.entry.id));
+    }
+
     return results;
   }
 
@@ -439,7 +485,12 @@ export class MemoryRetriever {
 
     trace?.startStage("vector_search", 0);
     const queryVector = await this.embedder.embedQuery(searchQuery);
-    const results = await this.store.vectorSearch(queryVector, limit, this.config.minScore, scopeFilter);
+    // P0.1: Lower minScore for short queries
+    const shortQ = isShortQuery(searchQuery);
+    const vectorMinScore = shortQ
+      ? this.config.minScore * SHORT_QUERY_MIN_SCORE_FACTOR
+      : this.config.minScore;
+    const results = await this.store.vectorSearch(queryVector, limit, vectorMinScore, scopeFilter);
     trace?.endStage(results.length, results.map(r => r.score));
 
     // Filter by category if specified
@@ -464,8 +515,11 @@ export class MemoryRetriever {
       },
     } as RetrievalResult));
 
-    trace?.startStage("recency_boost", mapped.length);
-    const boosted = this.applyRecencyBoost(mapped);
+    // P0.1: Anchor boost for vector-only path
+    const anchorBoosted = applyAnchorBoost(mapped, searchQuery);
+
+    trace?.startStage("recency_boost", anchorBoosted.length);
+    const boosted = this.applyRecencyBoost(anchorBoosted);
     trace?.endStage(boosted.length, boosted.map(r => r.score));
 
     trace?.startStage("importance_weight", boosted.length);
@@ -497,11 +551,16 @@ export class MemoryRetriever {
     const hotnessBlended = this.applyHotnessBlend(timeDecayed);
     trace?.endStage(hotnessBlended.length, hotnessBlended.map(r => r.score));
 
+    // P0.2: Frequency boost — repeatedly retrieved memories score higher
+    trace?.startStage("frequency_boost", hotnessBlended.length);
+    const frequencyBoosted = this.applyFrequencyBoost(hotnessBlended);
+    trace?.endStage(frequencyBoosted.length, frequencyBoosted.map(r => r.score));
+
     // Session suppression: temporarily penalize "do not disturb" memories
-    const afterSuppression = this.applySessionSuppression(hotnessBlended);
+    const afterSuppression = this.applySessionSuppression(frequencyBoosted);
 
     trace?.startStage("hard_min_score", afterSuppression.length);
-    const hardFiltered = afterSuppression.filter(r => r.score >= this.minScoreFor(r.entry.category));
+    const hardFiltered = afterSuppression.filter(r => r.score >= this.minScoreFor(r.entry.category, shortQ));
     trace?.endStage(hardFiltered.length, hardFiltered.map(r => r.score));
 
     trace?.startStage("noise_filter", hardFiltered.length);
@@ -582,9 +641,18 @@ export class MemoryRetriever {
     const multiVecBlended = this.applyMultiVectorBlend(temporalFiltered, searchQuery);
     trace?.endStage(multiVecBlended.length, multiVecBlended.map(r => r.score));
 
+    // P0.1: Anchor boost — short query terms matching short anchor text
+    trace?.startStage("anchor_boost", multiVecBlended.length);
+    const anchorBoosted = applyAnchorBoost(multiVecBlended, searchQuery);
+    trace?.endStage(anchorBoosted.length, anchorBoosted.map(r => r.score));
+
     // Apply minimum score threshold
-    trace?.startStage("min_score_filter", multiVecBlended.length);
-    const filtered = multiVecBlended.filter(r => r.score >= this.config.minScore);
+    trace?.startStage("min_score_filter", anchorBoosted.length);
+    // P0.1: Lower minScore for short queries to widen the candidate pool
+    const effectiveMinScore = isShortQuery(searchQuery)
+      ? this.config.minScore * SHORT_QUERY_MIN_SCORE_FACTOR
+      : this.config.minScore;
+    const filtered = anchorBoosted.filter(r => r.score >= effectiveMinScore);
     trace?.endStage(filtered.length, filtered.map(r => r.score));
 
     // Rerank if enabled
@@ -634,9 +702,16 @@ export class MemoryRetriever {
     const hotnessBlended = this.applyHotnessBlend(timeDecayed);
     trace?.endStage(hotnessBlended.length, hotnessBlended.map(r => r.score));
 
+    // P0.2: Frequency boost — repeatedly retrieved memories score higher
+    trace?.startStage("frequency_boost", hotnessBlended.length);
+    const frequencyBoosted = this.applyFrequencyBoost(hotnessBlended);
+    trace?.endStage(frequencyBoosted.length, frequencyBoosted.map(r => r.score));
+
     // Hard minimum score cutoff (post all scoring stages)
-    trace?.startStage("hard_min_score", hotnessBlended.length);
-    const hardFiltered = hotnessBlended.filter(r => r.score >= this.minScoreFor(r.entry.category));
+    // P0.1: lower thresholds for short queries
+    const shortQ = isShortQuery(searchQuery);
+    trace?.startStage("hard_min_score", frequencyBoosted.length);
+    const hardFiltered = frequencyBoosted.filter(r => r.score >= this.minScoreFor(r.entry.category, shortQ));
     trace?.endStage(hardFiltered.length, hardFiltered.map(r => r.score));
 
     // Filter noise
@@ -1226,6 +1301,20 @@ export class MemoryRetriever {
     });
 
     return blended.sort((a, b) => b.score - a.score);
+  }
+
+  /**
+   * P0.2: Frequency boost — memories that get repeatedly retrieved score higher.
+   * Unlike hotness (access-tracker based, decay-oriented), this is pure hit-count
+   * boost designed to surface "always relevant" memories like daily patrol rules.
+   */
+  private applyFrequencyBoost(results: RetrievalResult[]): RetrievalResult[] {
+    if (!this.frequencyTracker || results.length === 0) return results;
+    return results.map(r => {
+      const multiplier = this.frequencyTracker!.getBoostMultiplier(r.entry.id);
+      if (multiplier <= 1.0) return r;
+      return { ...r, score: Math.min(1, r.score * multiplier) };
+    });
   }
 
   /**

@@ -381,6 +381,7 @@ describe("persistWorkflowPattern", () => {
         note: "Structured memory writes are the durable source inside RecallNest.",
       },
       canonicalKey: "patterns:cross-window-continuity-handoff",
+      anchor: "Cross-window continuity handoff",
       workflowPattern: {
         title: "Cross-window continuity handoff",
         trigger: "When opening a fresh terminal window for the same project",
@@ -434,6 +435,7 @@ describe("persistCaseMemory", () => {
         note: "Structured memory writes are the durable source inside RecallNest.",
       },
       canonicalKey: "cases:recallnest-sparse-startup-context-cleanup",
+      anchor: "RecallNest sparse startup context cleanup",
       caseMemory: {
         title: "RecallNest sparse startup context cleanup",
         problem: "resume_context returned noisy transcript fragments instead of a clean project handoff.",

@@ -1,4 +1,5 @@
 import type { Embedder } from "./embedder.js";
+import { generateAnchor } from "./anchor-generator.js";
 import {
   type CaseMemoryInput,
   CaseMemoryInputSchema,
@@ -599,13 +600,15 @@ function inferPromotedCategory(
 }
 
 function buildStoreMemoryMetadata(input: StoreMemoryInput, canonicalKey: string): string {
+  const anchor = generateAnchor(input.text);
+  const anchorExtra = anchor ? { anchor } : undefined;
   return buildStructuredMetadata({
     source: input.source,
     tags: input.tags,
     capture: "store_memory_schema_v1",
     category: input.category,
     canonicalKey,
-    extra: buildPreferenceSlotExtra(input.category, input.text),
+    extra: mergeExtra(buildPreferenceSlotExtra(input.category, input.text), anchorExtra),
   });
 }
 
@@ -614,21 +617,24 @@ function buildWorkflowPatternMetadata(
   tags: string[],
   canonicalKey: string,
 ): string {
+  const wpExtra: Record<string, unknown> = {
+    workflowPattern: {
+      title: input.title,
+      trigger: input.trigger,
+      steps: input.steps,
+      outcome: input.outcome,
+      tools: input.tools,
+    },
+  };
+  const anchor = generateAnchor(input.title + ": " + input.trigger, wpExtra);
+  if (anchor) wpExtra.anchor = anchor;
   return buildStructuredMetadata({
     source: input.source,
     tags,
     capture: "workflow_pattern_schema_v1",
     category: "patterns",
     canonicalKey,
-    extra: {
-      workflowPattern: {
-        title: input.title,
-        trigger: input.trigger,
-        steps: input.steps,
-        outcome: input.outcome,
-        tools: input.tools,
-      },
-    },
+    extra: wpExtra,
   });
 }
 
@@ -637,22 +643,25 @@ function buildCaseMemoryMetadata(
   tags: string[],
   canonicalKey: string,
 ): string {
+  const cmExtra: Record<string, unknown> = {
+    caseMemory: {
+      title: input.title,
+      problem: input.problem,
+      context: input.context,
+      solutionSteps: input.solutionSteps,
+      outcome: input.outcome,
+      tools: input.tools,
+    },
+  };
+  const anchor = generateAnchor(input.title + ": " + input.problem, cmExtra);
+  if (anchor) cmExtra.anchor = anchor;
   return buildStructuredMetadata({
     source: input.source,
     tags,
     capture: "case_memory_schema_v1",
     category: "cases",
     canonicalKey,
-    extra: {
-      caseMemory: {
-        title: input.title,
-        problem: input.problem,
-        context: input.context,
-        solutionSteps: input.solutionSteps,
-        outcome: input.outcome,
-        tools: input.tools,
-      },
-    },
+    extra: cmExtra,
   });
 }
 

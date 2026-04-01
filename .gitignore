@@ -1,5 +1,6 @@
 node_modules/
-data/
+data/*
+!data/alias-map.example.json
 logs/
 .env
 *.log
