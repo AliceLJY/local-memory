@@ -1,5 +1,6 @@
 import type { Embedder } from "./embedder.js";
 import { generateAnchor } from "./anchor-generator.js";
+import { defaultEvolution, buildSupersedeMetadata, isActiveMemory } from "./memory-evolution.js";
 import {
   type CaseMemoryInput,
   CaseMemoryInputSchema,
@@ -132,6 +133,7 @@ function buildStructuredMetadata(params: {
     capture: params.capture,
     boundary: buildStructuredMemoryBoundary(params.category),
     canonicalKey: params.canonicalKey,
+    evolution: defaultEvolution(),
     ...params.extra,
   });
 }
@@ -744,6 +746,45 @@ export async function persistMemory(
           canonicalKey,
         );
       }
+    }
+  }
+
+  // A-2: Evolution-aware semantic conflict detection.
+  // For non-preferences categories, check if a semantically similar memory
+  // already exists in the same scope. If so, use LLM to decide whether the
+  // old memory should be superseded.
+  // Requires both vectorSearch (for candidate lookup) and LLM (for judgment).
+  // Graceful fallback: if either is unavailable, skip detection entirely.
+  if (
+    input.category !== "preferences" &&
+    deps.store.vectorSearch &&
+    deps.llm &&
+    deps.store.update
+  ) {
+    try {
+      const candidates = await deps.store.vectorSearch(vector, 3, 0.85, [resolvedScope]);
+      // Only consider same-category, active memories as supersede targets
+      const supersedeTargets = candidates.filter(
+        c => c.entry.category === input.category &&
+             c.entry.id !== deterministicId(resolvedScope, input.text) &&
+             isActiveMemory(c.entry.metadata),
+      );
+      if (supersedeTargets.length > 0) {
+        const decision = await deps.llm.dedupDecision(input.text, supersedeTargets[0].entry.text);
+        if (decision.action === "MERGE" || decision.action === "SKIP") {
+          // LLM says new info overlaps with existing → supersede the old one
+          // (MERGE = new has extra info → store new, mark old superseded)
+          // (SKIP  = identical → just dedup, handled by writeDurableEntry)
+          if (decision.action === "MERGE") {
+            const oldEntry = supersedeTargets[0].entry;
+            const supersededMeta = buildSupersedeMetadata(oldEntry.metadata, deterministicId(resolvedScope, input.text));
+            await deps.store.update(oldEntry.id, { metadata: supersededMeta });
+          }
+        }
+        // CREATE or error → proceed normally (store new memory as-is)
+      }
+    } catch {
+      // Evolution conflict detection must never block memory writes
     }
   }
 

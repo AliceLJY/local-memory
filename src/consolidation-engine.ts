@@ -19,6 +19,7 @@
 
 import type { MemoryEntry, MemorySearchResult, MemoryStore } from "./store.js";
 import { createVersionGroup } from "./version-manager.js";
+import { isActiveMemory, parseEvolution, buildSupersedeMetadata, buildConsolidatedMetadata, patchEvolution } from "./memory-evolution.js";
 
 // ---------------------------------------------------------------------------
 // Config & Types
@@ -64,14 +65,17 @@ function parseMetadata(entry: MemoryEntry): Record<string, unknown> {
 }
 
 function isActive(entry: MemoryEntry): boolean {
-  const meta = parseMetadata(entry);
-  return meta.state !== "archived" && meta.state !== "superseded";
+  // Use evolution metadata if available (new system), fall back to legacy meta.state
+  if (isActiveMemory(entry.metadata)) {
+    const meta = parseMetadata(entry);
+    return meta.state !== "archived" && meta.state !== "superseded";
+  }
+  return false;
 }
 
 function canonicalScore(entry: MemoryEntry): number {
-  const meta = parseMetadata(entry);
-  const accessCount = typeof meta.accessCount === "number" ? meta.accessCount : 0;
-  return entry.importance * (1 + Math.log(accessCount + 1));
+  const evo = parseEvolution(entry.metadata, entry.timestamp);
+  return entry.importance * (1 + Math.log(evo.accessCount + 1));
 }
 
 /** Simple heuristic contradiction: negation pattern check between two texts. */
@@ -197,9 +201,19 @@ export class ConsolidationEngine {
           const sim = scoreMap.get(member.id) ?? clusterThreshold;
 
           if (sim >= mergeThreshold) {
-            // Tier 3.3: Version coexistence instead of SUPERSEDE.
-            // Both entries stay active but are grouped — retrieval picks the best.
+            // Tier 3.3: Version coexistence — both stay but grouped.
             await createVersionGroup(this.store, canonical, member, scope);
+            // C-1: Also mark the weaker entry as consolidated via evolution metadata
+            const consolidatedMeta = buildConsolidatedMetadata(member.metadata, canonical.id);
+            await this.store.update(member.id, { metadata: consolidatedMeta }, [scope]);
+            // Mark canonical as having source memories
+            const canonEvo = parseEvolution(canonical.metadata, canonical.timestamp);
+            if (!canonEvo.sourceMemories.includes(member.id)) {
+              const updatedCanon = patchEvolution(canonical.metadata, {
+                sourceMemories: [...canonEvo.sourceMemories, member.id],
+              });
+              await this.store.update(canonical.id, { metadata: updatedCanon }, [scope]);
+            }
             mergedCount++;
           } else {
             // Link: add clustered_with relation

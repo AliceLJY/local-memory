@@ -17,6 +17,7 @@ import { filterInterference } from "./rif.js";
 import { FrequencyTracker } from "./frequency-tracker.js";
 import { applyConfidenceWeight } from "./confidence-tracker.js";
 import { deduplicateByVersionGroup } from "./version-manager.js";
+import { isActiveMemory, recordAccess as recordEvolutionAccess, parseEvolution, computeDecayScore } from "./memory-evolution.js";
 import {
   isMultiVectorEnabled,
   extractMultiVectorText,
@@ -468,6 +469,18 @@ export class MemoryRetriever {
       this.frequencyTracker.recordHits(results.map(r => r.entry.id));
     }
 
+    // A-3: Record evolution access counts (async, non-blocking)
+    if (results.length > 0 && context.source !== "auto-recall" && this.store.update) {
+      Promise.resolve().then(async () => {
+        for (const r of results) {
+          try {
+            const updated = recordEvolutionAccess(r.entry.metadata);
+            await this.store.update!(r.entry.id, { metadata: updated });
+          } catch { /* evolution tracking must never block retrieval */ }
+        }
+      });
+    }
+
     return results;
   }
 
@@ -546,9 +559,12 @@ export class MemoryRetriever {
     const timeDecayed = this.applyTimeDecay(lengthNormalized);
     trace?.endStage(timeDecayed.length, timeDecayed.map(r => r.score));
 
+    // B-1: Evolution decay blend — boost memories with high composite decay score
+    const evolutionBlended = this.applyEvolutionDecayBlend(timeDecayed);
+
     // Hotness blend: boost frequently + recently accessed memories
-    trace?.startStage("hotness_blend", timeDecayed.length);
-    const hotnessBlended = this.applyHotnessBlend(timeDecayed);
+    trace?.startStage("hotness_blend", evolutionBlended.length);
+    const hotnessBlended = this.applyHotnessBlend(evolutionBlended);
     trace?.endStage(hotnessBlended.length, hotnessBlended.map(r => r.score));
 
     // P0.2: Frequency boost — repeatedly retrieved memories score higher
@@ -563,10 +579,15 @@ export class MemoryRetriever {
     const hardFiltered = afterSuppression.filter(r => r.score >= this.minScoreFor(r.entry.category, shortQ));
     trace?.endStage(hardFiltered.length, hardFiltered.map(r => r.score));
 
-    trace?.startStage("noise_filter", hardFiltered.length);
+    // Evolution status filter: exclude superseded/archived/consolidated memories
+    const evolutionFiltered = includeArchived
+      ? hardFiltered
+      : hardFiltered.filter(r => isActiveMemory(r.entry.metadata));
+
+    trace?.startStage("noise_filter", evolutionFiltered.length);
     const denoised = this.config.filterNoise
-      ? filterNoise(hardFiltered, r => r.entry.text)
-      : hardFiltered;
+      ? filterNoise(evolutionFiltered, r => r.entry.text)
+      : evolutionFiltered;
     trace?.endStage(denoised.length, denoised.map(r => r.score));
 
     // RIF: demote near-duplicate weak results to improve diversity
@@ -697,9 +718,12 @@ export class MemoryRetriever {
     const timeDecayed = this.applyTimeDecay(lengthNormalized);
     trace?.endStage(timeDecayed.length, timeDecayed.map(r => r.score));
 
+    // B-1: Evolution decay blend — boost memories with high composite decay score
+    const evolutionBlended = this.applyEvolutionDecayBlend(timeDecayed);
+
     // Hotness blend: boost frequently + recently accessed memories
-    trace?.startStage("hotness_blend", timeDecayed.length);
-    const hotnessBlended = this.applyHotnessBlend(timeDecayed);
+    trace?.startStage("hotness_blend", evolutionBlended.length);
+    const hotnessBlended = this.applyHotnessBlend(evolutionBlended);
     trace?.endStage(hotnessBlended.length, hotnessBlended.map(r => r.score));
 
     // P0.2: Frequency boost — repeatedly retrieved memories score higher
@@ -714,11 +738,16 @@ export class MemoryRetriever {
     const hardFiltered = frequencyBoosted.filter(r => r.score >= this.minScoreFor(r.entry.category, shortQ));
     trace?.endStage(hardFiltered.length, hardFiltered.map(r => r.score));
 
+    // Evolution status filter: exclude superseded/archived/consolidated memories
+    const evolutionFiltered = includeArchived
+      ? hardFiltered
+      : hardFiltered.filter(r => isActiveMemory(r.entry.metadata));
+
     // Filter noise
-    trace?.startStage("noise_filter", hardFiltered.length);
+    trace?.startStage("noise_filter", evolutionFiltered.length);
     const denoised = this.config.filterNoise
-      ? filterNoise(hardFiltered, r => r.entry.text)
-      : hardFiltered;
+      ? filterNoise(evolutionFiltered, r => r.entry.text)
+      : evolutionFiltered;
     trace?.endStage(denoised.length, denoised.map(r => r.score));
 
     // RIF: demote near-duplicate weak results to improve diversity
@@ -1283,6 +1312,23 @@ export class MemoryRetriever {
    *
    * No-op when hotnessWeight is 0 or AccessTracker is absent.
    */
+  /**
+   * B-1: Evolution decay blend — factor in composite decay score
+   * (time × frequency × importance) as a lightweight scoring signal.
+   * Weight is fixed at 0.05 (subtle nudge, not dominant).
+   */
+  private applyEvolutionDecayBlend(results: RetrievalResult[]): RetrievalResult[] {
+    const EVOLUTION_BLEND_WEIGHT = 0.05;
+    return results.map(r => {
+      const evo = parseEvolution(r.entry.metadata, r.entry.timestamp);
+      const decay = computeDecayScore(evo, r.entry.importance);
+      return {
+        ...r,
+        score: clamp01(r.score * (1 - EVOLUTION_BLEND_WEIGHT) + decay * EVOLUTION_BLEND_WEIGHT, 0),
+      };
+    });
+  }
+
   private applyHotnessBlend(results: RetrievalResult[]): RetrievalResult[] {
     const raw = this.config.hotnessWeight;
     const alpha = Math.min(1, Math.max(0, Number.isFinite(raw) ? raw : 0));

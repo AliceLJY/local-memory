@@ -97,7 +97,7 @@ describe("persistMemory", () => {
     expect(result.canonicalKey).toBe("preferences:user-prefers-dark-mode");
     expect(result.disposition).toBe("stored");
     expect(storedEntries[0].scope).toBe(TEST_SCOPE);
-    expect(JSON.parse(storedEntries[0].metadata)).toEqual({
+    expect(JSON.parse(storedEntries[0].metadata)).toMatchObject({
       source: "manual",
       tags: ["ui"],
       capture: "store_memory_schema_v1",
@@ -369,7 +369,7 @@ describe("persistWorkflowPattern", () => {
     expect(result.text).toContain("1. Call resume_context before coding");
     expect(result.text).toContain("Tools: resume_context, checkpoint_session");
     expect(storedEntries[0].category).toBe("patterns");
-    expect(JSON.parse(storedEntries[0].metadata)).toEqual({
+    expect(JSON.parse(storedEntries[0].metadata)).toMatchObject({
       source: "agent",
       tags: ["continuity", "workflow", "pattern"],
       capture: "workflow_pattern_schema_v1",
@@ -423,7 +423,7 @@ describe("persistCaseMemory", () => {
     expect(result.text).toContain("Problem: resume_context returned noisy transcript fragments");
     expect(result.text).toContain("1. Filter low-signal transcript fragments from stable recall.");
     expect(storedEntries[0].category).toBe("cases");
-    expect(JSON.parse(storedEntries[0].metadata)).toEqual({
+    expect(JSON.parse(storedEntries[0].metadata)).toMatchObject({
       source: "agent",
       tags: ["continuity", "case", "solution"],
       capture: "case_memory_schema_v1",
