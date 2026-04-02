@@ -701,6 +701,21 @@ export async function persistMemory(
   rawInput: unknown,
 ): Promise<StoredMemoryRecord> {
   const input = StoreMemoryInputSchema.parse(rawInput);
+
+  // B-3: LLM importance assessment — refine default importance (0.7) via LLM.
+  // Only fires when importance is at the default value and LLM is available.
+  // Explicit importance values from the caller are respected as-is.
+  if (input.importance === 0.7 && deps.llm) {
+    try {
+      const assessed = await deps.llm.assessImportance(input.text, input.category);
+      if (assessed !== null) {
+        input.importance = assessed;
+      }
+    } catch {
+      // LLM importance assessment must never block memory writes
+    }
+  }
+
   const vector = await deps.embedder.embedPassage(input.text);
   const resolvedScope = resolveScope(input);
   const canonicalKey = resolveCanonicalKey({

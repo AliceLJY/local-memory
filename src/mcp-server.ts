@@ -835,8 +835,9 @@ registerTool(
     after: z.string().optional().describe("Filter memories stored after this date (ISO format YYYY-MM-DD, or relative like '最近30天', 'last 7 days')"),
     before: z.string().optional().describe("Filter memories stored before this date (ISO format YYYY-MM-DD, or relative)"),
     graph: z.boolean().default(false).optional().describe("Enable KG graph traversal (PPR) for relationship-aware search. Use when query involves entity relationships (e.g. 'what tools does Alice use', 'Bob的朋友')."),
+    includeArchived: z.boolean().default(false).optional().describe("When true, also return archived/superseded/consolidated memories (default: only active)"),
   },
-  async ({ query, limit, scope, sessionId, allScopes, category, profile: profileName, render, after, before, graph }) => {
+  async ({ query, limit, scope, sessionId, allScopes, category, profile: profileName, render, after, before, graph, includeArchived }) => {
     const { retriever, profile } = getComponents(profileName);
     // Ensure KG store is attached to non-default profile retrievers for PPR
     if (graph && kgStoreInstance) retriever.setKGStore(kgStoreInstance);
@@ -848,6 +849,7 @@ registerTool(
       sessionId,
       allScopes,
       graph,
+      includeArchived,
     }, {
       operation: "search_memory",
     }));

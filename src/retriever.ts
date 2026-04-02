@@ -559,12 +559,15 @@ export class MemoryRetriever {
     const timeDecayed = this.applyTimeDecay(lengthNormalized);
     trace?.endStage(timeDecayed.length, timeDecayed.map(r => r.score));
 
-    // B-1: Evolution decay blend — boost memories with high composite decay score
+    // B-1/E-1: Evolution decay blend — boost memories with high composite decay score
     const evolutionBlended = this.applyEvolutionDecayBlend(timeDecayed);
 
+    // E-1: Access count boost — memories retrieved more often get a score nudge
+    const accessBoosted = this.applyAccessCountBoost(evolutionBlended);
+
     // Hotness blend: boost frequently + recently accessed memories
-    trace?.startStage("hotness_blend", evolutionBlended.length);
-    const hotnessBlended = this.applyHotnessBlend(evolutionBlended);
+    trace?.startStage("hotness_blend", accessBoosted.length);
+    const hotnessBlended = this.applyHotnessBlend(accessBoosted);
     trace?.endStage(hotnessBlended.length, hotnessBlended.map(r => r.score));
 
     // P0.2: Frequency boost — repeatedly retrieved memories score higher
@@ -718,12 +721,15 @@ export class MemoryRetriever {
     const timeDecayed = this.applyTimeDecay(lengthNormalized);
     trace?.endStage(timeDecayed.length, timeDecayed.map(r => r.score));
 
-    // B-1: Evolution decay blend — boost memories with high composite decay score
+    // B-1/E-1: Evolution decay blend — boost memories with high composite decay score
     const evolutionBlended = this.applyEvolutionDecayBlend(timeDecayed);
 
+    // E-1: Access count boost — memories retrieved more often get a score nudge
+    const accessBoosted = this.applyAccessCountBoost(evolutionBlended);
+
     // Hotness blend: boost frequently + recently accessed memories
-    trace?.startStage("hotness_blend", evolutionBlended.length);
-    const hotnessBlended = this.applyHotnessBlend(evolutionBlended);
+    trace?.startStage("hotness_blend", accessBoosted.length);
+    const hotnessBlended = this.applyHotnessBlend(accessBoosted);
     trace?.endStage(hotnessBlended.length, hotnessBlended.map(r => r.score));
 
     // P0.2: Frequency boost — repeatedly retrieved memories score higher
@@ -1313,18 +1319,36 @@ export class MemoryRetriever {
    * No-op when hotnessWeight is 0 or AccessTracker is absent.
    */
   /**
-   * B-1: Evolution decay blend — factor in composite decay score
-   * (time × frequency × importance) as a lightweight scoring signal.
-   * Weight is fixed at 0.05 (subtle nudge, not dominant).
+   * B-1/E-1: Evolution decay blend — factor in composite decay score
+   * (time × frequency × importance) as a scoring signal.
+   * Weight increased from 0.05 to 0.10 with B-3 LLM importance assessment.
    */
   private applyEvolutionDecayBlend(results: RetrievalResult[]): RetrievalResult[] {
-    const EVOLUTION_BLEND_WEIGHT = 0.05;
+    const EVOLUTION_BLEND_WEIGHT = 0.10;
     return results.map(r => {
       const evo = parseEvolution(r.entry.metadata, r.entry.timestamp);
       const decay = computeDecayScore(evo, r.entry.importance);
       return {
         ...r,
         score: clamp01(r.score * (1 - EVOLUTION_BLEND_WEIGHT) + decay * EVOLUTION_BLEND_WEIGHT, 0),
+      };
+    });
+  }
+
+  /**
+   * E-1: Access count boost — memories with higher access_count get a score nudge.
+   * Complements frequency-tracker (query→memory mapping) by operating at
+   * the individual memory level (total retrieval hits across all queries).
+   * Formula: score *= 1 + log2(1 + accessCount) × 0.03, capped at ×1.15.
+   */
+  private applyAccessCountBoost(results: RetrievalResult[]): RetrievalResult[] {
+    return results.map(r => {
+      const evo = parseEvolution(r.entry.metadata, r.entry.timestamp);
+      if (evo.accessCount <= 0) return r;
+      const boost = Math.min(0.15, Math.log2(1 + evo.accessCount) * 0.03);
+      return {
+        ...r,
+        score: clamp01(r.score * (1 + boost), 0),
       };
     });
   }
