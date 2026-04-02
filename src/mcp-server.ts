@@ -31,10 +31,12 @@ const TOOL_TIERS: Record<string, ToolTier> = {
   store_memory: "core",
   checkpoint_session: "core",
   latest_checkpoint: "core",
+  list_tools: "core",
 
   set_reminder: "core",
 
   // Advanced
+  batch_store: "advanced",
   auto_capture: "advanced",
   store_case: "advanced",
   store_workflow_pattern: "advanced",
@@ -77,7 +79,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import type { RetrievalResult } from "./retriever.js";
 import type { MemoryStore } from "./store.js";
-import { distillResults, formatExplainResults, formatSearchResults, selectBriefSeedResults, summarizeResults } from "./memory-output.js";
+import { distillResults, formatExplainResults, formatSearchResults, formatBriefResults, formatFullResults, selectBriefSeedResults, summarizeResults } from "./memory-output.js";
 import { archiveDirtyBriefAsset, assetSummaryLine, buildBriefAsset, buildPinAsset, listDirtyBriefAssets, listMemoryAssets, listPinAssets, saveBriefAsset, savePinAsset, writeExportArtifact } from "./memory-assets.js";
 import { indexAsset, indexPinnedAsset } from "./asset-sync.js";
 import { createComponentResolver, loadConfig, loadDotEnv, resolveRecallMode } from "./runtime-config.js";
@@ -173,12 +175,16 @@ const server = new McpServer({
 type ToolSchema = Parameters<typeof server.tool>[2];
 type ToolHandler = Parameters<typeof server.tool>[3];
 
+/** Map of all registered tool names to their descriptions (populated during registration). */
+const TOOL_DESCRIPTIONS = new Map<string, string>();
+
 function registerTool(name: string, description: string, schema: ToolSchema, handler: ToolHandler): void {
   if (!shouldRegisterTool(name)) {
     // stdout is reserved for MCP JSON-RPC on stdio transports.
     console.error(`[MCP] Skipping ${name} (tier: ${TOOL_TIERS[name]})`);
     return;
   }
+  TOOL_DESCRIPTIONS.set(name, description);
   server.tool(name, description, schema, handler);
 }
 
@@ -842,8 +848,10 @@ registerTool(
     before: z.string().optional().describe("Filter memories stored before this date (ISO format YYYY-MM-DD, or relative)"),
     graph: z.boolean().default(false).optional().describe("Enable KG graph traversal (PPR) for relationship-aware search. Use when query involves entity relationships (e.g. 'what tools does Alice use', 'Bob的朋友')."),
     includeArchived: z.boolean().default(false).optional().describe("When true, also return archived/superseded/consolidated memories (default: only active)"),
+    detail_level: z.enum(["brief", "normal", "full"]).default("normal").optional()
+      .describe("Result detail level: brief (ID+score+one-liner), normal (default, current behavior), full (include metadata)"),
   },
-  async ({ query, limit, scope, sessionId, allScopes, category, profile: profileName, render, after, before, graph, includeArchived }) => {
+  async ({ query, limit, scope, sessionId, allScopes, category, profile: profileName, render, after, before, graph, includeArchived, detail_level }) => {
     const { retriever, profile } = getComponents(profileName);
     // Ensure KG store is attached to non-default profile retrievers for PPR
     if (graph && kgStoreInstance) retriever.setKGStore(kgStoreInstance);
@@ -904,10 +912,20 @@ registerTool(
       }
     }
 
+    const level = detail_level ?? "normal";
+    let body: string;
+    if (level === "brief") {
+      body = formatBriefResults(results, { query });
+    } else if (level === "full") {
+      body = formatFullResults(results, { query, profile: profile.name });
+    } else {
+      body = formatSearchResults(results, { query, profile: profile.name });
+    }
+
     return {
       content: [{
         type: "text" as const,
-        text: formatSearchResults(results, { query, profile: profile.name }) + reminderText,
+        text: body + reminderText,
       }],
     };
   }
@@ -1448,6 +1466,87 @@ registerTool(
       content: [{
         type: "text" as const,
         text: formatPromotionResult(result),
+      }],
+    };
+  },
+);
+
+// --- MCP-1: list_tools tool ---
+registerTool(
+  "list_tools",
+  "List available RecallNest tools beyond the core set. Use this to discover advanced tools when needed.",
+  {
+    tier: z.enum(["core", "advanced", "full"]).default("advanced").optional()
+      .describe("Which tier of tools to list. Returns tools at this tier and below."),
+  },
+  async ({ tier }) => {
+    const requestedTier = tier ?? "advanced";
+    const tierOrder: Record<string, number> = { core: 0, advanced: 1, governance: 2 };
+    const maxOrder = requestedTier === "full" ? 2 : tierOrder[requestedTier] ?? 1;
+
+    const lines: string[] = [`Available tools (tier: ${requestedTier}):`];
+    for (const [toolName, toolTier] of Object.entries(TOOL_TIERS)) {
+      if ((tierOrder[toolTier] ?? 999) > maxOrder) continue;
+      const desc = TOOL_DESCRIPTIONS.get(toolName);
+      const oneLiner = desc
+        ? desc.split(/[.!]\s/)[0]?.slice(0, 100) ?? desc.slice(0, 100)
+        : "(no description)";
+      lines.push(`- ${toolName}: ${oneLiner}`);
+    }
+
+    return {
+      content: [{
+        type: "text" as const,
+        text: lines.join("\n"),
+      }],
+    };
+  },
+);
+
+// --- MCP-3: batch_store tool ---
+registerTool(
+  "batch_store",
+  "Store multiple memories in one call. More efficient than calling store_memory repeatedly.",
+  {
+    memories: z.array(z.object({
+      text: z.string().min(1),
+      category: DurableMemoryCategorySchema.default("events"),
+      importance: z.number().min(0).max(1).default(0.7),
+      tags: z.array(z.string()).max(6).default([]),
+    })).min(1).max(20),
+    scope: z.string().min(1).max(160),
+    source: z.enum(["manual", "agent", "api"]).default("agent"),
+  },
+  async ({ memories, scope, source }) => {
+    const { store, embedder } = getComponents();
+    const stored = await persistMemoryBatch({
+      store,
+      embedder,
+      conflictStore,
+      kgExtractor,
+    }, {
+      scope,
+      source,
+      defaultImportance: 0.7,
+      memories: memories.map((m) => ({
+        text: m.text,
+        category: m.category,
+        importance: m.importance,
+        tags: m.tags,
+      })),
+    });
+
+    const counts = { new: 0, deduped: 0, updated: 0 };
+    for (const r of stored) {
+      if (r.disposition === "deduped") counts.deduped++;
+      else if (r.disposition === "updated") counts.updated++;
+      else counts.new++;
+    }
+
+    return {
+      content: [{
+        type: "text" as const,
+        text: `Stored ${stored.length} memories (${counts.new} new, ${counts.deduped} deduped, ${counts.updated} updated)`,
       }],
     };
   },
