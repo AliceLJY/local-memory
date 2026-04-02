@@ -82,6 +82,41 @@ export function formatResumeContext(response: ResumeContextResponse): string {
     ...listBlock("Recent cases", response.recentCases),
   );
 
+  // CC-7: Collapsed items with renderLevel + staleness hints
+  if (response.collapsedItems && response.collapsedItems.length > 0) {
+    lines.push("Collapsed context (mixed granularity):");
+    for (const item of response.collapsedItems) {
+      const hint = item.stalenessHint ? ` ${item.stalenessHint}` : "";
+      lines.push(`[${item.renderLevel}] ${item.text}${hint}`);
+    }
+  }
+
+  // CC-8: Essential context (pinned memories, active patterns, open loops)
+  if (response.essentialContext) {
+    const ec = response.essentialContext;
+    const hasContent = (ec.pinnedMemories && ec.pinnedMemories.length > 0)
+      || (ec.activePatterns && ec.activePatterns.length > 0)
+      || (ec.openLoops && ec.openLoops.length > 0);
+    if (hasContent) {
+      lines.push("Essential context:");
+      if (ec.pinnedMemories && ec.pinnedMemories.length > 0) {
+        for (const pin of ec.pinnedMemories) {
+          lines.push(`- Pinned: ${pin}`);
+        }
+      }
+      if (ec.activePatterns && ec.activePatterns.length > 0) {
+        for (const pattern of ec.activePatterns) {
+          lines.push(`- Pattern: ${pattern}`);
+        }
+      }
+      if (ec.openLoops && ec.openLoops.length > 0) {
+        for (const loop of ec.openLoops) {
+          lines.push(`- Open loop: ${loop}`);
+        }
+      }
+    }
+  }
+
   if (response.latestCheckpoint) {
     lines.push("Latest checkpoint:");
     lines.push(`Session: ${response.latestCheckpoint.sessionId}`);
@@ -90,6 +125,11 @@ export function formatResumeContext(response: ResumeContextResponse): string {
     }
     lines.push(`Updated: ${response.latestCheckpoint.updatedAt}`);
     lines.push(`Summary: ${response.latestCheckpoint.summary}`);
+  }
+
+  // CC-1: Injection hint for prompt placement
+  if (response.injectionHint) {
+    lines.push(`Injection hint: ${response.injectionHint} (place recalled context as user message attachment for better prompt cache hit rate)`);
   }
 
   return lines.join("\n");

@@ -13,7 +13,7 @@ import {
   buildTaskResultSections,
 } from "./context-composer-task-results.js";
 import type { RetrievalContext, RetrievalResult } from "./retriever.js";
-import type { ResumeContextResponse, SessionCheckpointRecord } from "./session-schema.js";
+import type { EssentialContext, ResumeContextResponse, SessionCheckpointRecord } from "./session-schema.js";
 import { ResumeContextRequestSchema, ResumeContextResponseSchema } from "./session-schema.js";
 import { formatCheckpointRecallSummary } from "./session-output.js";
 import {
@@ -24,6 +24,8 @@ import {
 } from "./term-registry.js";
 import { synthesizeSection } from "./result-synthesizer.js";
 import type { LLMClient } from "./llm-client.js";
+import { collapseResults, estimateTokens, type CollapseInput } from "./context-collapse-renderer.js";
+import { filterByRelevance } from "./post-retrieval-filter.js";
 type ResumeCategory = "profile" | "preferences" | "entities" | "patterns" | "cases";
 
 interface ResumeRetriever {
@@ -154,6 +156,63 @@ function buildSummary(params: {
   return cleanText(parts.join(" "), 800);
 }
 
+// ---------------------------------------------------------------------------
+// CC-8: Post-Compact Reconstruction — assemble essential context
+// ---------------------------------------------------------------------------
+
+const ESSENTIAL_CONTEXT_TOKEN_BUDGET = 2000;
+
+function buildEssentialContext(params: {
+  pinAssets: Array<PinAsset & { path: string }>;
+  patternResults: RetrievalResult[];
+  latestCheckpoint: SessionCheckpointRecord | null;
+}): EssentialContext | undefined {
+  let tokensUsed = 0;
+
+  // 1. Pinned memories: take up to 3 most recent pins' summaries
+  const pinnedMemories: string[] = [];
+  for (const pin of params.pinAssets.slice(0, 3)) {
+    const text = pin.summary || pin.title;
+    const cost = estimateTokens(text);
+    if (tokensUsed + cost > ESSENTIAL_CONTEXT_TOKEN_BUDGET) break;
+    pinnedMemories.push(text);
+    tokensUsed += cost;
+  }
+
+  // 2. Active patterns: take top 1-2 by score
+  const activePatterns: string[] = [];
+  const sortedPatterns = [...params.patternResults].sort((a, b) => b.score - a.score);
+  for (const pattern of sortedPatterns.slice(0, 2)) {
+    const text = cleanText(pattern.entry.text, 200);
+    const cost = estimateTokens(text);
+    if (tokensUsed + cost > ESSENTIAL_CONTEXT_TOKEN_BUDGET) break;
+    activePatterns.push(text);
+    tokensUsed += cost;
+  }
+
+  // 3. Open loops from latest checkpoint
+  const openLoops: string[] = [];
+  if (params.latestCheckpoint?.openLoops) {
+    for (const loop of params.latestCheckpoint.openLoops.slice(0, 3)) {
+      const cost = estimateTokens(loop);
+      if (tokensUsed + cost > ESSENTIAL_CONTEXT_TOKEN_BUDGET) break;
+      openLoops.push(loop);
+      tokensUsed += cost;
+    }
+  }
+
+  // Return undefined if nothing was collected
+  if (pinnedMemories.length === 0 && activePatterns.length === 0 && openLoops.length === 0) {
+    return undefined;
+  }
+
+  return {
+    ...(pinnedMemories.length > 0 ? { pinnedMemories } : {}),
+    ...(activePatterns.length > 0 ? { activePatterns } : {}),
+    ...(openLoops.length > 0 ? { openLoops } : {}),
+  };
+}
+
 export async function composeResumeContext(
   deps: ResumeContextDeps,
   rawInput: unknown,
@@ -221,6 +280,17 @@ export async function composeResumeContext(
   const preferenceResults = mergeRetrievalResults(preferenceResultSets, Math.max(4, stableLimit * 3));
   const entityResults = mergeRetrievalResults(entityResultSets, Math.max(4, stableLimit * 3));
 
+  // E-2: Post-retrieval LLM relevance filter for pattern/case results.
+  // Only fires when LLM is available; stable context (profile/preferences/entities) skipped
+  // because those are identity-level and already curated by the selection pipeline.
+  const llm = deps.llm ?? null;
+  const [filteredPatterns, filteredCases] = llm && taskSeed
+    ? await Promise.all([
+        filterByRelevance(patternResults, taskSeed, llm),
+        filterByRelevance(caseResults, taskSeed, llm),
+      ])
+    : [patternResults, caseResults];
+
   const continuityTask = looksLikeContinuityTask(taskSeed);
   const pinAssets = (deps.listPins || listPinAssets)(Math.max(4, stableLimit * 2));
   const {
@@ -246,8 +316,8 @@ export async function composeResumeContext(
         limit,
         scope,
       }),
-    patternResults,
-    caseResults,
+    patternResults: filteredPatterns,
+    caseResults: filteredCases,
     continuityTask,
     hasLatestCheckpoint: Boolean(latestCheckpoint),
     taskLimit,
@@ -258,13 +328,40 @@ export async function composeResumeContext(
 
   // Tier 3.5: Optionally synthesize sections into coherent narratives via LLM.
   // Only activates when RECALLNEST_SYNTHESIZE=true and llm is provided.
-  const llm = deps.llm ?? null;
   const queryHint = taskSeed || resolvedScope || "general";
   const [synthStable, synthPatterns, synthCases] = await Promise.all([
     synthesizeSection(stableContext, queryHint, llm),
     synthesizeSection(relevantPatterns, queryHint, llm),
     synthesizeSection(recentCases, queryHint, llm),
   ]);
+
+  // CC-7: Collapse rendering — build mixed-granularity view of all recalled items.
+  // Gathers all retrieval results, deduplicates, and renders at L0/L1/L2 based on score.
+  const allResults: RetrievalResult[] = [];
+  const seenIds = new Set<string>();
+  for (const r of [...profileResults, ...preferenceResults, ...entityResults, ...filteredPatterns, ...filteredCases]) {
+    if (!seenIds.has(r.entry.id)) {
+      seenIds.add(r.entry.id);
+      allResults.push(r);
+    }
+  }
+  const collapseInput: CollapseInput[] = allResults.map(r => ({
+    entryId: r.entry.id,
+    text: r.entry.text,
+    metadata: r.entry.metadata,
+    score: r.score,
+    timestamp: r.entry.timestamp,
+  }));
+  const collapsedItems = collapseInput.length > 0
+    ? collapseResults(collapseInput)
+    : undefined;
+
+  // CC-8: Build essential context from pinned memories, top patterns, and open loops.
+  const essentialContext = buildEssentialContext({
+    pinAssets,
+    patternResults: filteredPatterns,
+    latestCheckpoint,
+  });
 
   const response = {
     summary: buildSummary({
@@ -277,6 +374,8 @@ export async function composeResumeContext(
     stableContext: synthStable,
     relevantPatterns: synthPatterns,
     recentCases: synthCases,
+    collapsedItems: collapsedItems && collapsedItems.length > 0 ? collapsedItems : undefined,
+    essentialContext,
     latestCheckpoint: latestCheckpoint
       ? {
         sessionId: latestCheckpoint.sessionId,
@@ -285,6 +384,7 @@ export async function composeResumeContext(
         updatedAt: latestCheckpoint.updatedAt,
       }
       : undefined,
+    injectionHint: "user_attachment" as const,
     responseMode: recallOnlyTask ? "recall-only" as const : "default" as const,
     responseGuidance: recallOnlyTask
       ? (

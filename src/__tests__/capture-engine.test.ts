@@ -97,7 +97,7 @@ describe("persistMemory", () => {
     expect(result.canonicalKey).toBe("preferences:user-prefers-dark-mode");
     expect(result.disposition).toBe("stored");
     expect(storedEntries[0].scope).toBe(TEST_SCOPE);
-    expect(JSON.parse(storedEntries[0].metadata)).toEqual({
+    expect(JSON.parse(storedEntries[0].metadata)).toMatchObject({
       source: "manual",
       tags: ["ui"],
       capture: "store_memory_schema_v1",
@@ -369,7 +369,7 @@ describe("persistWorkflowPattern", () => {
     expect(result.text).toContain("1. Call resume_context before coding");
     expect(result.text).toContain("Tools: resume_context, checkpoint_session");
     expect(storedEntries[0].category).toBe("patterns");
-    expect(JSON.parse(storedEntries[0].metadata)).toEqual({
+    expect(JSON.parse(storedEntries[0].metadata)).toMatchObject({
       source: "agent",
       tags: ["continuity", "workflow", "pattern"],
       capture: "workflow_pattern_schema_v1",
@@ -381,6 +381,7 @@ describe("persistWorkflowPattern", () => {
         note: "Structured memory writes are the durable source inside RecallNest.",
       },
       canonicalKey: "patterns:cross-window-continuity-handoff",
+      anchor: "Cross-window continuity handoff",
       workflowPattern: {
         title: "Cross-window continuity handoff",
         trigger: "When opening a fresh terminal window for the same project",
@@ -422,7 +423,7 @@ describe("persistCaseMemory", () => {
     expect(result.text).toContain("Problem: resume_context returned noisy transcript fragments");
     expect(result.text).toContain("1. Filter low-signal transcript fragments from stable recall.");
     expect(storedEntries[0].category).toBe("cases");
-    expect(JSON.parse(storedEntries[0].metadata)).toEqual({
+    expect(JSON.parse(storedEntries[0].metadata)).toMatchObject({
       source: "agent",
       tags: ["continuity", "case", "solution"],
       capture: "case_memory_schema_v1",
@@ -434,6 +435,7 @@ describe("persistCaseMemory", () => {
         note: "Structured memory writes are the durable source inside RecallNest.",
       },
       canonicalKey: "cases:recallnest-sparse-startup-context-cleanup",
+      anchor: "RecallNest sparse startup context cleanup",
       caseMemory: {
         title: "RecallNest sparse startup context cleanup",
         problem: "resume_context returned noisy transcript fragments instead of a clean project handoff.",

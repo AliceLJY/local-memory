@@ -1,0 +1,22 @@
+[
+  {
+    "trigger": "轮巡",
+    "expansions": ["轮巡", "仓库", "patrol", "repo", "每日检查", "win4r", "Issue", "PR"]
+  },
+  {
+    "trigger": "patrol",
+    "expansions": ["轮巡", "仓库", "patrol", "repo", "每日检查", "win4r"]
+  },
+  {
+    "trigger": "分身",
+    "expansions": ["数字分身", "digital clone", "persona", "system-prompt", "clone"]
+  },
+  {
+    "trigger": "公众号",
+    "expansions": ["公众号", "微信", "WeChat", "小试AI", "文章", "writing"]
+  },
+  {
+    "trigger": "河马",
+    "expansions": ["河马", "trihippo", "RecallNest", "记忆", "memory"]
+  }
+]

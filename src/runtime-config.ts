@@ -7,6 +7,7 @@ import { createEmbedder, getVectorDimensions, type EmbeddingConfig } from "./emb
 import { createRetriever, type RetrievalConfig, DEFAULT_RETRIEVAL_CONFIG } from "./retriever.js";
 import { applyRetrievalProfile } from "./retrieval-profiles.js";
 import { AccessTracker } from "./access-tracker.js";
+import { FrequencyTracker } from "./frequency-tracker.js";
 import { createLLMClient, type LLMClient, type LLMConfig } from "./llm-client.js";
 import { logInfo } from "./stderr-log.js";
 
@@ -121,6 +122,13 @@ export function createComponents(config: LocalMemoryConfig, profileName?: string
   const accessTracker = new AccessTracker(store);
   retriever.setAccessTracker(accessTracker);
 
+  // P0.2: Attach frequency tracker for hit-count based boosting
+  const dataDir = resolve(import.meta.dir, "..", expandHome(config.dbPath), "..");
+  const frequencyTracker = new FrequencyTracker({
+    filePath: join(dataDir, "frequency-stats.json"),
+  });
+  retriever.setFrequencyTracker(frequencyTracker);
+
   // Create LLM client if configured (optional, graceful)
   let llm: LLMClient | null = null;
   if (config.llm) {
@@ -130,7 +138,7 @@ export function createComponents(config: LocalMemoryConfig, profileName?: string
     }
   }
 
-  return { store, embedder, retriever, profile, accessTracker, llm };
+  return { store, embedder, retriever, profile, accessTracker, frequencyTracker, llm };
 }
 
 export function createStoreOnly(config: LocalMemoryConfig): MemoryStore {

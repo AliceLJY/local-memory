@@ -256,6 +256,35 @@ export class LLMClient {
   }
 
   /**
+   * B-3: Assess the long-term importance of a memory (0–1).
+   * Called when store_memory importance is at the default value, to let LLM refine it.
+   * Returns null on failure (caller should keep the default).
+   */
+  async assessImportance(text: string, category: string): Promise<number | null> {
+    try {
+      const response = await this.chat(
+        "你是记忆重要性评估助手。评估以下记忆的长期重要性（0.0-1.0）。\n\n" +
+        "评分标准：\n" +
+        "- 0.85+：身份信息、核心模式、关键决策\n" +
+        "- 0.70-0.84：偏好、案例、可复用方案\n" +
+        "- 0.55-0.69：实体、工具、项目信息\n" +
+        "- 0.40-0.54：普通事件、一次性操作\n" +
+        "- 0.20-0.39：临时状态、短期上下文\n\n" +
+        "只输出一行 JSON：{\"importance\":0.7,\"reason\":\"简短原因\"}",
+        `[类别] ${category}\n[内容] ${text.slice(0, 1000)}`,
+      );
+      if (!response) return null;
+      const parsed = parseJSON<{ importance: number; reason?: string }>(response);
+      if (parsed && typeof parsed.importance === "number") {
+        return Math.max(0, Math.min(1, parsed.importance));
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Semantic dedup decision: given a new chunk and an existing similar chunk,
    * decide whether to CREATE (store new), MERGE (combine), or SKIP (discard).
    */

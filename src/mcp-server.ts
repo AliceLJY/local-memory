@@ -31,10 +31,12 @@ const TOOL_TIERS: Record<string, ToolTier> = {
   store_memory: "core",
   checkpoint_session: "core",
   latest_checkpoint: "core",
+  list_tools: "core",
 
   set_reminder: "core",
 
   // Advanced
+  batch_store: "advanced",
   auto_capture: "advanced",
   store_case: "advanced",
   store_workflow_pattern: "advanced",
@@ -48,6 +50,9 @@ const TOOL_TIERS: Record<string, ToolTier> = {
   memory_stats: "advanced",
   memory_drill_down: "advanced",
   export_memory: "advanced",
+  store_skill: "advanced",
+  retrieve_skill: "advanced",
+  scan_skill_promotions: "governance",
 
   // Governance (CLI-only, not in MCP by default)
   workflow_observe: "governance",
@@ -74,12 +79,15 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import type { RetrievalResult } from "./retriever.js";
 import type { MemoryStore } from "./store.js";
-import { distillResults, formatExplainResults, formatSearchResults, selectBriefSeedResults, summarizeResults } from "./memory-output.js";
+import { distillResults, formatExplainResults, formatSearchResults, formatBriefResults, formatFullResults, selectBriefSeedResults, summarizeResults } from "./memory-output.js";
 import { archiveDirtyBriefAsset, assetSummaryLine, buildBriefAsset, buildPinAsset, listDirtyBriefAssets, listMemoryAssets, listPinAssets, saveBriefAsset, savePinAsset, writeExportArtifact } from "./memory-assets.js";
 import { indexAsset, indexPinnedAsset } from "./asset-sync.js";
 import { createComponentResolver, loadConfig, loadDotEnv, resolveRecallMode } from "./runtime-config.js";
 import { DurableMemoryCategorySchema, StoreMemorySourceSchema } from "./memory-schema.js";
 import { persistCaseMemory, persistMemory, persistMemoryBatch, persistWorkflowPattern, promoteMemory } from "./capture-engine.js";
+import { persistSkill, retrieveSkills } from "./skill-engine.js";
+import { SkillImplementationTypeSchema } from "./skill-schema.js";
+import { scanForPromotions, formatPromotionResult } from "./skill-promotion.js";
 import { autoCapture } from "./capture-heuristic.js";
 import { ConsolidationEngine, formatConsolidationResult } from "./consolidation-engine.js";
 import { renderMemories, type RenderMode } from "./context-renderer.js";
@@ -167,12 +175,16 @@ const server = new McpServer({
 type ToolSchema = Parameters<typeof server.tool>[2];
 type ToolHandler = Parameters<typeof server.tool>[3];
 
+/** Map of all registered tool names to their descriptions (populated during registration). */
+const TOOL_DESCRIPTIONS = new Map<string, string>();
+
 function registerTool(name: string, description: string, schema: ToolSchema, handler: ToolHandler): void {
   if (!shouldRegisterTool(name)) {
     // stdout is reserved for MCP JSON-RPC on stdio transports.
     console.error(`[MCP] Skipping ${name} (tier: ${TOOL_TIERS[name]})`);
     return;
   }
+  TOOL_DESCRIPTIONS.set(name, description);
   server.tool(name, description, schema, handler);
 }
 
@@ -835,8 +847,11 @@ registerTool(
     after: z.string().optional().describe("Filter memories stored after this date (ISO format YYYY-MM-DD, or relative like '最近30天', 'last 7 days')"),
     before: z.string().optional().describe("Filter memories stored before this date (ISO format YYYY-MM-DD, or relative)"),
     graph: z.boolean().default(false).optional().describe("Enable KG graph traversal (PPR) for relationship-aware search. Use when query involves entity relationships (e.g. 'what tools does Alice use', 'Bob的朋友')."),
+    includeArchived: z.boolean().default(false).optional().describe("When true, also return archived/superseded/consolidated memories (default: only active)"),
+    detail_level: z.enum(["brief", "normal", "full"]).default("normal").optional()
+      .describe("Result detail level: brief (ID+score+one-liner), normal (default, current behavior), full (include metadata)"),
   },
-  async ({ query, limit, scope, sessionId, allScopes, category, profile: profileName, render, after, before, graph }) => {
+  async ({ query, limit, scope, sessionId, allScopes, category, profile: profileName, render, after, before, graph, includeArchived, detail_level }) => {
     const { retriever, profile } = getComponents(profileName);
     // Ensure KG store is attached to non-default profile retrievers for PPR
     if (graph && kgStoreInstance) retriever.setKGStore(kgStoreInstance);
@@ -848,6 +863,7 @@ registerTool(
       sessionId,
       allScopes,
       graph,
+      includeArchived,
     }, {
       operation: "search_memory",
     }));
@@ -896,10 +912,20 @@ registerTool(
       }
     }
 
+    const level = detail_level ?? "normal";
+    let body: string;
+    if (level === "brief") {
+      body = formatBriefResults(results, { query });
+    } else if (level === "full") {
+      body = formatFullResults(results, { query, profile: profile.name });
+    } else {
+      body = formatSearchResults(results, { query, profile: profile.name });
+    }
+
     return {
       content: [{
         type: "text" as const,
-        text: formatSearchResults(results, { query, profile: profile.name }) + reminderText,
+        text: body + reminderText,
       }],
     };
   }
@@ -1326,6 +1352,203 @@ registerTool(
         content: [{ type: "text" as const, text: `Error drilling down: ${String(err)}` }],
       };
     }
+  },
+);
+
+// ============================================================================
+// Skill Memory Tools (D-1)
+// ============================================================================
+
+registerTool(
+  "store_skill",
+  "Store an executable skill — a reusable procedure with trigger conditions, implementation, and verification steps. Skills are 'what the agent can do' vs memories which are 'what the agent learned'.",
+  {
+    name: z.string().min(1).max(120).describe("Unique skill identifier (e.g. 'deploy_production')"),
+    description: z.string().min(1).max(500).describe("Natural language description (used for retrieval)"),
+    triggerPattern: z.string().min(1).max(300).describe("When to suggest this skill"),
+    implementationType: SkillImplementationTypeSchema.describe("Execution type: bash | python | mcp_tool_chain | instruction_sequence"),
+    implementation: z.string().min(1).max(5000).describe("Executable content"),
+    inputSchema: z.record(z.string(), z.unknown()).optional().describe("Parameter definition (JSON Schema)"),
+    verification: z.string().max(500).optional().describe("How to verify execution success"),
+    scope: z.string().min(1).max(160).describe("Required scope such as project:recallnest"),
+    source: z.enum(["manual", "agent", "api"]).default("agent").describe("How this skill was captured"),
+    tags: z.array(z.string().max(60)).max(6).default([]).describe("Optional tags"),
+  },
+  async ({ name, description, triggerPattern, implementationType, implementation, inputSchema, verification, scope, source, tags }) => {
+    const { store, embedder } = getComponents();
+    const stored = await persistSkill(store, embedder, {
+      name,
+      description,
+      triggerPattern,
+      implementationType,
+      implementation,
+      inputSchema,
+      verification,
+      scope,
+      source,
+      tags,
+    });
+
+    return {
+      content: [{
+        type: "text" as const,
+        text: [
+          `Stored skill ${stored.id.slice(0, 8)}`,
+          `Name: ${stored.name}`,
+          `Type: ${stored.implementationType}`,
+          `Scope: ${stored.scope}`,
+          `Tags: ${stored.tags.join(", ") || "-"}`,
+          `Stored at: ${stored.storedAt}`,
+        ].join("\n"),
+      }],
+    };
+  },
+);
+
+registerTool(
+  "retrieve_skill",
+  "Retrieve skills matching a task description. Returns executable procedures, not just text — use these to act, not just to recall.",
+  {
+    query: z.string().min(1).max(300).describe("Task description to match against stored skills"),
+    scope: z.string().min(1).max(160).optional().describe("Optional scope filter"),
+    limit: z.number().min(1).max(10).default(3).describe("Max results to return"),
+  },
+  async ({ query, scope, limit }) => {
+    const { store, embedder } = getComponents();
+    const results = await retrieveSkills(store, embedder, query, scope, limit);
+
+    if (results.length === 0) {
+      return {
+        content: [{
+          type: "text" as const,
+          text: "No matching skills found.",
+        }],
+      };
+    }
+
+    const formatted = results.map(({ skill, score }, index) => [
+      `## ${index + 1}. ${skill.name} (score: ${score.toFixed(3)})`,
+      `**Description**: ${skill.description}`,
+      `**Trigger**: ${skill.triggerPattern}`,
+      `**Type**: ${skill.implementationType}`,
+      skill.verification ? `**Verification**: ${skill.verification}` : null,
+      `**Tags**: ${skill.tags.join(", ") || "-"}`,
+      "",
+      "```",
+      skill.implementation,
+      "```",
+    ].filter((line): line is string => line !== null).join("\n")).join("\n\n---\n\n");
+
+    return {
+      content: [{
+        type: "text" as const,
+        text: `Found ${results.length} skill(s):\n\n${formatted}`,
+      }],
+    };
+  },
+);
+
+// --- D-2: scan_skill_promotions tool ---
+registerTool(
+  "scan_skill_promotions",
+  "Scan for cases/patterns that could be promoted to reusable skills. Returns promotion suggestions — review before acting.",
+  {
+    scope: z.string().min(1).max(160).describe("Project scope to scan for promotion candidates"),
+    minOccurrences: z.number().min(2).max(20).default(3).describe("Minimum similar cases to trigger a promotion suggestion"),
+  },
+  async ({ scope, minOccurrences }) => {
+    const { store } = getComponents();
+    const result = await scanForPromotions(store, scope, {
+      minCaseOccurrences: minOccurrences,
+    });
+
+    return {
+      content: [{
+        type: "text" as const,
+        text: formatPromotionResult(result),
+      }],
+    };
+  },
+);
+
+// --- MCP-1: list_tools tool ---
+registerTool(
+  "list_tools",
+  "List available RecallNest tools beyond the core set. Use this to discover advanced tools when needed.",
+  {
+    tier: z.enum(["core", "advanced", "full"]).default("advanced").optional()
+      .describe("Which tier of tools to list. Returns tools at this tier and below."),
+  },
+  async ({ tier }) => {
+    const requestedTier = tier ?? "advanced";
+    const tierOrder: Record<string, number> = { core: 0, advanced: 1, governance: 2 };
+    const maxOrder = requestedTier === "full" ? 2 : tierOrder[requestedTier] ?? 1;
+
+    const lines: string[] = [`Available tools (tier: ${requestedTier}):`];
+    for (const [toolName, toolTier] of Object.entries(TOOL_TIERS)) {
+      if ((tierOrder[toolTier] ?? 999) > maxOrder) continue;
+      const desc = TOOL_DESCRIPTIONS.get(toolName);
+      const oneLiner = desc
+        ? desc.split(/[.!]\s/)[0]?.slice(0, 100) ?? desc.slice(0, 100)
+        : "(no description)";
+      lines.push(`- ${toolName}: ${oneLiner}`);
+    }
+
+    return {
+      content: [{
+        type: "text" as const,
+        text: lines.join("\n"),
+      }],
+    };
+  },
+);
+
+// --- MCP-3: batch_store tool ---
+registerTool(
+  "batch_store",
+  "Store multiple memories in one call. More efficient than calling store_memory repeatedly.",
+  {
+    memories: z.array(z.object({
+      text: z.string().min(1),
+      category: DurableMemoryCategorySchema.default("events"),
+      importance: z.number().min(0).max(1).default(0.7),
+      tags: z.array(z.string()).max(6).default([]),
+    })).min(1).max(20),
+    scope: z.string().min(1).max(160),
+    source: z.enum(["manual", "agent", "api"]).default("agent"),
+  },
+  async ({ memories, scope, source }) => {
+    const { store, embedder } = getComponents();
+    const stored = await persistMemoryBatch({
+      store,
+      embedder,
+      conflictStore,
+      kgExtractor,
+    }, {
+      scope,
+      source,
+      defaultImportance: 0.7,
+      memories: memories.map((m) => ({
+        text: m.text,
+        category: m.category,
+        importance: m.importance,
+        tags: m.tags,
+      })),
+    });
+
+    const counts = { new: 0, deduped: 0, updated: 0 };
+    for (const r of stored) {
+      if (r.disposition === "deduped") counts.deduped++;
+      else if (r.disposition === "updated") counts.updated++;
+      else counts.new++;
+    }
+
+    return {
+      content: [{
+        type: "text" as const,
+        text: `Stored ${stored.length} memories (${counts.new} new, ${counts.deduped} deduped, ${counts.updated} updated)`,
+      }],
+    };
   },
 );
 

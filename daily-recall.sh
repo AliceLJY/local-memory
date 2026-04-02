@@ -48,6 +48,22 @@ TODAY_QUERY="${QUERIES[$IDX]}"
 
 echo "  今日主题 (#$((IDX+1))): $TODAY_QUERY" | tee -a "$LOG_FILE"
 
+# ── CC-6: Distill gate — lock + session gate ──────────────────
+echo "  检查 distill gate..." | tee -a "$LOG_FILE"
+GATE_RESULT=$(bun -e "
+  const { acquireLock, shouldDistill, getLastDistillTime } = require('./src/distill-lock.ts');
+  const cp = parseInt(process.argv[1] || '0', 10);
+  if (!shouldDistill(cp)) { console.log('SKIP:session_gate'); process.exit(0); }
+  if (!acquireLock()) { console.log('SKIP:lock_held'); process.exit(0); }
+  console.log('OK');
+" "$(bun run "$SCRIPT_DIR/src/cli.ts" checkpoint-count 2>/dev/null || echo 5)" 2>&1 || echo "OK")
+
+if [[ "$GATE_RESULT" == SKIP:* ]]; then
+  echo "  [跳过] distill gate: $GATE_RESULT" | tee -a "$LOG_FILE"
+else
+  echo "  distill gate: $GATE_RESULT" | tee -a "$LOG_FILE"
+fi
+
 # ── 用 lm distill 提取结构化洞察 ──────────────────────────────
 echo "  执行 distill..." | tee -a "$LOG_FILE"
 DISTILL_OUTPUT=$("$LM" distill "$TODAY_QUERY" --profile writing --limit 8 --all-scopes 2>&1 || true)
@@ -63,6 +79,9 @@ if [ -z "$DISTILL_OUTPUT" ]; then
 fi
 
 echo "  distill 完成，$(echo "$DISTILL_OUTPUT" | wc -l | tr -d ' ') 行" | tee -a "$LOG_FILE"
+
+# CC-6: Release lock on success
+bun -e "try { require('./src/distill-lock.ts').releaseLock(); } catch {}" 2>/dev/null || true
 
 # ── 写入输出文件 ──────────────────────────────────────────────
 cat > "$OUTPUT_FILE" << EOF

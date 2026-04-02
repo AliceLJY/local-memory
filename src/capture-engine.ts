@@ -1,4 +1,6 @@
 import type { Embedder } from "./embedder.js";
+import { generateAnchor } from "./anchor-generator.js";
+import { defaultEvolution, buildSupersedeMetadata, isActiveMemory } from "./memory-evolution.js";
 import {
   type CaseMemoryInput,
   CaseMemoryInputSchema,
@@ -45,6 +47,8 @@ import {
 import { matchPreference, applyPreferenceMatch } from "./preference-matcher.js";
 import type { LLMClient } from "./llm-client.js";
 import type { KGExtractor } from "./kg-extractor.js";
+import { scanForPII } from "./pii-detector.js";
+import type { AuditLogger } from "./audit-log.js";
 
 type StoreDeps = Pick<MemoryStore, "store"> & Partial<Pick<MemoryStore, "list" | "update" | "getById" | "get" | "vectorSearch">>;
 type ConflictStoreDeps = Pick<ConflictCandidateStore, "save" | "replace" | "getOpenByFingerprint" | "getLatestByFingerprint">;
@@ -57,6 +61,8 @@ interface PersistMemoryDeps {
   llm?: LLMClient | null;
   /** Tier 4.1: Optional KG triple extractor (async, non-blocking) */
   kgExtractor?: KGExtractor | null;
+  /** F-1: Optional audit logger for recording store operations */
+  auditLogger?: AuditLogger | null;
 }
 
 interface DurableWriteInput {
@@ -131,6 +137,7 @@ function buildStructuredMetadata(params: {
     capture: params.capture,
     boundary: buildStructuredMemoryBoundary(params.category),
     canonicalKey: params.canonicalKey,
+    evolution: defaultEvolution(),
     ...params.extra,
   });
 }
@@ -599,13 +606,15 @@ function inferPromotedCategory(
 }
 
 function buildStoreMemoryMetadata(input: StoreMemoryInput, canonicalKey: string): string {
+  const anchor = generateAnchor(input.text);
+  const anchorExtra = anchor ? { anchor } : undefined;
   return buildStructuredMetadata({
     source: input.source,
     tags: input.tags,
     capture: "store_memory_schema_v1",
     category: input.category,
     canonicalKey,
-    extra: buildPreferenceSlotExtra(input.category, input.text),
+    extra: mergeExtra(buildPreferenceSlotExtra(input.category, input.text), anchorExtra),
   });
 }
 
@@ -614,21 +623,24 @@ function buildWorkflowPatternMetadata(
   tags: string[],
   canonicalKey: string,
 ): string {
+  const wpExtra: Record<string, unknown> = {
+    workflowPattern: {
+      title: input.title,
+      trigger: input.trigger,
+      steps: input.steps,
+      outcome: input.outcome,
+      tools: input.tools,
+    },
+  };
+  const anchor = generateAnchor(input.title + ": " + input.trigger, wpExtra);
+  if (anchor) wpExtra.anchor = anchor;
   return buildStructuredMetadata({
     source: input.source,
     tags,
     capture: "workflow_pattern_schema_v1",
     category: "patterns",
     canonicalKey,
-    extra: {
-      workflowPattern: {
-        title: input.title,
-        trigger: input.trigger,
-        steps: input.steps,
-        outcome: input.outcome,
-        tools: input.tools,
-      },
-    },
+    extra: wpExtra,
   });
 }
 
@@ -637,22 +649,25 @@ function buildCaseMemoryMetadata(
   tags: string[],
   canonicalKey: string,
 ): string {
+  const cmExtra: Record<string, unknown> = {
+    caseMemory: {
+      title: input.title,
+      problem: input.problem,
+      context: input.context,
+      solutionSteps: input.solutionSteps,
+      outcome: input.outcome,
+      tools: input.tools,
+    },
+  };
+  const anchor = generateAnchor(input.title + ": " + input.problem, cmExtra);
+  if (anchor) cmExtra.anchor = anchor;
   return buildStructuredMetadata({
     source: input.source,
     tags,
     capture: "case_memory_schema_v1",
     category: "cases",
     canonicalKey,
-    extra: {
-      caseMemory: {
-        title: input.title,
-        problem: input.problem,
-        context: input.context,
-        solutionSteps: input.solutionSteps,
-        outcome: input.outcome,
-        tools: input.tools,
-      },
-    },
+    extra: cmExtra,
   });
 }
 
@@ -690,6 +705,21 @@ export async function persistMemory(
   rawInput: unknown,
 ): Promise<StoredMemoryRecord> {
   const input = StoreMemoryInputSchema.parse(rawInput);
+
+  // B-3: LLM importance assessment — refine default importance (0.7) via LLM.
+  // Only fires when importance is at the default value and LLM is available.
+  // Explicit importance values from the caller are respected as-is.
+  if (input.importance === 0.7 && deps.llm) {
+    try {
+      const assessed = await deps.llm.assessImportance(input.text, input.category);
+      if (assessed !== null) {
+        input.importance = assessed;
+      }
+    } catch {
+      // LLM importance assessment must never block memory writes
+    }
+  }
+
   const vector = await deps.embedder.embedPassage(input.text);
   const resolvedScope = resolveScope(input);
   const canonicalKey = resolveCanonicalKey({
@@ -738,13 +768,66 @@ export async function persistMemory(
     }
   }
 
+  // A-2: Evolution-aware semantic conflict detection.
+  // For non-preferences categories, check if a semantically similar memory
+  // already exists in the same scope. If so, use LLM to decide whether the
+  // old memory should be superseded.
+  // Requires both vectorSearch (for candidate lookup) and LLM (for judgment).
+  // Graceful fallback: if either is unavailable, skip detection entirely.
+  if (
+    input.category !== "preferences" &&
+    deps.store.vectorSearch &&
+    deps.llm &&
+    deps.store.update
+  ) {
+    try {
+      const candidates = await deps.store.vectorSearch(vector, 3, 0.85, [resolvedScope]);
+      // Only consider same-category, active memories as supersede targets
+      const supersedeTargets = candidates.filter(
+        c => c.entry.category === input.category &&
+             c.entry.id !== deterministicId(resolvedScope, input.text) &&
+             isActiveMemory(c.entry.metadata),
+      );
+      if (supersedeTargets.length > 0) {
+        const decision = await deps.llm.dedupDecision(input.text, supersedeTargets[0].entry.text);
+        if (decision.action === "MERGE" || decision.action === "SKIP") {
+          // LLM says new info overlaps with existing → supersede the old one
+          // (MERGE = new has extra info → store new, mark old superseded)
+          // (SKIP  = identical → just dedup, handled by writeDurableEntry)
+          if (decision.action === "MERGE") {
+            const oldEntry = supersedeTargets[0].entry;
+            const supersededMeta = buildSupersedeMetadata(oldEntry.metadata, deterministicId(resolvedScope, input.text));
+            await deps.store.update(oldEntry.id, { metadata: supersededMeta });
+          }
+        }
+        // CREATE or error → proceed normally (store new memory as-is)
+      }
+    } catch {
+      // Evolution conflict detection must never block memory writes
+    }
+  }
+
+  // F-3: PII detection — inject warning into metadata if PII found.
+  // Non-blocking: PII does not prevent the write.
+  let metadata = buildStoreMemoryMetadata(input, canonicalKey);
+  const piiResult = scanForPII(input.text);
+  if (piiResult.hasPII) {
+    const parsed: Record<string, unknown> = JSON.parse(metadata);
+    parsed.piiWarning = {
+      summary: piiResult.summary,
+      detections: piiResult.detections.length,
+      severity: piiResult.detections.some(d => d.severity === "high") ? "high" : "medium",
+    };
+    metadata = JSON.stringify(parsed);
+  }
+
   const { entry, disposition, conflictId } = await writeDurableEntry(deps, {
     text: input.text,
     vector,
     category: input.category,
     scope: resolvedScope,
     importance: input.importance,
-    metadata: buildStoreMemoryMetadata(input, canonicalKey),
+    metadata,
     canonicalKey,
     source: input.source,
   });
@@ -754,6 +837,19 @@ export async function persistMemory(
     deps.kgExtractor
       .extractAndStore(input.text, entry.id, resolvedScope)
       .catch(() => {}); // Silently ignore — KG extraction must never block memory writes
+  }
+
+  // F-1: Audit log — record store operation (non-blocking, silent on failure)
+  try {
+    deps.auditLogger?.log({
+      operation: "store",
+      scope: resolvedScope,
+      memoryId: entry.id,
+      actor: input.source,
+      details: `${input.category}: ${input.text.slice(0, 100)}`,
+    });
+  } catch {
+    // Audit must never block memory writes
   }
 
   return toStoredRecord(input, entry, disposition, canonicalKey, conflictId);

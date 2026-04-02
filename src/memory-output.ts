@@ -2,6 +2,7 @@ import type { MemoryEntry } from "./store.js";
 import type { RetrievalResult } from "./retriever.js";
 import type { RetrievalProfileName } from "./retrieval-profiles.js";
 import { extractMemoryProvenance } from "./memory-boundaries.js";
+import { extractMultiVectorText } from "./multi-vector.js";
 
 interface MemoryMetadata {
   source?: string;
@@ -287,6 +288,57 @@ function buildSearchRow(index: number, query: string, result: RetrievalResult): 
     getFileLabel(result),
     cleanSnippet(pickBestSnippet(query, result.entry.text), 120),
   ];
+}
+
+function extractBriefExcerpt(result: RetrievalResult): string {
+  const { l0 } = extractMultiVectorText(result.entry.metadata);
+  const raw = l0 || result.entry.text;
+  return cleanSnippet(raw, 80);
+}
+
+export function formatBriefResults(
+  results: RetrievalResult[],
+  context: { query: string },
+): string {
+  if (results.length === 0) return "No results found.";
+  const lines = [`Query: ${context.query}`, `Hits: ${results.length}`, ""];
+  for (let i = 0; i < results.length; i++) {
+    const r = results[i];
+    const excerpt = extractBriefExcerpt(r);
+    lines.push(`#${i + 1} ${r.entry.id.slice(0, 8)} ${Math.round(r.score * 100)}% — ${excerpt}`);
+  }
+  return lines.join("\n");
+}
+
+export function formatFullResults(
+  results: RetrievalResult[],
+  context: RenderContext,
+): string {
+  if (results.length === 0) return "No results found.";
+
+  const lines = [
+    `Query   : ${context.query}`,
+    `Profile : ${context.profile}`,
+    `Hits    : ${results.length}`,
+    "",
+    "#  ID       Score Category     Tier       Source  Date       Retrieval Path       File / Snippet",
+    "-- -------- ----- ------------ ---------- ------- ---------- -------------------- --------------",
+  ];
+
+  for (let i = 0; i < results.length; i++) {
+    const row = buildSearchRow(i, context.query, results[i]);
+    lines.push(`${row[0]} ${row[1]} ${row[2]} ${row[3]} ${row[4]} ${row[5]} ${row[6]} ${row[7]} ${row[8]} | ${row[9]}`);
+    lines.push(`   prov : ${getProvenanceSummary(results[i])}`);
+    // Full mode: append metadata details
+    const meta = parseMetadata(results[i].entry);
+    const evolution = typeof meta.evolutionStatus === "string" ? meta.evolutionStatus : "-";
+    const accessCount = typeof meta.accessCount === "number" ? String(meta.accessCount) : "-";
+    const importance = results[i].entry.importance.toFixed(2);
+    const tags = Array.isArray(meta.tags) ? (meta.tags as string[]).join(", ") : "-";
+    lines.push(`   meta : evolution=${evolution} accessCount=${accessCount} importance=${importance} tags=[${tags}]`);
+  }
+
+  return lines.join("\n");
 }
 
 export function formatSearchResults(

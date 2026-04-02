@@ -7,8 +7,11 @@
  *       MAX_EXPANSION_TERMS cap to prevent query bloat hurting BM25 precision.
  *       Structured synonym entries separating CN (substring) from EN (word-boundary).
  * v1.2: Entity resolution pre-pass normalizes aliases before synonym expansion.
+ * v1.3: P0.3 — User-level alias-map (data/alias-map.json) for short query expansion.
  */
 
+import { existsSync, readFileSync } from "fs";
+import { join } from "path";
 import { resolveQueryEntities } from "./entity-resolver.js";
 
 interface SynonymEntry {
@@ -59,6 +62,56 @@ const SYNONYM_MAP: SynonymEntry[] = [
 /** Maximum expansion terms to prevent query bloat hurting BM25 precision */
 const MAX_EXPANSION_TERMS = 5;
 
+// ============================================================================
+// P0.3: User-level alias-map for short query expansion
+// ============================================================================
+
+/**
+ * Alias map entry: a short trigger → expansion terms.
+ * Loaded from data/alias-map.json on first use (lazy, cached).
+ */
+export interface AliasEntry {
+  trigger: string;
+  expansions: string[];
+}
+
+let aliasMapCache: AliasEntry[] | null = null;
+let aliasMapPath: string | null = null;
+
+/** Override the alias-map file path (for testing). */
+export function setAliasMapPath(path: string): void {
+  aliasMapPath = path;
+  aliasMapCache = null; // force reload
+}
+
+/** Reset alias-map cache (for testing). */
+export function resetAliasMapCache(): void {
+  aliasMapCache = null;
+}
+
+function loadAliasMap(): AliasEntry[] {
+  if (aliasMapCache !== null) return aliasMapCache;
+  const filePath = aliasMapPath ?? join(process.cwd(), "data", "alias-map.json");
+  try {
+    if (existsSync(filePath)) {
+      const raw = JSON.parse(readFileSync(filePath, "utf-8"));
+      if (Array.isArray(raw)) {
+        aliasMapCache = raw.filter(
+          (e: unknown): e is AliasEntry =>
+            typeof e === "object" && e !== null &&
+            typeof (e as AliasEntry).trigger === "string" &&
+            Array.isArray((e as AliasEntry).expansions),
+        );
+        return aliasMapCache;
+      }
+    }
+  } catch {
+    // Silent — alias map is optional
+  }
+  aliasMapCache = [];
+  return aliasMapCache;
+}
+
 /**
  * Expand a query by appending synonym terms from the dictionary.
  * Returns the original query with additional terms appended.
@@ -72,6 +125,7 @@ export function expandQuery(query: string): string {
   const lower = resolved.toLowerCase();
   const additions = new Set<string>();
 
+  // Static synonym map (built-in)
   for (const entry of SYNONYM_MAP) {
     // Chinese triggers: substring match (CJK has no word boundaries)
     const cnMatch = entry.cn.some(t => lower.includes(t.toLowerCase()));
@@ -83,6 +137,19 @@ export function expandQuery(query: string): string {
 
     if (cnMatch || enMatch) {
       for (const exp of entry.expansions) {
+        if (!lower.includes(exp.toLowerCase())) {
+          additions.add(exp);
+        }
+      }
+    }
+  }
+
+  // P0.3: User alias-map (data/alias-map.json) — short triggers → expansions
+  const aliasMap = loadAliasMap();
+  for (const alias of aliasMap) {
+    const triggerLower = alias.trigger.toLowerCase();
+    if (lower.includes(triggerLower)) {
+      for (const exp of alias.expansions) {
         if (!lower.includes(exp.toLowerCase())) {
           additions.add(exp);
         }
