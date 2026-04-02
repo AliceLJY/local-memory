@@ -40,12 +40,21 @@ export const ResumeCheckpointSummarySchema = z.object({
 
 export const ResumeResponseModeSchema = z.enum(["default", "recall-only"]);
 
+export const CollapsedItemSchema = z.object({
+  entryId: z.string(),
+  text: z.string(),
+  renderLevel: z.enum(["L0", "L1", "L2"]),
+  stalenessHint: z.string().optional(),
+});
+
 export const ResumeContextResponseSchema = z.object({
   summary: boundedStringSchema("summary", 800),
   resolvedScope: optionalBoundedStringSchema(160),
   stableContext: normalizedStringListSchema("stableContext", 6, 220),
   relevantPatterns: normalizedStringListSchema("relevantPatterns", 6, 220),
   recentCases: normalizedStringListSchema("recentCases", 6, 220),
+  /** CC-7: Mixed-granularity collapsed view of all recalled items. */
+  collapsedItems: z.array(CollapsedItemSchema).max(20).optional(),
   latestCheckpoint: ResumeCheckpointSummarySchema.optional(),
   responseMode: ResumeResponseModeSchema.default("default"),
   responseGuidance: optionalBoundedStringSchema(400),

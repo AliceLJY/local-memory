@@ -82,6 +82,15 @@ export function formatResumeContext(response: ResumeContextResponse): string {
     ...listBlock("Recent cases", response.recentCases),
   );
 
+  // CC-7: Collapsed items with renderLevel + staleness hints
+  if (response.collapsedItems && response.collapsedItems.length > 0) {
+    lines.push("Collapsed context (mixed granularity):");
+    for (const item of response.collapsedItems) {
+      const hint = item.stalenessHint ? ` ${item.stalenessHint}` : "";
+      lines.push(`[${item.renderLevel}] ${item.text}${hint}`);
+    }
+  }
+
   if (response.latestCheckpoint) {
     lines.push("Latest checkpoint:");
     lines.push(`Session: ${response.latestCheckpoint.sessionId}`);

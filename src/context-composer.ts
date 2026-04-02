@@ -24,6 +24,7 @@ import {
 } from "./term-registry.js";
 import { synthesizeSection } from "./result-synthesizer.js";
 import type { LLMClient } from "./llm-client.js";
+import { collapseResults, type CollapseInput } from "./context-collapse-renderer.js";
 type ResumeCategory = "profile" | "preferences" | "entities" | "patterns" | "cases";
 
 interface ResumeRetriever {
@@ -266,6 +267,27 @@ export async function composeResumeContext(
     synthesizeSection(recentCases, queryHint, llm),
   ]);
 
+  // CC-7: Collapse rendering — build mixed-granularity view of all recalled items.
+  // Gathers all retrieval results, deduplicates, and renders at L0/L1/L2 based on score.
+  const allResults: RetrievalResult[] = [];
+  const seenIds = new Set<string>();
+  for (const r of [...profileResults, ...preferenceResults, ...entityResults, ...patternResults, ...caseResults]) {
+    if (!seenIds.has(r.entry.id)) {
+      seenIds.add(r.entry.id);
+      allResults.push(r);
+    }
+  }
+  const collapseInput: CollapseInput[] = allResults.map(r => ({
+    entryId: r.entry.id,
+    text: r.entry.text,
+    metadata: r.entry.metadata,
+    score: r.score,
+    timestamp: r.entry.timestamp,
+  }));
+  const collapsedItems = collapseInput.length > 0
+    ? collapseResults(collapseInput)
+    : undefined;
+
   const response = {
     summary: buildSummary({
       stableContext: synthStable,
@@ -277,6 +299,7 @@ export async function composeResumeContext(
     stableContext: synthStable,
     relevantPatterns: synthPatterns,
     recentCases: synthCases,
+    collapsedItems: collapsedItems && collapsedItems.length > 0 ? collapsedItems : undefined,
     latestCheckpoint: latestCheckpoint
       ? {
         sessionId: latestCheckpoint.sessionId,
