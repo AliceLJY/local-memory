@@ -20,6 +20,9 @@
 import type { MemoryEntry, MemorySearchResult, MemoryStore } from "./store.js";
 import { createVersionGroup } from "./version-manager.js";
 import { isActiveMemory, parseEvolution, buildSupersedeMetadata, buildConsolidatedMetadata, patchEvolution } from "./memory-evolution.js";
+import { cosineSimilarity } from "./multi-vector.js";
+import type { LLMClient } from "./llm-client.js";
+import type { Embedder } from "./embedder.js";
 
 // ---------------------------------------------------------------------------
 // Config & Types
@@ -248,6 +251,195 @@ export class ConsolidationEngine {
 
     return { originalCount: active.length, clustersFound, mergedCount, relationsAdded, conflictsDetected, scope };
   }
+}
+
+// ---------------------------------------------------------------------------
+// C-2: Cluster Consolidation — group similar memories and generate insights
+// ---------------------------------------------------------------------------
+
+export interface ClusterConsolidationResult {
+  clustersFound: number;
+  clustersConsolidated: number;
+  insightsGenerated: number;
+  entriesLinked: number;
+  /** CC-9: Set when consecutive low-yield rounds trigger early termination */
+  earlyStop?: "diminishing_returns";
+}
+
+/**
+ * C-2: Cluster consolidation — group similar memories and generate insights.
+ *
+ * Algorithm:
+ * 1. Take active memories in a scope
+ * 2. Cluster by embedding similarity (simple greedy clustering, not full K-means)
+ * 3. For clusters with > minClusterSize members, generate a high-level insight via LLM
+ * 4. Store insight as new memory, link source memories via evolution sourceMemories field
+ * 5. Source memories marked consolidated_into but remain active (still individually searchable)
+ */
+export async function clusterAndConsolidate(params: {
+  entries: MemoryEntry[];
+  embedder: Pick<Embedder, "embedPassage">;
+  llm: LLMClient;
+  store: Pick<MemoryStore, "store" | "update">;
+  scope: string;
+  /** Minimum cluster size to trigger consolidation (default: 3) */
+  minClusterSize?: number;
+  /** Similarity threshold for clustering (default: 0.75) */
+  clusterThreshold?: number;
+  /** Max clusters to process per run (default: 5) */
+  maxClusters?: number;
+}): Promise<ClusterConsolidationResult> {
+  const {
+    entries,
+    llm,
+    store,
+    scope,
+    minClusterSize = 3,
+    clusterThreshold = 0.75,
+    maxClusters = 5,
+  } = params;
+
+  const result: ClusterConsolidationResult = {
+    clustersFound: 0,
+    clustersConsolidated: 0,
+    insightsGenerated: 0,
+    entriesLinked: 0,
+  };
+
+  // Filter to active entries with vectors
+  const active = entries.filter(e => isActiveMemory(e.metadata) && e.vector?.length > 0);
+  if (active.length === 0) return result;
+
+  // Step 1: Greedy clustering by embedding similarity
+  const clusters: MemoryEntry[][] = [];
+  const centroids: number[][] = [];
+  const assigned = new Set<string>();
+
+  for (const entry of active) {
+    if (assigned.has(entry.id)) continue;
+
+    let bestClusterIdx = -1;
+    let bestSim = -1;
+
+    for (let ci = 0; ci < centroids.length; ci++) {
+      const sim = cosineSimilarity(entry.vector, centroids[ci]);
+      if (sim > clusterThreshold && sim > bestSim) {
+        bestSim = sim;
+        bestClusterIdx = ci;
+      }
+    }
+
+    if (bestClusterIdx >= 0) {
+      clusters[bestClusterIdx].push(entry);
+      assigned.add(entry.id);
+      // Update centroid as running average
+      const members = clusters[bestClusterIdx];
+      const dim = centroids[bestClusterIdx].length;
+      const newCentroid = new Array<number>(dim);
+      for (let d = 0; d < dim; d++) {
+        let sum = 0;
+        for (const m of members) sum += m.vector[d];
+        newCentroid[d] = sum / members.length;
+      }
+      centroids[bestClusterIdx] = newCentroid;
+    } else {
+      // Start a new cluster
+      clusters.push([entry]);
+      centroids.push([...entry.vector]);
+      assigned.add(entry.id);
+    }
+  }
+
+  // Step 2: Filter to clusters meeting minClusterSize
+  const qualifiedClusters = clusters.filter(c => c.length >= minClusterSize);
+  result.clustersFound = qualifiedClusters.length;
+
+  if (qualifiedClusters.length === 0) return result;
+
+  // Step 3: Process up to maxClusters, with CC-9 diminishing returns detection
+  const toProcess = qualifiedClusters.slice(0, maxClusters);
+  let consecutiveLowYield = 0;
+
+  for (const cluster of toProcess) {
+    // CC-9: Check diminishing returns — 2 consecutive rounds with <= 1 insight
+    if (consecutiveLowYield >= 2) {
+      result.earlyStop = "diminishing_returns";
+      break;
+    }
+
+    // Generate insight via LLM from cluster member texts
+    const combinedText = cluster.map(m => m.text).join("\n---\n");
+    const insight = await llm.generateL0(combinedText);
+
+    if (!insight) {
+      // CC-9: No insight produced — this is a zero-yield round
+      consecutiveLowYield++;
+      result.clustersConsolidated++;
+      continue;
+    }
+
+    // Determine category (majority vote from cluster members)
+    const catCounts = new Map<string, number>();
+    for (const m of cluster) {
+      catCounts.set(m.category, (catCounts.get(m.category) ?? 0) + 1);
+    }
+    let bestCat = cluster[0].category;
+    let bestCount = 0;
+    for (const [cat, count] of catCounts) {
+      if (count > bestCount) {
+        bestCat = cat as MemoryEntry["category"];
+        bestCount = count;
+      }
+    }
+
+    // Importance = max of cluster members
+    const maxImportance = Math.max(...cluster.map(m => m.importance));
+
+    // Embed the insight text
+    const insightVector = await params.embedder.embedPassage(insight);
+
+    // Store the insight as a new memory
+    const insightEntry = await store.store({
+      text: insight,
+      vector: insightVector,
+      category: bestCat,
+      scope,
+      importance: maxImportance,
+      metadata: JSON.stringify({
+        evolution: {
+          status: "active",
+          version: 1,
+          accessCount: 0,
+          lastAccessedAt: null,
+          supersededBy: null,
+          consolidatedInto: null,
+          sourceMemories: cluster.map(m => m.id),
+          validFrom: Date.now(),
+          validUntil: null,
+        },
+        cluster_insight: true,
+      }),
+    });
+
+    result.insightsGenerated++;
+
+    // Mark source memories as consolidated_into (but keep them active)
+    for (const member of cluster) {
+      const patched = patchEvolution(member.metadata, {
+        consolidatedInto: insightEntry.id,
+        // Keep status active — still individually searchable
+      });
+      await store.update(member.id, { metadata: patched }, [scope]);
+      result.entriesLinked++;
+    }
+
+    result.clustersConsolidated++;
+
+    // CC-9: Successful insight generated — reset diminishing returns counter
+    consecutiveLowYield = 0;
+  }
+
+  return result;
 }
 
 /** Format a ConsolidationResult for display. */

@@ -47,6 +47,13 @@ export const CollapsedItemSchema = z.object({
   stalenessHint: z.string().optional(),
 });
 
+/** CC-8: Essential context reconstructed after compact — pinned memories, active patterns, open loops. */
+export const EssentialContextSchema = z.object({
+  pinnedMemories: z.array(z.string()).max(3).optional(),
+  activePatterns: z.array(z.string()).max(2).optional(),
+  openLoops: z.array(z.string()).max(3).optional(),
+});
+
 export const ResumeContextResponseSchema = z.object({
   summary: boundedStringSchema("summary", 800),
   resolvedScope: optionalBoundedStringSchema(160),
@@ -55,7 +62,11 @@ export const ResumeContextResponseSchema = z.object({
   recentCases: normalizedStringListSchema("recentCases", 6, 220),
   /** CC-7: Mixed-granularity collapsed view of all recalled items. */
   collapsedItems: z.array(CollapsedItemSchema).max(20).optional(),
+  /** CC-8: Essential context reconstructed after compact. */
+  essentialContext: EssentialContextSchema.optional(),
   latestCheckpoint: ResumeCheckpointSummarySchema.optional(),
+  /** CC-1: Hint for where to inject recalled context in the prompt. */
+  injectionHint: z.enum(["system_prompt", "user_attachment"]).default("user_attachment").optional(),
   responseMode: ResumeResponseModeSchema.default("default"),
   responseGuidance: optionalBoundedStringSchema(400),
   generatedAt: z.string().datetime(),
@@ -65,5 +76,6 @@ export type SessionCheckpointInput = z.infer<typeof SessionCheckpointInputSchema
 export type SessionCheckpointRecord = z.infer<typeof SessionCheckpointRecordSchema>;
 export type ResumeContextRequest = z.infer<typeof ResumeContextRequestSchema>;
 export type ResumeContextResponse = z.infer<typeof ResumeContextResponseSchema>;
+export type EssentialContext = z.infer<typeof EssentialContextSchema>;
 export type RetrievalProfileName = z.infer<typeof RetrievalProfileSchema>;
 export type ResumeResponseMode = z.infer<typeof ResumeResponseModeSchema>;
