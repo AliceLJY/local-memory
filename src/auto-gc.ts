@@ -16,6 +16,9 @@ import {
   buildArchivedMetadata,
   isActiveMemory,
 } from "./memory-evolution.js";
+import { loadRetentionPolicy, shouldArchiveByPolicy } from "./retention-policy.js";
+import type { RetentionPolicy } from "./retention-policy.js";
+import type { AuditLogger } from "./audit-log.js";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -72,6 +75,8 @@ export interface GcResult {
 export async function maybeRunGc(
   store: MemoryStore,
   config: AutoGcConfig = DEFAULT_AUTO_GC_CONFIG,
+  retentionConfigDir?: string,
+  auditLogger?: AuditLogger,
 ): Promise<GcResult> {
   const stats = await store.stats();
   const totalMemories = stats.total ?? 0;
@@ -98,6 +103,25 @@ export async function maybeRunGc(
   const entries = await store.list({ limit: 5000 });
   totalChecked = entries.length;
 
+  // Pre-compute per-scope active memory counts and cache retention policies.
+  // This avoids repeated file reads inside the loop.
+  const activeCounts = new Map<string, number>();
+  const policyCache = new Map<string, RetentionPolicy>();
+  const scopesSeen = new Set<string>();
+
+  for (const entry of entries) {
+    const scope = entry.scope ?? "";
+    scopesSeen.add(scope);
+    if (isActiveMemory(entry.metadata)) {
+      activeCounts.set(scope, (activeCounts.get(scope) ?? 0) + 1);
+    }
+  }
+
+  // Batch-load retention policies for all scopes (one file read per scope)
+  for (const scope of scopesSeen) {
+    policyCache.set(scope, loadRetentionPolicy(scope, retentionConfigDir));
+  }
+
   for (const entry of entries) {
     if (archivedCount >= config.maxArchivePerRun) break;
 
@@ -110,17 +134,47 @@ export async function maybeRunGc(
 
     // Check minimum age
     const ageDays = (now - entry.timestamp) / 86_400_000;
-    if (ageDays < config.minAgeDays) continue;
 
-    // Compute evolution decay score
-    const evo = parseEvolution(entry.metadata, entry.timestamp);
-    const decayScore = computeDecayScore(evo, importance, now);
+    // Decay-based archival (existing logic)
+    let shouldArchive = false;
+    if (ageDays >= config.minAgeDays) {
+      const evo = parseEvolution(entry.metadata, entry.timestamp);
+      const decayScore = computeDecayScore(evo, importance, now);
+      if (decayScore < config.decayScoreThreshold) {
+        shouldArchive = true;
+      }
+    }
 
-    // Archive if decay score is below threshold
-    if (decayScore < config.decayScoreThreshold) {
+    // Retention-policy-based archival (F-2): OR with decay-based
+    if (!shouldArchive) {
+      const scope = entry.scope ?? "";
+      const policy = policyCache.get(scope) ?? loadRetentionPolicy(scope, retentionConfigDir);
+      const activeCount = activeCounts.get(scope) ?? 0;
+      const policyCheck = shouldArchiveByPolicy(policy, ageDays, activeCount);
+      if (policyCheck.archive) {
+        shouldArchive = true;
+      }
+    }
+
+    if (shouldArchive) {
       const archivedMeta = buildArchivedMetadata(entry.metadata);
       await store.update(entry.id, { metadata: archivedMeta });
       archivedCount++;
+      // F-1: Audit log — record archive operation (silent on failure)
+      try {
+        auditLogger?.log({
+          operation: "archive",
+          memoryId: entry.id,
+          actor: "system",
+          details: `auto-gc: age=${Math.floor(ageDays)}d`,
+        });
+      } catch { /* Audit must never block GC */ }
+      // Decrement active count for the scope (memory is no longer active)
+      const scope = entry.scope ?? "";
+      const prev = activeCounts.get(scope) ?? 0;
+      if (prev > 0) {
+        activeCounts.set(scope, prev - 1);
+      }
     }
   }
 

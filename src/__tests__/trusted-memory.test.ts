@@ -460,3 +460,369 @@ describe("F-3: PII detector", () => {
     expect(r1.hasPII).toBe(r2.hasPII);
   });
 });
+
+// ---------------------------------------------------------------------------
+// F-2 Integration: Retention Policy + Auto-GC
+// ---------------------------------------------------------------------------
+
+import {
+  maybeRunGc,
+  resetGcTimestamp,
+  DEFAULT_AUTO_GC_CONFIG,
+} from "../auto-gc.js";
+import { isActiveMemory } from "../memory-evolution.js";
+
+describe("F-2 integration: retention policy + auto-gc", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = makeTmpDir();
+    resetGcTimestamp();
+  });
+
+  afterEach(() => {
+    try {
+      rmSync(tmpDir, { recursive: true, force: true });
+    } catch {
+      // cleanup best-effort
+    }
+  });
+
+  /** Build a minimal mock store for auto-gc tests. */
+  function makeGcStore(entries: Array<{
+    id: string;
+    importance: number;
+    timestamp: number;
+    metadata: string;
+    scope: string;
+  }>) {
+    const data = new Map(entries.map(e => [e.id, {
+      ...e,
+      text: "test",
+      vector: [1, 0, 0],
+      category: "events" as const,
+    }]));
+    const updates: Array<{ id: string; metadata: string }> = [];
+    return {
+      store: {
+        stats: async () => ({ total: data.size }),
+        list: async () => Array.from(data.values()),
+        update: async (id: string, patch: { metadata: string }) => {
+          updates.push({ id, metadata: patch.metadata });
+          const entry = data.get(id);
+          if (!entry) return null;
+          entry.metadata = patch.metadata;
+          return entry;
+        },
+      },
+      updates,
+    };
+  }
+
+  it("archives memories exceeding autoArchiveAfterDays", async () => {
+    const now = Date.now();
+    const scope = "project:retention-age";
+    // Save a retention policy: autoArchiveAfterDays = 30
+    saveRetentionPolicy(scope, { autoArchiveAfterDays: 30 }, tmpDir);
+
+    const activeMeta = JSON.stringify({
+      evolution: { status: "active", version: 1 },
+    });
+
+    // One memory aged 45 days (above autoArchiveAfterDays=30)
+    // Set importance high enough and decay score high enough that decay alone won't archive
+    const { store, updates } = makeGcStore([
+      {
+        id: "aged-mem",
+        importance: 0.5,
+        timestamp: now - 45 * 86_400_000,
+        metadata: activeMeta,
+        scope,
+      },
+    ]);
+
+    const result = await maybeRunGc(
+      store as ReturnType<typeof makeGcStore>["store"] & import("../store.js").MemoryStore,
+      {
+        ...DEFAULT_AUTO_GC_CONFIG,
+        minMemoryCount: 1,
+        minHoursSinceLastGc: 0,
+        // Set a very low decay threshold so decay alone wouldn't trigger
+        decayScoreThreshold: 0.001,
+        minAgeDays: 60, // Higher than 45 → decay check skipped
+      },
+      tmpDir,
+    );
+
+    expect(result.triggered).toBe(true);
+    expect(result.archivedCount).toBe(1);
+    expect(updates.length).toBe(1);
+    // Verify the archived metadata marks it as archived
+    expect(isActiveMemory(updates[0].metadata)).toBe(false);
+  });
+
+  it("archives memories when scope exceeds maxMemories", async () => {
+    const now = Date.now();
+    const scope = "project:retention-count";
+    // maxMemories = 5 → with 6 active memories, oldest should be archived
+    saveRetentionPolicy(scope, { maxMemories: 5 }, tmpDir);
+
+    const activeMeta = JSON.stringify({
+      evolution: { status: "active", version: 1 },
+    });
+
+    // Create 6 memories, all recent (within minAgeDays so decay won't fire)
+    const entries = Array.from({ length: 6 }, (_, i) => ({
+      id: `mem-${i}`,
+      importance: 0.5,
+      timestamp: now - (i + 1) * 86_400_000, // 1-6 days old
+      metadata: activeMeta,
+      scope,
+    }));
+
+    const { store, updates } = makeGcStore(entries);
+
+    const result = await maybeRunGc(
+      store as ReturnType<typeof makeGcStore>["store"] & import("../store.js").MemoryStore,
+      {
+        ...DEFAULT_AUTO_GC_CONFIG,
+        minMemoryCount: 1,
+        minHoursSinceLastGc: 0,
+        decayScoreThreshold: 0.001, // Very low so decay alone won't trigger
+        minAgeDays: 365, // Very high so decay check is skipped
+      },
+      tmpDir,
+    );
+
+    expect(result.triggered).toBe(true);
+    // At least one should be archived since activeCount (6) > maxMemories (5)
+    expect(result.archivedCount).toBeGreaterThanOrEqual(1);
+    expect(updates.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("does not affect existing behavior when no retention config exists", async () => {
+    const now = Date.now();
+    const scope = "project:no-retention";
+    // No saveRetentionPolicy call → default policy (0/0/false) → no policy archival
+
+    const activeMeta = JSON.stringify({
+      evolution: { status: "active", version: 1 },
+    });
+
+    // Memory aged 10 days, within default minAgeDays (30) → decay skip
+    // No retention policy → policy skip
+    const { store, updates } = makeGcStore([
+      {
+        id: "young-mem",
+        importance: 0.5,
+        timestamp: now - 10 * 86_400_000,
+        metadata: activeMeta,
+        scope,
+      },
+    ]);
+
+    const result = await maybeRunGc(
+      store as ReturnType<typeof makeGcStore>["store"] & import("../store.js").MemoryStore,
+      {
+        ...DEFAULT_AUTO_GC_CONFIG,
+        minMemoryCount: 1,
+        minHoursSinceLastGc: 0,
+        minAgeDays: 30,
+      },
+      tmpDir, // Points to empty retention dir
+    );
+
+    expect(result.triggered).toBe(true);
+    expect(result.archivedCount).toBe(0);
+    expect(updates.length).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F-3 Integration: PII Detection + persistMemory
+// ---------------------------------------------------------------------------
+
+import { persistMemory } from "../capture-engine.js";
+
+describe("F-3 integration: PII detection + persistMemory", () => {
+  /** Build minimal deps for persistMemory. */
+  function createPiiTestDeps() {
+    const storedEntries: Array<Record<string, unknown>> = [];
+    let seq = 1;
+    return {
+      storedEntries,
+      deps: {
+        embedder: {
+          async embedPassage(_text: string) {
+            return [1, 0, 0];
+          },
+        },
+        store: {
+          async store(entry: Record<string, unknown>) {
+            const stored = {
+              ...entry,
+              id: `00000000-0000-0000-0000-${String(seq).padStart(12, "0")}`,
+              timestamp: 1_700_000_000_000 + seq,
+            };
+            seq += 1;
+            storedEntries.push(stored);
+            return stored;
+          },
+          async list(
+            _scopeFilter?: string[],
+            _category?: string,
+            limit = 20,
+            offset = 0,
+          ) {
+            return storedEntries.slice(offset, offset + limit);
+          },
+          async update(id: string, updates: Record<string, unknown>) {
+            const index = storedEntries.findIndex((e) => e.id === id);
+            if (index < 0) return null;
+            storedEntries[index] = { ...storedEntries[index], ...updates };
+            return storedEntries[index];
+          },
+          async getById(id: string) {
+            return storedEntries.find((e) => e.id === id) ?? null;
+          },
+          async get(id: string) {
+            return storedEntries.find((e) => e.id === id) ?? null;
+          },
+        },
+      },
+    };
+  }
+
+  it("adds piiWarning to metadata when text contains API key", async () => {
+    const { deps, storedEntries } = createPiiTestDeps();
+    const result = await persistMemory(deps as Parameters<typeof persistMemory>[0], {
+      text: "My API key is sk-abcdefghijklmnopqrstuvwxyz",
+      category: "events",
+      importance: 0.7,
+      scope: "project:pii-test",
+      source: "manual",
+      tags: [],
+    });
+
+    expect(result.id).toBeDefined();
+    // Check the stored entry's metadata contains piiWarning
+    const stored = storedEntries[0];
+    const meta = JSON.parse(stored.metadata as string);
+    expect(meta.piiWarning).toBeDefined();
+    expect(meta.piiWarning.severity).toBe("high");
+    expect(meta.piiWarning.detections).toBeGreaterThanOrEqual(1);
+    expect(meta.piiWarning.summary).toContain("Found");
+  });
+
+  it("does not add piiWarning to metadata for normal text", async () => {
+    const { deps, storedEntries } = createPiiTestDeps();
+    const result = await persistMemory(deps as Parameters<typeof persistMemory>[0], {
+      text: "User prefers dark mode in all applications",
+      category: "preferences",
+      importance: 0.7,
+      scope: "project:pii-test",
+      source: "manual",
+      tags: [],
+    });
+
+    expect(result.id).toBeDefined();
+    const stored = storedEntries[0];
+    const meta = JSON.parse(stored.metadata as string);
+    expect(meta.piiWarning).toBeUndefined();
+  });
+
+  it("PII detection does not block write (text with PII is still stored)", async () => {
+    const { deps, storedEntries } = createPiiTestDeps();
+    const sensitiveText =
+      "password=SuperSecret123 and token=abcdefghijklmnopqrstuvwxyz1234";
+    const result = await persistMemory(deps as Parameters<typeof persistMemory>[0], {
+      text: sensitiveText,
+      category: "events",
+      importance: 0.7,
+      scope: "project:pii-test",
+      source: "manual",
+      tags: [],
+    });
+
+    // Memory was stored despite PII
+    expect(result.id).toBeDefined();
+    expect(result.disposition).toBe("stored");
+    expect(storedEntries.length).toBe(1);
+    // The stored text is the original text (not redacted)
+    expect(storedEntries[0].text).toBe(sensitiveText);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F-1 integration: audit logger in persistMemory & maybeRunGc
+// ---------------------------------------------------------------------------
+
+describe("F-1 integration: audit logger", () => {
+  let tmpDir: string;
+  beforeEach(() => { tmpDir = join(tmpdir(), `f1-audit-${randomUUID()}`); mkdirSync(tmpDir, { recursive: true }); });
+  afterEach(() => { try { rmSync(tmpDir, { recursive: true, force: true }); } catch {} });
+
+  it("persistMemory records store audit entry", async () => {
+    const { persistMemory } = await import("../capture-engine.js");
+    const { createAuditLogger } = await import("../audit-log.js");
+    const logPath = join(tmpDir, "audit.jsonl");
+    const logger = createAuditLogger(logPath);
+
+    const deps = {
+      embedder: { async embedPassage() { return [1, 0, 0]; } },
+      store: {
+        async store(entry: Record<string, unknown>) { return { ...entry, id: entry.id ?? "test-1", timestamp: Date.now() }; },
+        async list() { return []; },
+        async update() { return null; },
+        async getById() { return null; },
+      },
+      auditLogger: logger,
+    };
+
+    await persistMemory(deps as Parameters<typeof persistMemory>[0], {
+      text: "User prefers dark mode",
+      category: "preferences",
+      scope: "project:test",
+      source: "manual",
+      importance: 0.7,
+      tags: [],
+    });
+
+    const entries = logger.exportAll();
+    const storeEntry = entries.find(e => e.operation === "store");
+    expect(storeEntry).toBeDefined();
+    expect(storeEntry!.actor).toBe("manual");
+    expect(storeEntry!.scope).toBe("project:test");
+  });
+
+  it("maybeRunGc records archive audit entry", async () => {
+    const { maybeRunGc, resetGcTimestamp } = await import("../auto-gc.js");
+    const { createAuditLogger } = await import("../audit-log.js");
+    resetGcTimestamp();
+
+    const logPath = join(tmpDir, "audit-gc.jsonl");
+    const logger = createAuditLogger(logPath);
+    const now = Date.now();
+    const oldTs = now - 120 * 86_400_000;
+    const activeMeta = JSON.stringify({ evolution: { status: "active", version: 1, accessCount: 0, lastAccessedAt: null, validFrom: oldTs, validUntil: null } });
+
+    const store = {
+      async stats() { return { total: 100 }; },
+      async list() { return [{ id: "gc-1", text: "old", importance: 0.1, timestamp: oldTs, metadata: activeMeta, category: "events", scope: "project:test" }]; },
+      async update(id: string, upd: Record<string, unknown>) { return { id, ...upd }; },
+    };
+
+    const result = await maybeRunGc(
+      store as Parameters<typeof maybeRunGc>[0],
+      { minMemoryCount: 1, minHoursSinceLastGc: 0, decayScoreThreshold: 0.99, maxArchivePerRun: 10, minAgeDays: 30 },
+      undefined, // retentionConfigDir
+      logger,    // auditLogger (4th param)
+    );
+
+    expect(result.archivedCount).toBe(1);
+    const archiveEntry = logger.exportAll().find(e => e.operation === "archive");
+    expect(archiveEntry).toBeDefined();
+    expect(archiveEntry!.memoryId).toBe("gc-1");
+    expect(archiveEntry!.actor).toBe("system");
+  });
+});

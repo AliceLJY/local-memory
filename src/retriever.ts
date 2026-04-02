@@ -32,6 +32,7 @@ import { isKGModeEnabled } from "./kg-extractor.js";
 import { detectEntities } from "./query-entity-detector.js";
 import { buildGraph, pprTraverse } from "./ppr-traversal.js";
 import { logInfo } from "./stderr-log.js";
+import type { AuditLogger } from "./audit-log.js";
 
 // ============================================================================
 // Types & Configuration
@@ -388,6 +389,7 @@ export class MemoryRetriever {
   private accessTracker?: AccessTracker;
   private kgStore?: KGStore;
   private frequencyTracker?: FrequencyTracker;
+  private auditLogger?: AuditLogger;
   /**
    * Session-scoped suppression list (dopamine-inspired "do not disturb").
    * IDs in this set get a score penalty during retrieval but are NOT deleted.
@@ -414,6 +416,11 @@ export class MemoryRetriever {
   /** P0.2: Attach a FrequencyTracker for hit-count based boosting. */
   setFrequencyTracker(tracker: FrequencyTracker): void {
     this.frequencyTracker = tracker;
+  }
+
+  /** F-1: Attach an AuditLogger for recording retrieve operations. */
+  setAuditLogger(logger: AuditLogger): void {
+    this.auditLogger = logger;
   }
 
   /** Suppress a memory ID for the current session (score × 0.3). */
@@ -479,6 +486,18 @@ export class MemoryRetriever {
           } catch { /* evolution tracking must never block retrieval */ }
         }
       });
+    }
+
+    // F-1: Audit log — record retrieve operation (non-blocking, silent on failure)
+    try {
+      this.auditLogger?.log({
+        operation: "retrieve",
+        scope: context.scopeFilter?.[0],
+        actor: context.source || "manual",
+        details: `query="${context.query.slice(0, 80)}" hits=${results.length}`,
+      });
+    } catch {
+      // Audit must never block retrieval
     }
 
     return results;

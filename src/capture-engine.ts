@@ -47,6 +47,8 @@ import {
 import { matchPreference, applyPreferenceMatch } from "./preference-matcher.js";
 import type { LLMClient } from "./llm-client.js";
 import type { KGExtractor } from "./kg-extractor.js";
+import { scanForPII } from "./pii-detector.js";
+import type { AuditLogger } from "./audit-log.js";
 
 type StoreDeps = Pick<MemoryStore, "store"> & Partial<Pick<MemoryStore, "list" | "update" | "getById" | "get" | "vectorSearch">>;
 type ConflictStoreDeps = Pick<ConflictCandidateStore, "save" | "replace" | "getOpenByFingerprint" | "getLatestByFingerprint">;
@@ -59,6 +61,8 @@ interface PersistMemoryDeps {
   llm?: LLMClient | null;
   /** Tier 4.1: Optional KG triple extractor (async, non-blocking) */
   kgExtractor?: KGExtractor | null;
+  /** F-1: Optional audit logger for recording store operations */
+  auditLogger?: AuditLogger | null;
 }
 
 interface DurableWriteInput {
@@ -803,13 +807,27 @@ export async function persistMemory(
     }
   }
 
+  // F-3: PII detection — inject warning into metadata if PII found.
+  // Non-blocking: PII does not prevent the write.
+  let metadata = buildStoreMemoryMetadata(input, canonicalKey);
+  const piiResult = scanForPII(input.text);
+  if (piiResult.hasPII) {
+    const parsed: Record<string, unknown> = JSON.parse(metadata);
+    parsed.piiWarning = {
+      summary: piiResult.summary,
+      detections: piiResult.detections.length,
+      severity: piiResult.detections.some(d => d.severity === "high") ? "high" : "medium",
+    };
+    metadata = JSON.stringify(parsed);
+  }
+
   const { entry, disposition, conflictId } = await writeDurableEntry(deps, {
     text: input.text,
     vector,
     category: input.category,
     scope: resolvedScope,
     importance: input.importance,
-    metadata: buildStoreMemoryMetadata(input, canonicalKey),
+    metadata,
     canonicalKey,
     source: input.source,
   });
@@ -819,6 +837,19 @@ export async function persistMemory(
     deps.kgExtractor
       .extractAndStore(input.text, entry.id, resolvedScope)
       .catch(() => {}); // Silently ignore — KG extraction must never block memory writes
+  }
+
+  // F-1: Audit log — record store operation (non-blocking, silent on failure)
+  try {
+    deps.auditLogger?.log({
+      operation: "store",
+      scope: resolvedScope,
+      memoryId: entry.id,
+      actor: input.source,
+      details: `${input.category}: ${input.text.slice(0, 100)}`,
+    });
+  } catch {
+    // Audit must never block memory writes
   }
 
   return toStoredRecord(input, entry, disposition, canonicalKey, conflictId);
