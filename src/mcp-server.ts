@@ -48,6 +48,8 @@ const TOOL_TIERS: Record<string, ToolTier> = {
   memory_stats: "advanced",
   memory_drill_down: "advanced",
   export_memory: "advanced",
+  store_skill: "advanced",
+  retrieve_skill: "advanced",
 
   // Governance (CLI-only, not in MCP by default)
   workflow_observe: "governance",
@@ -80,6 +82,8 @@ import { indexAsset, indexPinnedAsset } from "./asset-sync.js";
 import { createComponentResolver, loadConfig, loadDotEnv, resolveRecallMode } from "./runtime-config.js";
 import { DurableMemoryCategorySchema, StoreMemorySourceSchema } from "./memory-schema.js";
 import { persistCaseMemory, persistMemory, persistMemoryBatch, persistWorkflowPattern, promoteMemory } from "./capture-engine.js";
+import { persistSkill, retrieveSkills } from "./skill-engine.js";
+import { SkillImplementationTypeSchema } from "./skill-schema.js";
 import { autoCapture } from "./capture-heuristic.js";
 import { ConsolidationEngine, formatConsolidationResult } from "./consolidation-engine.js";
 import { renderMemories, type RenderMode } from "./context-renderer.js";
@@ -1328,6 +1332,99 @@ registerTool(
         content: [{ type: "text" as const, text: `Error drilling down: ${String(err)}` }],
       };
     }
+  },
+);
+
+// ============================================================================
+// Skill Memory Tools (D-1)
+// ============================================================================
+
+registerTool(
+  "store_skill",
+  "Store an executable skill — a reusable procedure with trigger conditions, implementation, and verification steps. Skills are 'what the agent can do' vs memories which are 'what the agent learned'.",
+  {
+    name: z.string().min(1).max(120).describe("Unique skill identifier (e.g. 'deploy_production')"),
+    description: z.string().min(1).max(500).describe("Natural language description (used for retrieval)"),
+    triggerPattern: z.string().min(1).max(300).describe("When to suggest this skill"),
+    implementationType: SkillImplementationTypeSchema.describe("Execution type: bash | python | mcp_tool_chain | instruction_sequence"),
+    implementation: z.string().min(1).max(5000).describe("Executable content"),
+    inputSchema: z.record(z.string(), z.unknown()).optional().describe("Parameter definition (JSON Schema)"),
+    verification: z.string().max(500).optional().describe("How to verify execution success"),
+    scope: z.string().min(1).max(160).describe("Required scope such as project:recallnest"),
+    source: z.enum(["manual", "agent", "api"]).default("agent").describe("How this skill was captured"),
+    tags: z.array(z.string().max(60)).max(6).default([]).describe("Optional tags"),
+  },
+  async ({ name, description, triggerPattern, implementationType, implementation, inputSchema, verification, scope, source, tags }) => {
+    const { store, embedder } = getComponents();
+    const stored = await persistSkill(store, embedder, {
+      name,
+      description,
+      triggerPattern,
+      implementationType,
+      implementation,
+      inputSchema,
+      verification,
+      scope,
+      source,
+      tags,
+    });
+
+    return {
+      content: [{
+        type: "text" as const,
+        text: [
+          `Stored skill ${stored.id.slice(0, 8)}`,
+          `Name: ${stored.name}`,
+          `Type: ${stored.implementationType}`,
+          `Scope: ${stored.scope}`,
+          `Tags: ${stored.tags.join(", ") || "-"}`,
+          `Stored at: ${stored.storedAt}`,
+        ].join("\n"),
+      }],
+    };
+  },
+);
+
+registerTool(
+  "retrieve_skill",
+  "Retrieve skills matching a task description. Returns executable procedures, not just text — use these to act, not just to recall.",
+  {
+    query: z.string().min(1).max(300).describe("Task description to match against stored skills"),
+    scope: z.string().min(1).max(160).optional().describe("Optional scope filter"),
+    limit: z.number().min(1).max(10).default(3).describe("Max results to return"),
+  },
+  async ({ query, scope, limit }) => {
+    const { store, embedder } = getComponents();
+    const results = await retrieveSkills(store, embedder, query, scope, limit);
+
+    if (results.length === 0) {
+      return {
+        content: [{
+          type: "text" as const,
+          text: "No matching skills found.",
+        }],
+      };
+    }
+
+    const formatted = results.map(({ skill, score }, index) => [
+      `## ${index + 1}. ${skill.name} (score: ${score.toFixed(3)})`,
+      `**Description**: ${skill.description}`,
+      `**Trigger**: ${skill.triggerPattern}`,
+      `**Type**: ${skill.implementationType}`,
+      skill.verification ? `**Verification**: ${skill.verification}` : null,
+      `**Tags**: ${skill.tags.join(", ") || "-"}`,
+      "",
+      "```",
+      skill.implementation,
+      "```",
+    ].filter((line): line is string => line !== null).join("\n")).join("\n\n---\n\n");
+
+    return {
+      content: [{
+        type: "text" as const,
+        text: `Found ${results.length} skill(s):\n\n${formatted}`,
+      }],
+    };
   },
 );
 
