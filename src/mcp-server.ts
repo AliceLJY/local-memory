@@ -50,6 +50,7 @@ const TOOL_TIERS: Record<string, ToolTier> = {
   export_memory: "advanced",
   store_skill: "advanced",
   retrieve_skill: "advanced",
+  scan_skill_promotions: "governance",
 
   // Governance (CLI-only, not in MCP by default)
   workflow_observe: "governance",
@@ -84,6 +85,7 @@ import { DurableMemoryCategorySchema, StoreMemorySourceSchema } from "./memory-s
 import { persistCaseMemory, persistMemory, persistMemoryBatch, persistWorkflowPattern, promoteMemory } from "./capture-engine.js";
 import { persistSkill, retrieveSkills } from "./skill-engine.js";
 import { SkillImplementationTypeSchema } from "./skill-schema.js";
+import { scanForPromotions, formatPromotionResult } from "./skill-promotion.js";
 import { autoCapture } from "./capture-heuristic.js";
 import { ConsolidationEngine, formatConsolidationResult } from "./consolidation-engine.js";
 import { renderMemories, type RenderMode } from "./context-renderer.js";
@@ -1423,6 +1425,29 @@ registerTool(
       content: [{
         type: "text" as const,
         text: `Found ${results.length} skill(s):\n\n${formatted}`,
+      }],
+    };
+  },
+);
+
+// --- D-2: scan_skill_promotions tool ---
+registerTool(
+  "scan_skill_promotions",
+  "Scan for cases/patterns that could be promoted to reusable skills. Returns promotion suggestions — review before acting.",
+  {
+    scope: z.string().min(1).max(160).describe("Project scope to scan for promotion candidates"),
+    minOccurrences: z.number().min(2).max(20).default(3).describe("Minimum similar cases to trigger a promotion suggestion"),
+  },
+  async ({ scope, minOccurrences }) => {
+    const { store } = getComponents();
+    const result = await scanForPromotions(store, scope, {
+      minCaseOccurrences: minOccurrences,
+    });
+
+    return {
+      content: [{
+        type: "text" as const,
+        text: formatPromotionResult(result),
       }],
     };
   },
