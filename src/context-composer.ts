@@ -25,6 +25,7 @@ import {
 import { synthesizeSection } from "./result-synthesizer.js";
 import type { LLMClient } from "./llm-client.js";
 import { collapseResults, estimateTokens, type CollapseInput } from "./context-collapse-renderer.js";
+import { filterByRelevance } from "./post-retrieval-filter.js";
 type ResumeCategory = "profile" | "preferences" | "entities" | "patterns" | "cases";
 
 interface ResumeRetriever {
@@ -279,6 +280,17 @@ export async function composeResumeContext(
   const preferenceResults = mergeRetrievalResults(preferenceResultSets, Math.max(4, stableLimit * 3));
   const entityResults = mergeRetrievalResults(entityResultSets, Math.max(4, stableLimit * 3));
 
+  // E-2: Post-retrieval LLM relevance filter for pattern/case results.
+  // Only fires when LLM is available; stable context (profile/preferences/entities) skipped
+  // because those are identity-level and already curated by the selection pipeline.
+  const llm = deps.llm ?? null;
+  const [filteredPatterns, filteredCases] = llm && taskSeed
+    ? await Promise.all([
+        filterByRelevance(patternResults, taskSeed, llm),
+        filterByRelevance(caseResults, taskSeed, llm),
+      ])
+    : [patternResults, caseResults];
+
   const continuityTask = looksLikeContinuityTask(taskSeed);
   const pinAssets = (deps.listPins || listPinAssets)(Math.max(4, stableLimit * 2));
   const {
@@ -304,8 +316,8 @@ export async function composeResumeContext(
         limit,
         scope,
       }),
-    patternResults,
-    caseResults,
+    patternResults: filteredPatterns,
+    caseResults: filteredCases,
     continuityTask,
     hasLatestCheckpoint: Boolean(latestCheckpoint),
     taskLimit,
@@ -316,7 +328,6 @@ export async function composeResumeContext(
 
   // Tier 3.5: Optionally synthesize sections into coherent narratives via LLM.
   // Only activates when RECALLNEST_SYNTHESIZE=true and llm is provided.
-  const llm = deps.llm ?? null;
   const queryHint = taskSeed || resolvedScope || "general";
   const [synthStable, synthPatterns, synthCases] = await Promise.all([
     synthesizeSection(stableContext, queryHint, llm),
@@ -328,7 +339,7 @@ export async function composeResumeContext(
   // Gathers all retrieval results, deduplicates, and renders at L0/L1/L2 based on score.
   const allResults: RetrievalResult[] = [];
   const seenIds = new Set<string>();
-  for (const r of [...profileResults, ...preferenceResults, ...entityResults, ...patternResults, ...caseResults]) {
+  for (const r of [...profileResults, ...preferenceResults, ...entityResults, ...filteredPatterns, ...filteredCases]) {
     if (!seenIds.has(r.entry.id)) {
       seenIds.add(r.entry.id);
       allResults.push(r);
@@ -348,7 +359,7 @@ export async function composeResumeContext(
   // CC-8: Build essential context from pinned memories, top patterns, and open loops.
   const essentialContext = buildEssentialContext({
     pinAssets,
-    patternResults,
+    patternResults: filteredPatterns,
     latestCheckpoint,
   });
 
