@@ -1,4 +1,5 @@
 import { composeResumeContext, type ResumeContextDeps } from "./context-composer.js";
+import { resolveTier } from "./decay-engine.js";
 import type { DurableMemoryCategory } from "./memory-schema.js";
 import type { RetrievalResult } from "./retriever.js";
 import { buildRetrievalContext, resolveScopeSelection } from "./scope-policy.js";
@@ -72,9 +73,11 @@ export async function runAutoRecall(
     };
   }
 
-  const results = await deps.retriever.retrieve(buildRetrievalContext({
+  const effectiveLimit = request.limit || 5;
+  // Fetch extra candidates so tier filtering still yields enough results
+  const rawResults = await deps.retriever.retrieve(buildRetrievalContext({
     query: message,
-    limit: request.limit || 5,
+    limit: effectiveLimit * 3,
     category: request.category,
     scope: resolvedScope,
     sessionId: request.sessionId,
@@ -85,6 +88,22 @@ export async function runAutoRecall(
     env: request.env,
     allowUnscoped: request.allScopes === true,
   }));
+
+  // Tier-aware filtering: prefer core/working memories, backfill with peripheral.
+  // Peripheral memories get a 15% score discount to reduce noise injection.
+  const promoted: RetrievalResult[] = [];
+  const demoted: RetrievalResult[] = [];
+  for (const r of rawResults) {
+    const tier = resolveTier(r.entry.metadata);
+    if (tier === "core" || tier === "working") {
+      promoted.push(r);
+    } else {
+      demoted.push({ ...r, score: r.score * 0.85 });
+    }
+  }
+  const results = [...promoted, ...demoted]
+    .sort((a, b) => b.score - a.score)
+    .slice(0, effectiveLimit);
 
   return {
     mode: "resume+search",

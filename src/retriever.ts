@@ -667,9 +667,10 @@ export class MemoryRetriever {
     trace?.startStage("bm25_search", 0);
     trace?.endStage(bm25Results.length, bm25Results.map(r => r.score));
 
-    // Fuse results using RRF (async: validates BM25-only entries exist in store)
+    // Fuse results using weighted score fusion (async: validates BM25-only entries exist in store)
+    const shortQ = isShortQuery(searchQuery);
     trace?.startStage("rrf_fusion", vectorResults.length + bm25Results.length + pprResults.length);
-    const fusedResults = await this.fuseResults(vectorResults, bm25Results, pprResults);
+    const fusedResults = await this.fuseResults(vectorResults, bm25Results, pprResults, shortQ);
     trace?.endStage(fusedResults.length, fusedResults.map(r => r.score));
 
     // Temporal filter: when query has a time constraint, remove non-matching candidates
@@ -757,8 +758,7 @@ export class MemoryRetriever {
     trace?.endStage(frequencyBoosted.length, frequencyBoosted.map(r => r.score));
 
     // Hard minimum score cutoff (post all scoring stages)
-    // P0.1: lower thresholds for short queries
-    const shortQ = isShortQuery(searchQuery);
+    // P0.1: lower thresholds for short queries (shortQ declared earlier for fuseResults)
     trace?.startStage("hard_min_score", frequencyBoosted.length);
     const hardFiltered = frequencyBoosted.filter(r => r.score >= this.minScoreFor(r.entry.category, shortQ));
     trace?.endStage(hardFiltered.length, hardFiltered.map(r => r.score));
@@ -935,7 +935,18 @@ export class MemoryRetriever {
     vectorResults: Array<MemorySearchResult & { rank: number }>,
     bm25Results: Array<MemorySearchResult & { rank: number }>,
     graphResults: RetrievalResult[] = [],
+    shortQuery: boolean = false,
   ): Promise<RetrievalResult[]> {
+    // Adaptive weights: short queries (≤4 tokens) favor BM25 for exact keyword matching.
+    // For normal queries, use config weights directly.
+    const vW = shortQuery
+      ? this.config.vectorWeight * 0.7
+      : this.config.vectorWeight;
+    const bW = shortQuery
+      ? Math.min(this.config.bm25Weight * 1.5, 0.6)
+      : this.config.bm25Weight;
+    const totalW = vW + bW;
+
     // Create maps for quick lookup
     const vectorMap = new Map<string, MemorySearchResult & { rank: number }>();
     const bm25Map = new Map<string, MemorySearchResult & { rank: number }>();
@@ -956,7 +967,7 @@ export class MemoryRetriever {
     // Get all unique document IDs
     const allIds = new Set([...vectorMap.keys(), ...bm25Map.keys(), ...graphMap.keys()]);
 
-    // Calculate RRF scores
+    // Calculate fused scores using configurable weights
     const fusedResults: RetrievalResult[] = [];
 
     for (const id of allIds) {
@@ -979,26 +990,29 @@ export class MemoryRetriever {
       // Use the result with more complete data (prefer vector > graph > BM25)
       const baseResult = vectorResult || graphResult || bm25Result!;
 
-      // Use vector similarity as the base score.
-      // BM25 hit acts as a bonus (keyword match confirms relevance).
-      // Graph hit acts as a bonus (entity relationship confirms relevance).
       const vectorScore = vectorResult ? vectorResult.score : 0;
-      const bm25Hit = bm25Result ? 1 : 0;
+      const bm25Score = bm25Result ? bm25Result.score : 0;
       const graphScore = graphResult?.sources.graph?.score ?? 0;
 
-      // Base = vector score; BM25 hit boosts by up to 15%; graph boosts by up to 20%
-      // Graph-only results use their PPR score so entity-connected memories surface.
       let fusedScore: number;
-      if (vectorResult) {
+      if (vectorResult && bm25Result) {
+        // Both signals agree: weighted average + 5% dual-match confirmation bonus.
+        // Graph hit adds up to 15% on top.
         fusedScore = clamp01(
-          vectorScore + (bm25Hit * 0.15 * vectorScore) + (graphScore * 0.20),
+          ((vW * vectorScore + bW * bm25Score) / totalW) * 1.05 + (graphScore * 0.15),
           0.1,
         );
+      } else if (vectorResult) {
+        // Vector only: semantic match, graph as bonus
+        fusedScore = clamp01(vectorScore + (graphScore * 0.15), 0.1);
       } else if (graphResult) {
-        // Graph-only: use graph score as base, BM25 boosts
-        fusedScore = clamp01(graphScore + (bm25Hit * 0.10), 0.1);
+        // Graph only: entity-relationship match, BM25 as bonus
+        fusedScore = clamp01(graphScore + (bm25Score > 0 ? 0.10 : 0), 0.1);
       } else {
-        fusedScore = clamp01(bm25Result!.score, 0.1);
+        // BM25 only: exact keyword match without semantic confirmation.
+        // Short queries get a small boost since BM25 is more reliable for exact terms.
+        const bm25OnlyBoost = shortQuery ? 1.15 : 1.0;
+        fusedScore = clamp01(bm25Score * bm25OnlyBoost, 0.1);
       }
 
       fusedResults.push({
