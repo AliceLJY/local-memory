@@ -508,3 +508,41 @@ export function formatConsolidationResult(result: ConsolidationResult): string {
   }
   return lines.join("\n");
 }
+
+// ---------------------------------------------------------------------------
+// LC-P2: Cluster-aware deduplication for retrieval results
+// ---------------------------------------------------------------------------
+
+/**
+ * LC-P2: When a cluster insight and its source memories both appear in
+ * retrieval results, keep only the cluster insight (it subsumes the
+ * individual entries). This saves token budget during context injection.
+ *
+ * Works with any result shape that has { entry: MemoryEntry; score: number }.
+ */
+export function deduplicateByClusterInsight<T extends { entry: MemoryEntry; score: number }>(
+  results: T[],
+): T[] {
+  // Collect source memory IDs covered by cluster insights in this result set
+  const coveredByInsight = new Set<string>();
+
+  for (const r of results) {
+    if (!r.entry.metadata) continue;
+    try {
+      const meta = JSON.parse(r.entry.metadata);
+      if (meta.cluster_insight === true || meta.cross_memory_pattern === true) {
+        const sources: unknown[] = meta.evolution?.sourceMemories;
+        if (Array.isArray(sources)) {
+          for (const id of sources) {
+            if (typeof id === "string") coveredByInsight.add(id);
+          }
+        }
+      }
+    } catch { /* skip unparseable */ }
+  }
+
+  if (coveredByInsight.size === 0) return results;
+
+  // Filter out source memories that are subsumed by an insight
+  return results.filter(r => !coveredByInsight.has(r.entry.id));
+}

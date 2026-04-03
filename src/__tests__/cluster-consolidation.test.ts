@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 
 import {
   clusterAndConsolidate,
+  deduplicateByClusterInsight,
   type ClusterConsolidationResult,
 } from "../consolidation-engine.js";
 import type { MemoryEntry, MemoryStore } from "../store.js";
@@ -600,5 +601,112 @@ describe("cosineSimilarity (used by cluster consolidation)", () => {
   it("correctly computes similarity for non-trivial vectors", () => {
     // [1, 1] and [1, 0] -> cos = 1 / sqrt(2) ≈ 0.7071
     expect(cosineSimilarity([1, 1], [1, 0])).toBeCloseTo(1 / Math.sqrt(2), 5);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// LC-P2: Cluster-aware deduplication
+// ---------------------------------------------------------------------------
+
+describe("deduplicateByClusterInsight (LC-P2)", () => {
+  function makeResult(id: string, text: string, meta?: Record<string, unknown>) {
+    return {
+      entry: {
+        id,
+        text,
+        vector: [1, 0, 0],
+        category: "events" as const,
+        scope: "project:test",
+        importance: 0.7,
+        timestamp: Date.now(),
+        metadata: meta ? JSON.stringify(meta) : "{}",
+      },
+      score: 0.8,
+    };
+  }
+
+  it("removes source memories when cluster insight is present", () => {
+    const results = [
+      makeResult("insight-1", "cluster summary about TypeScript", {
+        cluster_insight: true,
+        evolution: { sourceMemories: ["src-a", "src-b", "src-c"] },
+      }),
+      makeResult("src-a", "TypeScript is great"),
+      makeResult("src-b", "TypeScript helps safety"),
+      makeResult("other", "unrelated memory"),
+    ];
+
+    const deduped = deduplicateByClusterInsight(results);
+    expect(deduped.length).toBe(2);
+    expect(deduped.map(r => r.entry.id)).toEqual(["insight-1", "other"]);
+  });
+
+  it("also deduplicates cross_memory_pattern source memories", () => {
+    const results = [
+      makeResult("pattern-1", "user likes Japanese food", {
+        cross_memory_pattern: true,
+        evolution: { sourceMemories: ["m1", "m2", "m3"] },
+      }),
+      makeResult("m1", "user eats sushi"),
+      makeResult("m2", "user visits ramen shop"),
+      makeResult("unrelated", "something else"),
+    ];
+
+    const deduped = deduplicateByClusterInsight(results);
+    expect(deduped.length).toBe(2);
+    expect(deduped.map(r => r.entry.id)).toEqual(["pattern-1", "unrelated"]);
+  });
+
+  it("passes through all results when no cluster insights exist", () => {
+    const results = [
+      makeResult("a", "memory A"),
+      makeResult("b", "memory B"),
+      makeResult("c", "memory C"),
+    ];
+
+    const deduped = deduplicateByClusterInsight(results);
+    expect(deduped.length).toBe(3);
+  });
+
+  it("handles empty results", () => {
+    expect(deduplicateByClusterInsight([])).toEqual([]);
+  });
+
+  it("keeps source memories that are NOT in the result set", () => {
+    // Insight references src-a, src-b, src-c but only src-a is in results
+    const results = [
+      makeResult("insight-1", "summary", {
+        cluster_insight: true,
+        evolution: { sourceMemories: ["src-a", "src-b", "src-c"] },
+      }),
+      makeResult("src-a", "one source"),
+      makeResult("independent", "not a source"),
+    ];
+
+    const deduped = deduplicateByClusterInsight(results);
+    expect(deduped.length).toBe(2);
+    expect(deduped.map(r => r.entry.id)).toEqual(["insight-1", "independent"]);
+  });
+
+  it("handles malformed metadata gracefully", () => {
+    const results = [
+      {
+        entry: {
+          id: "bad",
+          text: "bad metadata",
+          vector: [1, 0, 0],
+          category: "events" as const,
+          scope: "test",
+          importance: 0.5,
+          timestamp: Date.now(),
+          metadata: "not-json{{{",
+        },
+        score: 0.5,
+      },
+      makeResult("normal", "normal memory"),
+    ];
+
+    const deduped = deduplicateByClusterInsight(results);
+    expect(deduped.length).toBe(2); // Both pass through
   });
 });

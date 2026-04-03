@@ -17,6 +17,7 @@ import { filterInterference } from "./rif.js";
 import { FrequencyTracker } from "./frequency-tracker.js";
 import { applyConfidenceWeight } from "./confidence-tracker.js";
 import { deduplicateByVersionGroup } from "./version-manager.js";
+import { deduplicateByClusterInsight } from "./consolidation-engine.js";
 import { isActiveMemory, recordAccess as recordEvolutionAccess, parseEvolution, computeDecayScore } from "./memory-evolution.js";
 import {
   isMultiVectorEnabled,
@@ -625,8 +626,11 @@ export class MemoryRetriever {
     // Tier 3.3: Version group dedup — keep only the top-ranked version per group
     const versionDeduped = deduplicateByVersionGroup(deduplicated);
 
-    trace?.startStage("final_limit", versionDeduped.length);
-    const final = versionDeduped.slice(0, limit);
+    // LC-P2: Cluster insight dedup — prefer cluster summary over individual source memories
+    const clusterDeduped = deduplicateByClusterInsight(versionDeduped);
+
+    trace?.startStage("final_limit", clusterDeduped.length);
+    const final = clusterDeduped.slice(0, limit);
     trace?.endStage(final.length, final.map(r => r.score));
 
     return final;
@@ -788,8 +792,11 @@ export class MemoryRetriever {
     // Tier 3.3: Version group dedup — keep only the top-ranked version per group
     const versionDeduped = deduplicateByVersionGroup(deduplicated);
 
-    trace?.startStage("final_limit", versionDeduped.length);
-    const final = versionDeduped.slice(0, limit);
+    // LC-P2: Cluster insight dedup — prefer cluster summary over individual source memories
+    const clusterDeduped = deduplicateByClusterInsight(versionDeduped);
+
+    trace?.startStage("final_limit", clusterDeduped.length);
+    const final = clusterDeduped.slice(0, limit);
     trace?.endStage(final.length, final.map(r => r.score));
 
     return final;
