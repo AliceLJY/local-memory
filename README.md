@@ -422,6 +422,22 @@ Special thanks to Qin Chao ([@win4r](https://github.com/win4r)) and the [CortexR
   </picture>
 </a>
 
+## Ecosystem
+
+Part of the **小试AI** open-source AI workflow:
+
+| Project | Description |
+|---------|-------------|
+| [content-alchemy](https://github.com/AliceLJY/content-alchemy) | 5-stage AI writing pipeline |
+| [content-publisher](https://github.com/AliceLJY/content-publisher) | Image generation + layout + WeChat publishing |
+| [openclaw-tunnel](https://github.com/AliceLJY/openclaw-tunnel) | Docker ↔ host CLI bridge (/cc /codex /gemini) |
+| [digital-clone-skill](https://github.com/AliceLJY/digital-clone-skill) | Build digital clones from corpus data |
+| [telegram-ai-bridge](https://github.com/AliceLJY/telegram-ai-bridge) | Telegram bots for Claude, Codex, and Gemini |
+| [telegram-cli-bridge](https://github.com/AliceLJY/telegram-cli-bridge) | Telegram CLI bridge for Gemini CLI |
+| [claude-code-studio](https://github.com/AliceLJY/claude-code-studio) | Multi-session collaboration platform for Claude Code |
+| [agent-nexus](https://github.com/AliceLJY/agent-nexus) | One-command installer for memory + remote control |
+| [cc-cabin](https://github.com/AliceLJY/cc-cabin) | Complete Claude Code workflow scaffold |
+
 ## License
 
 MIT
