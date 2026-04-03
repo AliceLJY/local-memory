@@ -541,6 +541,33 @@ export class LLMClient {
   }
 
   /**
+   * HP-5: Extract cross-memory pattern from a cluster of related memories.
+   * Asks LLM whether the cluster reveals an implicit recurring theme,
+   * preference, or behavior not stated in any single memory.
+   *
+   * @returns Pattern text if found, null if no pattern or LLM failure.
+   */
+  async extractPattern(clusterTexts: string[]): Promise<string | null> {
+    if (clusterTexts.length < 3) return null;
+
+    const numbered = clusterTexts.map((t, i) => `[${i + 1}] ${t}`).join("\n");
+    const result = await this.chatJson<{ hasPattern: boolean; pattern?: string }>(
+      "你是记忆模式发现助手。分析以下一组相关记忆，判断它们是否暗示了某个跨条目的隐含模式——" +
+      "例如反复出现的偏好、行为倾向、价值观或循环主题。\n\n" +
+      "规则：\n" +
+      "- 只发现真正跨条目的模式，而非单条记忆已经明确表达的内容\n" +
+      "- 模式必须有至少 2 条记忆作为证据支撑\n" +
+      "- 如果没有发现有意义的模式，返回 hasPattern: false\n" +
+      "- 模式描述不超过 150 字，简洁且可操作\n" +
+      '- 输出 JSON：{"hasPattern": true, "pattern": "描述..."} 或 {"hasPattern": false}',
+      `记忆条目（共${clusterTexts.length}条）：\n${numbered}`,
+    );
+
+    if (!result || !result.hasPattern || !result.pattern) return null;
+    return result.pattern;
+  }
+
+  /**
    * Chat + JSON parse helper for structured extraction.
    * Returns null on failure (LLM error or invalid JSON).
    */

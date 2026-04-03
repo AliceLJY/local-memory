@@ -261,6 +261,8 @@ export interface ClusterConsolidationResult {
   clustersFound: number;
   clustersConsolidated: number;
   insightsGenerated: number;
+  /** HP-5: Number of cross-memory patterns discovered */
+  patternsExtracted: number;
   entriesLinked: number;
   /** CC-9: Set when consecutive low-yield rounds trigger early termination */
   earlyStop?: "diminishing_returns";
@@ -288,6 +290,8 @@ export async function clusterAndConsolidate(params: {
   clusterThreshold?: number;
   /** Max clusters to process per run (default: 5) */
   maxClusters?: number;
+  /** HP-5: Enable cross-memory pattern extraction after insight generation (default: false) */
+  extractPatterns?: boolean;
 }): Promise<ClusterConsolidationResult> {
   const {
     entries,
@@ -297,12 +301,14 @@ export async function clusterAndConsolidate(params: {
     minClusterSize = 3,
     clusterThreshold = 0.75,
     maxClusters = 5,
+    extractPatterns = false,
   } = params;
 
   const result: ClusterConsolidationResult = {
     clustersFound: 0,
     clustersConsolidated: 0,
     insightsGenerated: 0,
+    patternsExtracted: 0,
     entriesLinked: 0,
   };
 
@@ -434,6 +440,48 @@ export async function clusterAndConsolidate(params: {
     }
 
     result.clustersConsolidated++;
+
+    // HP-5: Cross-memory pattern extraction
+    if (extractPatterns && cluster.length >= 3) {
+      const patternText = await llm.extractPattern(cluster.map(m => m.text));
+      if (patternText) {
+        const patternImportance = Math.min(maxImportance + 0.1, 1.0);
+        const patternVector = await params.embedder.embedPassage(patternText);
+        const patternEntry = await store.store({
+          text: patternText,
+          vector: patternVector,
+          category: "patterns",
+          scope,
+          importance: patternImportance,
+          metadata: JSON.stringify({
+            evolution: {
+              status: "active",
+              version: 1,
+              accessCount: 0,
+              lastAccessedAt: null,
+              supersededBy: null,
+              consolidatedInto: null,
+              contributedToPattern: null,
+              sourceMemories: cluster.map(m => m.id),
+              validFrom: Date.now(),
+              validUntil: null,
+            },
+            cross_memory_pattern: true,
+            source_cluster_size: cluster.length,
+          }),
+        });
+
+        // Mark source memories with contributedToPattern
+        for (const member of cluster) {
+          const patched = patchEvolution(member.metadata, {
+            contributedToPattern: patternEntry.id,
+          });
+          await store.update(member.id, { metadata: patched }, [scope]);
+        }
+
+        result.patternsExtracted++;
+      }
+    }
 
     // CC-9: Successful insight generated — reset diminishing returns counter
     consecutiveLowYield = 0;

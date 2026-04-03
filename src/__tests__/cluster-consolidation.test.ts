@@ -66,12 +66,18 @@ function createMockStore() {
 }
 
 /** Create a mock LLM that returns a fixed insight string (or null to simulate failure) */
-function createMockLLM(insightFn: (text: string) => string | null): Pick<LLMClient, "generateL0"> {
+function createMockLLM(
+  insightFn: (text: string) => string | null,
+  patternFn?: (texts: string[]) => string | null,
+): Pick<LLMClient, "generateL0" | "extractPattern"> {
   return {
     async generateL0(text: string) {
       return insightFn(text);
     },
-  } as Pick<LLMClient, "generateL0">;
+    async extractPattern(texts: string[]) {
+      return patternFn ? patternFn(texts) : null;
+    },
+  } as Pick<LLMClient, "generateL0" | "extractPattern">;
 }
 
 /** Create a mock embedder that returns a fixed vector */
@@ -419,6 +425,154 @@ describe("clusterAndConsolidate", () => {
     expect(result.clustersConsolidated).toBe(3); // All 3 processed
     expect(result.insightsGenerated).toBe(1);
     expect(result.earlyStop).toBeUndefined(); // No early stop
+  });
+});
+
+// ---------------------------------------------------------------------------
+// HP-5: Cross-Memory Pattern Extraction
+// ---------------------------------------------------------------------------
+
+describe("clusterAndConsolidate — pattern extraction (HP-5)", () => {
+  it("extracts pattern when extractPatterns=true and LLM returns pattern", async () => {
+    const entries = [
+      makeEntry({ id: "a", text: "用户喜欢吃寿司", vector: [0.9, 0.1, 0], importance: 0.8 }),
+      makeEntry({ id: "b", text: "用户经常去日料店", vector: [0.88, 0.12, 0], importance: 0.7 }),
+      makeEntry({ id: "c", text: "用户提到最近学做天妇罗", vector: [0.92, 0.08, 0], importance: 0.6 }),
+    ];
+
+    const { store, stored, updates } = createMockStore();
+    const llm = createMockLLM(
+      () => "用户对日本料理有广泛兴趣",
+      () => "用户反复提及日料相关话题，暗示对日本饮食文化有持久偏好",
+    );
+    const embedder = createMockEmbedder([0.5, 0.5, 0]);
+
+    const result = await clusterAndConsolidate({
+      entries,
+      embedder,
+      llm: llm as unknown as LLMClient,
+      store,
+      scope: "project:test",
+      minClusterSize: 3,
+      clusterThreshold: 0.75,
+      extractPatterns: true,
+    });
+
+    expect(result.patternsExtracted).toBe(1);
+    expect(result.insightsGenerated).toBe(1);
+
+    // Should have stored 2 entries: 1 insight + 1 pattern
+    expect(stored.length).toBe(2);
+
+    const patternEntry = stored.find(s => {
+      const meta = JSON.parse(s.metadata!);
+      return meta.cross_memory_pattern === true;
+    });
+    expect(patternEntry).toBeDefined();
+    expect(patternEntry!.text).toContain("日料");
+    expect(patternEntry!.category).toBe("patterns");
+    expect(patternEntry!.importance).toBeCloseTo(0.9, 5); // max(0.8) + 0.1
+
+    const patternMeta = JSON.parse(patternEntry!.metadata!);
+    expect(patternMeta.source_cluster_size).toBe(3);
+    expect(patternMeta.evolution.sourceMemories).toEqual(["a", "b", "c"]);
+
+    // Source memories should have contributedToPattern set
+    const patternUpdates = updates.filter(u => {
+      const meta = JSON.parse(u.metadata);
+      return meta.evolution?.contributedToPattern === patternEntry!.id;
+    });
+    expect(patternUpdates.length).toBe(3);
+  });
+
+  it("does not extract patterns when extractPatterns=false (default)", async () => {
+    const entries = [
+      makeEntry({ id: "a", text: "memory A", vector: [0.9, 0.1, 0], importance: 0.8 }),
+      makeEntry({ id: "b", text: "memory B", vector: [0.88, 0.12, 0], importance: 0.7 }),
+      makeEntry({ id: "c", text: "memory C", vector: [0.92, 0.08, 0], importance: 0.6 }),
+    ];
+
+    const { store, stored } = createMockStore();
+    const llm = createMockLLM(
+      () => "insight text",
+      () => "should not appear",
+    );
+    const embedder = createMockEmbedder();
+
+    const result = await clusterAndConsolidate({
+      entries,
+      embedder,
+      llm: llm as unknown as LLMClient,
+      store,
+      scope: "project:test",
+      minClusterSize: 3,
+      clusterThreshold: 0.75,
+      // extractPatterns defaults to false
+    });
+
+    expect(result.patternsExtracted).toBe(0);
+    expect(stored.length).toBe(1); // Only the insight, no pattern
+  });
+
+  it("handles pattern extraction failure gracefully", async () => {
+    const entries = [
+      makeEntry({ id: "a", text: "memory A", vector: [0.9, 0.1, 0] }),
+      makeEntry({ id: "b", text: "memory B", vector: [0.88, 0.12, 0] }),
+      makeEntry({ id: "c", text: "memory C", vector: [0.92, 0.08, 0] }),
+    ];
+
+    const { store, stored } = createMockStore();
+    const llm = createMockLLM(
+      () => "insight text",
+      () => null, // pattern extraction fails
+    );
+    const embedder = createMockEmbedder();
+
+    const result = await clusterAndConsolidate({
+      entries,
+      embedder,
+      llm: llm as unknown as LLMClient,
+      store,
+      scope: "project:test",
+      minClusterSize: 3,
+      clusterThreshold: 0.75,
+      extractPatterns: true,
+    });
+
+    expect(result.patternsExtracted).toBe(0);
+    expect(result.insightsGenerated).toBe(1);
+    expect(stored.length).toBe(1); // Only insight stored
+  });
+
+  it("caps pattern importance at 1.0", async () => {
+    const entries = [
+      makeEntry({ id: "a", text: "high importance A", vector: [0.9, 0.1, 0], importance: 0.95 }),
+      makeEntry({ id: "b", text: "high importance B", vector: [0.88, 0.12, 0], importance: 0.98 }),
+      makeEntry({ id: "c", text: "high importance C", vector: [0.92, 0.08, 0], importance: 0.93 }),
+    ];
+
+    const { store, stored } = createMockStore();
+    const llm = createMockLLM(
+      () => "insight",
+      () => "discovered pattern",
+    );
+    const embedder = createMockEmbedder();
+
+    const result = await clusterAndConsolidate({
+      entries,
+      embedder,
+      llm: llm as unknown as LLMClient,
+      store,
+      scope: "project:test",
+      minClusterSize: 3,
+      clusterThreshold: 0.75,
+      extractPatterns: true,
+    });
+
+    expect(result.patternsExtracted).toBe(1);
+    const patternEntry = stored.find(s => JSON.parse(s.metadata!).cross_memory_pattern);
+    // max(0.98) + 0.1 = 1.08 → capped at 1.0
+    expect(patternEntry!.importance).toBe(1.0);
   });
 });
 

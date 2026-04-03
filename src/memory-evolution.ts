@@ -28,6 +28,8 @@ export interface EvolutionMetadata {
   /** HP-1: Why this memory replaced the old one */
   evolutionNote: string | null;
   consolidatedInto: string | null;
+  /** HP-5: This memory contributed to a cross-memory pattern discovery */
+  contributedToPattern: string | null;
   sourceMemories: string[];
   validFrom: number;
   validUntil: number | null;
@@ -48,6 +50,7 @@ export function defaultEvolution(now?: number): EvolutionMetadata {
     supersedes: null,
     evolutionNote: null,
     consolidatedInto: null,
+    contributedToPattern: null,
     sourceMemories: [],
     validFrom: ts,
     validUntil: null,
@@ -77,6 +80,7 @@ export function parseEvolution(metadata: string | undefined, fallbackTimestamp?:
       supersedes: evo.supersedes ?? null,
       evolutionNote: evo.evolutionNote ?? null,
       consolidatedInto: evo.consolidatedInto ?? null,
+      contributedToPattern: evo.contributedToPattern ?? null,
       sourceMemories: Array.isArray(evo.sourceMemories) ? evo.sourceMemories : [],
       validFrom: evo.validFrom ?? fallbackTimestamp ?? Date.now(),
       validUntil: evo.validUntil ?? null,
