@@ -67,6 +67,8 @@ export const ResumeContextResponseSchema = z.object({
   latestCheckpoint: ResumeCheckpointSummarySchema.optional(),
   /** CC-1: Hint for where to inject recalled context in the prompt. */
   injectionHint: z.enum(["system_prompt", "user_attachment"]).default("user_attachment").optional(),
+  /** Upstream #345: Mark recalled context as ephemeral — host should discard on compaction, not persist to transcript. */
+  ephemeral: z.boolean().default(true).optional(),
   responseMode: ResumeResponseModeSchema.default("default"),
   responseGuidance: optionalBoundedStringSchema(400),
   generatedAt: z.string().datetime(),

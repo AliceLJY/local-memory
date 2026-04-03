@@ -2,6 +2,8 @@ import type { Embedder } from "./embedder.js";
 import { generateAnchor } from "./anchor-generator.js";
 import { incrementWriteCount } from "./activity-counter.js";
 import { verifyWrite } from "./write-verifier.js";
+// batchInternalDedup is available in ingest.ts for large-batch scenarios;
+// persistMemoryBatch relies on per-item conflict detection (A-2) instead.
 import { defaultEvolution, buildSupersedeMetadata, buildSupersedeMetadataForNew, buildPendingReviewMetadata, isActiveMemory } from "./memory-evolution.js";
 import {
   type CaseMemoryInput,
@@ -1056,6 +1058,11 @@ export async function persistMemoryBatch(
       canonicalKey: memory.canonicalKey,
     }),
   );
+
+  // Note: batch-internal cosine dedup (upstream #319) already runs in the ingest
+  // pipeline (ingest.ts:batchInternalDedup) for large offline batches. For MCP
+  // persistMemoryBatch (typically <10 items), per-item conflict detection (A-2)
+  // in persistMemory handles dedup adequately without double-embedding cost.
 
   const persisted: StoredMemoryRecord[] = [];
   for (const memory of normalizedItems) {

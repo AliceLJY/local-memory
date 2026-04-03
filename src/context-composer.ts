@@ -385,6 +385,7 @@ export async function composeResumeContext(
       }
       : undefined,
     injectionHint: "user_attachment" as const,
+    ephemeral: true,
     responseMode: recallOnlyTask ? "recall-only" as const : "default" as const,
     responseGuidance: recallOnlyTask
       ? (
