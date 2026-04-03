@@ -15,7 +15,7 @@
 // Types
 // ---------------------------------------------------------------------------
 
-export type EvolutionStatus = "active" | "superseded" | "archived" | "consolidated";
+export type EvolutionStatus = "active" | "superseded" | "archived" | "consolidated" | "pending_review";
 
 export interface EvolutionMetadata {
   status: EvolutionStatus;
@@ -23,6 +23,10 @@ export interface EvolutionMetadata {
   accessCount: number;
   lastAccessedAt: number | null;
   supersededBy: string | null;
+  /** HP-1: Reverse link — this memory supersedes an older one */
+  supersedes: string | null;
+  /** HP-1: Why this memory replaced the old one */
+  evolutionNote: string | null;
   consolidatedInto: string | null;
   sourceMemories: string[];
   validFrom: number;
@@ -41,6 +45,8 @@ export function defaultEvolution(now?: number): EvolutionMetadata {
     accessCount: 0,
     lastAccessedAt: null,
     supersededBy: null,
+    supersedes: null,
+    evolutionNote: null,
     consolidatedInto: null,
     sourceMemories: [],
     validFrom: ts,
@@ -68,6 +74,8 @@ export function parseEvolution(metadata: string | undefined, fallbackTimestamp?:
       accessCount: evo.accessCount ?? 0,
       lastAccessedAt: evo.lastAccessedAt ?? null,
       supersededBy: evo.supersededBy ?? null,
+      supersedes: evo.supersedes ?? null,
+      evolutionNote: evo.evolutionNote ?? null,
       consolidatedInto: evo.consolidatedInto ?? null,
       sourceMemories: Array.isArray(evo.sourceMemories) ? evo.sourceMemories : [],
       validFrom: evo.validFrom ?? fallbackTimestamp ?? Date.now(),
@@ -99,10 +107,11 @@ export function patchEvolution(
 // Predicates
 // ---------------------------------------------------------------------------
 
-/** Is this memory currently active (not superseded/archived/consolidated)? */
+/** Is this memory currently active (not superseded/archived/consolidated)?
+ *  HP-6: pending_review memories are also considered active for search purposes. */
 export function isActiveMemory(metadata: string | undefined): boolean {
   const evo = parseEvolution(metadata);
-  return evo.status === "active";
+  return evo.status === "active" || evo.status === "pending_review";
 }
 
 // ---------------------------------------------------------------------------
@@ -141,6 +150,99 @@ export function buildSupersedeMetadata(
 }
 
 /**
+ * HP-1: Build evolution metadata for the NEW memory that supersedes an old one.
+ * Sets supersedes link + optional evolution note (bidirectional with buildSupersedeMetadata).
+ */
+export function buildSupersedeMetadataForNew(
+  newMetadata: string | undefined,
+  oldMemoryId: string,
+  evolutionNote?: string,
+): string {
+  return patchEvolution(newMetadata, {
+    supersedes: oldMemoryId,
+    evolutionNote: evolutionNote ?? null,
+  });
+}
+
+/**
+ * HP-1: Trace the evolution chain for a memory.
+ * Walks both directions: supersededBy (forward) and supersedes (backward).
+ * Returns an ordered timeline from oldest to newest.
+ */
+export interface EvolutionTraceEntry {
+  id: string;
+  direction: "predecessor" | "self" | "successor";
+  status: EvolutionStatus;
+  evolutionNote: string | null;
+  validFrom: number;
+  validUntil: number | null;
+}
+
+export async function traceEvolution(
+  startId: string,
+  getEntry: (id: string) => Promise<{ metadata?: string; timestamp?: number } | null>,
+  maxDepth = 10,
+): Promise<EvolutionTraceEntry[]> {
+  const predecessors: EvolutionTraceEntry[] = [];
+  const successors: EvolutionTraceEntry[] = [];
+
+  // Walk backward (supersedes chain)
+  let currentId: string | null = startId;
+  let depth = 0;
+  const startEntry = await getEntry(startId);
+  const startEvo = parseEvolution(startEntry?.metadata, startEntry?.timestamp);
+
+  // First, walk backward via supersedes
+  currentId = startEvo.supersedes;
+  while (currentId && depth < maxDepth) {
+    const entry = await getEntry(currentId);
+    if (!entry) break;
+    const evo = parseEvolution(entry.metadata, entry.timestamp);
+    predecessors.unshift({
+      id: currentId,
+      direction: "predecessor",
+      status: evo.status,
+      evolutionNote: evo.evolutionNote,
+      validFrom: evo.validFrom,
+      validUntil: evo.validUntil,
+    });
+    currentId = evo.supersedes;
+    depth++;
+  }
+
+  // Self
+  const self: EvolutionTraceEntry = {
+    id: startId,
+    direction: "self",
+    status: startEvo.status,
+    evolutionNote: startEvo.evolutionNote,
+    validFrom: startEvo.validFrom,
+    validUntil: startEvo.validUntil,
+  };
+
+  // Walk forward (supersededBy chain)
+  currentId = startEvo.supersededBy;
+  depth = 0;
+  while (currentId && depth < maxDepth) {
+    const entry = await getEntry(currentId);
+    if (!entry) break;
+    const evo = parseEvolution(entry.metadata, entry.timestamp);
+    successors.push({
+      id: currentId,
+      direction: "successor",
+      status: evo.status,
+      evolutionNote: evo.evolutionNote,
+      validFrom: evo.validFrom,
+      validUntil: evo.validUntil,
+    });
+    currentId = evo.supersededBy;
+    depth++;
+  }
+
+  return [...predecessors, self, ...successors];
+}
+
+/**
  * Mark a memory as consolidated into a higher-level memory.
  * The original is kept (archive-first) but linked to the consolidated entry.
  */
@@ -159,6 +261,24 @@ export function buildConsolidatedMetadata(
  */
 export function buildArchivedMetadata(oldMetadata: string | undefined): string {
   return patchEvolution(oldMetadata, { status: "archived" });
+}
+
+/**
+ * HP-6: Mark a memory as pending_review (low-confidence store).
+ * Pending memories participate in search but are prioritized for distill processing.
+ */
+export function buildPendingReviewMetadata(metadata: string | undefined): string {
+  return patchEvolution(metadata, { status: "pending_review" });
+}
+
+/** HP-6: Check if a memory is pending review. */
+export function isPendingReview(metadata: string | undefined): boolean {
+  return parseEvolution(metadata).status === "pending_review";
+}
+
+/** HP-6: Resolve pending → active (after distill re-evaluation confirms it). */
+export function resolvePendingReview(metadata: string | undefined): string {
+  return patchEvolution(metadata, { status: "active" });
 }
 
 // ---------------------------------------------------------------------------

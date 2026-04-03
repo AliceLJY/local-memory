@@ -1,7 +1,8 @@
 import type { Embedder } from "./embedder.js";
 import { generateAnchor } from "./anchor-generator.js";
 import { incrementWriteCount } from "./activity-counter.js";
-import { defaultEvolution, buildSupersedeMetadata, isActiveMemory } from "./memory-evolution.js";
+import { verifyWrite } from "./write-verifier.js";
+import { defaultEvolution, buildSupersedeMetadata, buildSupersedeMetadataForNew, buildPendingReviewMetadata, isActiveMemory } from "./memory-evolution.js";
 import {
   type CaseMemoryInput,
   CaseMemoryInputSchema,
@@ -710,11 +711,14 @@ export async function persistMemory(
   // B-3: LLM importance assessment — refine default importance (0.7) via LLM.
   // Only fires when importance is at the default value and LLM is available.
   // Explicit importance values from the caller are respected as-is.
+  let pendingReview = false; // HP-6: track low-confidence assessment
   if (input.importance === 0.7 && deps.llm) {
     try {
       const assessed = await deps.llm.assessImportance(input.text, input.category);
       if (assessed !== null) {
         input.importance = assessed;
+        // HP-6: Very low importance from LLM → pending review for distill to re-evaluate
+        if (assessed < 0.3) pendingReview = true;
       }
     } catch {
       // LLM importance assessment must never block memory writes
@@ -775,6 +779,8 @@ export async function persistMemory(
   // old memory should be superseded.
   // Requires both vectorSearch (for candidate lookup) and LLM (for judgment).
   // Graceful fallback: if either is unavailable, skip detection entirely.
+  let supersededOldId: string | null = null; // HP-1: track for bidirectional link
+  let supersededReason: string | null = null;
   if (
     input.category !== "preferences" &&
     deps.store.vectorSearch &&
@@ -799,6 +805,9 @@ export async function persistMemory(
             const oldEntry = supersedeTargets[0].entry;
             const supersededMeta = buildSupersedeMetadata(oldEntry.metadata, deterministicId(resolvedScope, input.text));
             await deps.store.update(oldEntry.id, { metadata: supersededMeta });
+            // HP-1: Track for bidirectional link
+            supersededOldId = oldEntry.id;
+            supersededReason = decision.reason;
           }
         }
         // CREATE or error → proceed normally (store new memory as-is)
@@ -820,6 +829,16 @@ export async function persistMemory(
       severity: piiResult.detections.some(d => d.severity === "high") ? "high" : "medium",
     };
     metadata = JSON.stringify(parsed);
+  }
+
+  // HP-1: Bidirectional supersede link — mark new memory as superseding old
+  if (supersededOldId) {
+    metadata = buildSupersedeMetadataForNew(metadata, supersededOldId, supersededReason ?? undefined);
+  }
+
+  // HP-6: Low-confidence entries → pending_review (distill prioritizes these)
+  if (pendingReview) {
+    metadata = buildPendingReviewMetadata(metadata);
   }
 
   const { entry, disposition, conflictId } = await writeDurableEntry(deps, {
@@ -860,6 +879,19 @@ export async function persistMemory(
     } catch {
       // Activity tracking must never block memory writes
     }
+  }
+
+  // HP-2: Post-write verification — async, non-blocking
+  if (disposition !== "deduped" && deps.store.get) {
+    verifyWrite(deps.store as Pick<import("./store.js").MemoryStore, "get">, entry.id)
+      .then(result => {
+        if (!result.ok) {
+          console.error(
+            `[HP-2] Write verification issues for ${entry.id}: ${result.issues.join(", ")} (${result.durationMs}ms)`,
+          );
+        }
+      })
+      .catch(() => {}); // Must never block
   }
 
   return toStoredRecord(input, entry, disposition, canonicalKey, conflictId);
