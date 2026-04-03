@@ -87,6 +87,58 @@ export function weibullDecay(
 }
 
 // ============================================================================
+// HP-7: Decay Exemptions
+// ============================================================================
+
+/**
+ * Check if a memory should be exempt from time decay.
+ * Exempt entries keep their original score without time-based penalties.
+ *
+ * Exemption rules:
+ * 1. Core tier + high importance (≥ 0.95) → identity/correction, must not fade
+ * 2. Recently accessed (within 7 days) → actively used, not stale
+ * 3. Pinned → user explicitly marked as persistent
+ */
+export function isDecayExempt(
+  metadata: string | undefined,
+  importance: number,
+): boolean {
+  if (!metadata) return false;
+
+  try {
+    const meta = JSON.parse(metadata) as Record<string, unknown>;
+
+    // Rule 1: Core + very high importance
+    const tier = meta.tier ?? resolveTierFromMeta(meta);
+    if (tier === "core" && importance >= 0.95) return true;
+
+    // Rule 2: Accessed within last 7 days
+    const lastAccess = typeof meta.lastAccessedAt === "number" ? meta.lastAccessedAt : 0;
+    if (lastAccess > 0 && (Date.now() - lastAccess) < 7 * 86_400_000) return true;
+
+    // Rule 3: Pinned
+    const tags = Array.isArray(meta.tags) ? meta.tags : [];
+    if (tags.includes("pinned")) return true;
+
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+/** Internal helper: resolve tier from parsed metadata (avoids re-parsing). */
+function resolveTierFromMeta(meta: Record<string, unknown>): MemoryTier {
+  if (meta.tier === "core" || meta.tier === "working" || meta.tier === "peripheral") {
+    return meta.tier;
+  }
+  const imp = typeof meta.importance === "number" ? meta.importance : 0;
+  const ac = typeof meta.accessCount === "number" ? meta.accessCount : 0;
+  if (imp >= 0.95 || ac >= 10) return "core";
+  if (imp >= 0.8 || ac >= 3) return "working";
+  return "peripheral";
+}
+
+// ============================================================================
 // Tier Resolution
 // ============================================================================
 

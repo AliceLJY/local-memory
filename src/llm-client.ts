@@ -264,12 +264,21 @@ export class LLMClient {
     try {
       const response = await this.chat(
         "你是记忆重要性评估助手。评估以下记忆的长期重要性（0.0-1.0）。\n\n" +
-        "评分标准：\n" +
-        "- 0.85+：身份信息、核心模式、关键决策\n" +
-        "- 0.70-0.84：偏好、案例、可复用方案\n" +
-        "- 0.55-0.69：实体、工具、项目信息\n" +
-        "- 0.40-0.54：普通事件、一次性操作\n" +
-        "- 0.20-0.39：临时状态、短期上下文\n\n" +
+        "锚定标准（每级附具体示例，严格对标）：\n" +
+        "- 0.85-1.0：用户明确纠正行为（如'不要这样做'）、身份声明（职业/角色）、" +
+          "情感/行为变化、核心偏好（写作风格/沟通方式）、反复强调的规则\n" +
+        "- 0.70-0.84：关键决策（架构选型/技术路线）、项目承诺（deadline/里程碑）、" +
+          "可复用案例（踩坑→修复→教训）、持久偏好（喜欢X不喜欢Y）\n" +
+        "- 0.55-0.69：实体信息（项目名/工具名/人名）、新学到的背景知识、" +
+          "配置参数（API key位置/环境变量）\n" +
+        "- 0.40-0.54：普通事件（今天部署了X）、一次性操作步骤、" +
+          "已解决的 bug 细节（修完即过时）\n" +
+        "- 0.10-0.30：日常寒暄、重复信息（已有更完整版本）、" +
+          "临时调试输出、短期上下文（如'刚才那个文件'）\n\n" +
+        "常见误判提醒：\n" +
+        "- 用户说'记住'/'永远不要' → 至少 0.85\n" +
+        "- 看起来是小事但反复出现 → 至少 0.70（重复=重要）\n" +
+        "- 纯技术细节但没有复用价值 → 不超过 0.50\n\n" +
         "只输出一行 JSON：{\"importance\":0.7,\"reason\":\"简短原因\"}",
         `[类别] ${category}\n[内容] ${text.slice(0, 1000)}`,
       );
@@ -282,6 +291,49 @@ export class LLMClient {
     } catch {
       return null;
     }
+  }
+
+  /**
+   * HP-4: Batch re-assess importance for existing memories during distill.
+   * Returns a map of id → new importance (only for entries that changed).
+   */
+  async reassessImportanceBatch(
+    entries: Array<{ id: string; text: string; category: string; currentImportance: number }>,
+  ): Promise<Map<string, number>> {
+    const results = new Map<string, number>();
+    if (entries.length === 0) return results;
+
+    const batch = entries
+      .map((e, i) => `[${i}] category=${e.category} importance=${e.currentImportance}\n${e.text.slice(0, 300)}`)
+      .join("\n---\n");
+
+    try {
+      const response = await this.chat(
+        "批量重评记忆重要性。使用同一套锚定标准（0.85+ 身份/纠正/核心偏好，" +
+        "0.70-0.84 决策/案例/偏好，0.55-0.69 实体/背景，0.40-0.54 事件/操作，" +
+        "0.10-0.30 寒暄/重复/临时）。\n" +
+        "只输出 JSON 数组，每项 {\"idx\":0,\"importance\":0.7}，" +
+        "只包含需要调整的项（与当前分数差 ≥ 0.1 才输出）。",
+        batch,
+      );
+      if (!response) return results;
+      const parsed = parseJSON<Array<{ idx: number; importance: number }>>(response);
+      if (Array.isArray(parsed)) {
+        for (const item of parsed) {
+          if (
+            typeof item.idx === "number" &&
+            typeof item.importance === "number" &&
+            item.idx >= 0 &&
+            item.idx < entries.length
+          ) {
+            results.set(entries[item.idx].id, Math.max(0, Math.min(1, item.importance)));
+          }
+        }
+      }
+    } catch {
+      // Batch re-assessment failure is non-fatal
+    }
+    return results;
   }
 
   /**

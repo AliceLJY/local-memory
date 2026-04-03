@@ -9,7 +9,7 @@ import { filterNoise } from "./noise-filter.js";
 import { shouldSkipRetrieval } from "./adaptive-retrieval.js";
 import { expandQuery } from "./query-expander.js";
 import { type AccessTracker, computeHotnessScore, parseAccessMetadata } from "./access-tracker.js";
-import { weibullDecay, resolveTier } from "./decay-engine.js";
+import { weibullDecay, resolveTier, isDecayExempt } from "./decay-engine.js";
 import { logWarn } from "./stderr-log.js";
 import { extractBoundaryMetadata, isDurableMemoryScope, isTranscriptScope } from "./memory-boundaries.js";
 import type { TraceCollector } from "./retrieval-trace.js";
@@ -1321,6 +1321,9 @@ export class MemoryRetriever {
 
     const now = Date.now();
     const decayed = results.map(r => {
+      // HP-7: Exempt core/pinned/recently-accessed from decay
+      if (isDecayExempt(r.entry.metadata, r.entry.importance)) return r;
+
       const ts = (r.entry.timestamp && r.entry.timestamp > 0) ? r.entry.timestamp : now;
       const ageDays = (now - ts) / 86_400_000;
 
@@ -1359,6 +1362,13 @@ export class MemoryRetriever {
   private applyEvolutionDecayBlend(results: RetrievalResult[]): RetrievalResult[] {
     const EVOLUTION_BLEND_WEIGHT = 0.10;
     return results.map(r => {
+      // HP-7: Exempt entries get max decay score (1.0) → no penalty
+      if (isDecayExempt(r.entry.metadata, r.entry.importance)) {
+        return {
+          ...r,
+          score: clamp01(r.score * (1 - EVOLUTION_BLEND_WEIGHT) + 1.0 * EVOLUTION_BLEND_WEIGHT, 0),
+        };
+      }
       const evo = parseEvolution(r.entry.metadata, r.entry.timestamp);
       const decay = computeDecayScore(evo, r.entry.importance);
       return {

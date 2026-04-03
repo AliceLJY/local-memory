@@ -1,5 +1,6 @@
 import type { Embedder } from "./embedder.js";
 import { generateAnchor } from "./anchor-generator.js";
+import { incrementWriteCount } from "./activity-counter.js";
 import { defaultEvolution, buildSupersedeMetadata, isActiveMemory } from "./memory-evolution.js";
 import {
   type CaseMemoryInput,
@@ -850,6 +851,15 @@ export async function persistMemory(
     });
   } catch {
     // Audit must never block memory writes
+  }
+
+  // HP-3: Activity counter — track non-dedup writes for distill trigger
+  if (disposition !== "deduped") {
+    try {
+      incrementWriteCount();
+    } catch {
+      // Activity tracking must never block memory writes
+    }
   }
 
   return toStoredRecord(input, entry, disposition, canonicalKey, conflictId);

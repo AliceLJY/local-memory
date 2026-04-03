@@ -178,7 +178,7 @@ function normalizeDedupText(value: string): string {
  * 3. Explicit memory instructions (记住, remember, 以后注意, 别忘了)
  * 4. Feedback/corrections (不要, 别再, stop doing, don't)
  */
-function isTemporalOrActionContent(text: string): boolean {
+export function isTemporalOrActionContent(text: string): boolean {
   // Date patterns: ISO dates, Chinese relative dates
   const datePattern = /\b20\d{2}[-/]\d{2}[-/]\d{2}\b|昨天|今天|前天|上次|刚才|刚刚|本周|这周|上周/;
   // File operation patterns
