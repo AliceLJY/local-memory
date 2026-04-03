@@ -710,6 +710,27 @@ export async function persistMemory(
 ): Promise<StoredMemoryRecord> {
   const input = StoreMemoryInputSchema.parse(rawInput);
 
+  // LC-P5: Large text gate — texts > 8000 chars get truncated to L0 summary.
+  // Prevents oversized entries from bloating the index and degrading embedding quality.
+  const LARGE_TEXT_THRESHOLD = 8000;
+  if (input.text.length > LARGE_TEXT_THRESHOLD && deps.llm) {
+    try {
+      const summary = await deps.llm.generateCoreSummary(input.text);
+      if (summary) {
+        // Store original length in metadata for reference, replace text with summary
+        const origLength = input.text.length;
+        input.text = summary;
+        input.tags = [...(input.tags ?? []), `truncated:${origLength}`];
+      }
+    } catch {
+      // Fallback: hard truncate if LLM fails
+      input.text = input.text.slice(0, LARGE_TEXT_THRESHOLD);
+    }
+  } else if (input.text.length > LARGE_TEXT_THRESHOLD) {
+    // No LLM available — hard truncate
+    input.text = input.text.slice(0, LARGE_TEXT_THRESHOLD);
+  }
+
   // B-3: LLM importance assessment — refine default importance (0.7) via LLM.
   // Only fires when importance is at the default value and LLM is available.
   // Explicit importance values from the caller are respected as-is.
