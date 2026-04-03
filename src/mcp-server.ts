@@ -48,6 +48,7 @@ const TOOL_TIERS: Record<string, ToolTier> = {
   list_assets: "advanced",
   list_pins: "advanced",
   memory_stats: "advanced",
+  data_checkup: "advanced",
   memory_drill_down: "advanced",
   export_memory: "advanced",
   store_skill: "advanced",
@@ -101,6 +102,7 @@ import { createKGExtractor, isKGModeEnabled, type KGExtractor } from "./kg-extra
 import { resolveConflictCandidate } from "./conflict-engine.js";
 import { escalateConflicts } from "./conflict-escalation.js";
 import { ConflictCandidateStore } from "./conflict-store.js";
+import { runDataCheckup, formatCheckupReport } from "./data-checkup.js";
 import { formatConflictAudit, formatConflictClusters, formatConflictEscalation, formatConflictList, formatConflictRecord, formatConflictResolution } from "./conflict-output.js";
 import { CONFLICT_ATTENTION_LEVELS, summarizeConflictLifecycle } from "./conflict-lifecycle.js";
 import { buildConflictAuditSummary, clusterConflicts } from "./conflict-advisor.js";
@@ -1292,6 +1294,23 @@ registerTool(
 
     return {
       content: [{ type: "text" as const, text: lines.join("\n") }],
+    };
+  }
+);
+
+// ============================================================================
+// LC-P4: Data Checkup Tool
+// ============================================================================
+
+registerTool(
+  "data_checkup",
+  "Run health checks on the memory database: vector dimension consistency, orphan memories, tier distribution, conflict backlog, and version group integrity. Use proactively to diagnose data quality issues.",
+  {},
+  async () => {
+    const openConflicts = (await conflictStore.listRecent({ status: "open", limit: 200 })).length;
+    const report = await runDataCheckup({ store, openConflictCount: openConflicts });
+    return {
+      content: [{ type: "text" as const, text: formatCheckupReport(report) }],
     };
   }
 );
