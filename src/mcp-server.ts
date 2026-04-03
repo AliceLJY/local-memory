@@ -49,6 +49,7 @@ const TOOL_TIERS: Record<string, ToolTier> = {
   list_pins: "advanced",
   memory_stats: "advanced",
   data_checkup: "advanced",
+  dream: "advanced",
   memory_drill_down: "advanced",
   export_memory: "advanced",
   store_skill: "advanced",
@@ -103,6 +104,7 @@ import { resolveConflictCandidate } from "./conflict-engine.js";
 import { escalateConflicts } from "./conflict-escalation.js";
 import { ConflictCandidateStore } from "./conflict-store.js";
 import { runDataCheckup, formatCheckupReport } from "./data-checkup.js";
+import { runDream, formatDreamResult } from "./dream-pipeline.js";
 import { formatConflictAudit, formatConflictClusters, formatConflictEscalation, formatConflictList, formatConflictRecord, formatConflictResolution } from "./conflict-output.js";
 import { CONFLICT_ATTENTION_LEVELS, summarizeConflictLifecycle } from "./conflict-lifecycle.js";
 import { buildConflictAuditSummary, clusterConflicts } from "./conflict-advisor.js";
@@ -1311,6 +1313,33 @@ registerTool(
     const report = await runDataCheckup({ store, openConflictCount: openConflicts });
     return {
       content: [{ type: "text" as const, text: formatCheckupReport(report) }],
+    };
+  }
+);
+
+// ============================================================================
+// AD-1: Dream Pipeline Tool
+// ============================================================================
+
+registerTool(
+  "dream",
+  "Run a full memory consolidation cycle (Orient→Gather→Consolidate→Prune). Clusters similar memories, generates insights, discovers cross-memory patterns, and archives low-value entries. Use periodically to maintain memory health.",
+  {
+    scope: z.string().min(1).max(160).optional().describe("Scope to consolidate (defaults to all)"),
+    force: z.boolean().default(false).describe("Force run even if write count is below threshold"),
+  },
+  async ({ scope, force }) => {
+    const resolvedScope = scope || "project:default";
+    const components = getComponents();
+    const result = await runDream({
+      store: components.store,
+      llm: components.llm,
+      embedder: components.embedder,
+      scope: resolvedScope,
+      force,
+    });
+    return {
+      content: [{ type: "text" as const, text: formatDreamResult(result) }],
     };
   }
 );
