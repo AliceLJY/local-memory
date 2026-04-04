@@ -939,13 +939,13 @@ registerTool(
   "explain_memory",
   "Explain why memories matched a query: retrieval path, freshness, scope, and matched terms. Read-only. Use when search results seem unexpected and you need to debug ranking or scope filtering.",
   {
-    query: z.string().describe("Search query — natural language or keywords"),
-    limit: z.number().min(1).max(20).default(5).describe("Max results to analyze"),
-    scope: z.string().optional().describe("Optional explicit scope"),
-    sessionId: z.string().min(1).max(160).optional().describe("Optional session identifier to infer session:<id> scope"),
-    allScopes: z.boolean().default(false).describe("When true, explicitly allow cross-scope search"),
-    category: DurableMemoryCategorySchema.optional().describe("Filter by memory category"),
-    profile: z.enum(["default", "writing", "debug", "fact-check"]).optional().describe("Retrieval profile"),
+    query: z.string().describe("Search query to explain — natural language or keywords, e.g. 'auth migration'"),
+    limit: z.number().min(1).max(20).default(5).describe("Maximum number of matched results to analyze and explain (default: 5)"),
+    scope: z.string().optional().describe("Restrict to a specific scope, e.g. 'project:myapp'. Omit to use default scope"),
+    sessionId: z.string().min(1).max(160).optional().describe("Session identifier to infer session-scoped search, e.g. 'abc123'"),
+    allScopes: z.boolean().default(false).describe("Set to true to search across all scopes instead of the default scope"),
+    category: DurableMemoryCategorySchema.optional().describe("Filter results by memory category, e.g. 'preference', 'decision', 'fact'"),
+    profile: z.enum(["default", "writing", "debug", "fact-check"]).optional().describe("Retrieval profile that tunes ranking: 'debug' for technical, 'fact-check' for precision"),
   },
   async ({ query, limit, scope, sessionId, allScopes, category, profile: profileName }) => {
     const { retriever, profile } = getComponents(profileName);
@@ -1090,10 +1090,10 @@ registerTool(
   "Export a distilled memory briefing to a markdown or JSON file on disk. Side effect: writes an export artifact file. Use when you need an offline-readable snapshot of knowledge on a topic.",
   {
     query: z.string().describe("Topic or task to export, e.g. 'auth migration decisions'"),
-    limit: z.number().min(1).max(20).default(8).describe("Max source memories to include, e.g. 8"),
-    scope: z.string().optional().describe("Explicit scope filter, e.g. 'project:recallnest'"),
-    sessionId: z.string().min(1).max(160).optional().describe("Session identifier to infer session:<id> scope, e.g. 'abc123'"),
-    allScopes: z.boolean().default(false).describe("When true, search across all scopes"),
+    limit: z.number().min(1).max(20).default(8).describe("Maximum number of source memories to include in the export (default: 8)"),
+    scope: z.string().optional().describe("Restrict to a specific scope, e.g. 'project:recallnest'. Omit to use default scope"),
+    sessionId: z.string().min(1).max(160).optional().describe("Session identifier to infer session-scoped search, e.g. 'abc123'"),
+    allScopes: z.boolean().default(false).describe("Set to true to search across all scopes instead of the default scope"),
     profile: z.enum(["default", "writing", "debug", "fact-check"]).optional().describe("Retrieval profile for ranking, e.g. 'writing'"),
     format: z.enum(["md", "json"]).default("md").describe("Export format: 'md' for markdown, 'json' for structured JSON"),
   },
@@ -1325,8 +1325,8 @@ registerTool(
   "dream",
   "Run a full memory consolidation cycle (Orient, Gather, Consolidate, Prune). Side effect: may archive low-value entries and generate insight memories. Use when memory count is high and you need periodic maintenance.",
   {
-    scope: z.string().min(1).max(160).optional().describe("Scope to consolidate (defaults to all)"),
-    force: z.boolean().default(false).describe("Force run even if write count is below threshold"),
+    scope: z.string().min(1).max(160).optional().describe("Scope to consolidate, e.g. 'project:myapp'. Omit to consolidate across all scopes"),
+    force: z.boolean().default(false).describe("Set to true to force consolidation even if recent write count is below the automatic threshold"),
   },
   async ({ scope, force }) => {
     const resolvedScope = scope || "project:default";
@@ -1411,16 +1411,16 @@ registerTool(
   "store_skill",
   "Store an executable skill with trigger conditions, implementation, and verification steps. Side effect: persists a new skill entry and indexes it. Use when you identify a reusable procedure worth automating across sessions.",
   {
-    name: z.string().min(1).max(120).describe("Unique skill identifier (e.g. 'deploy_production')"),
-    description: z.string().min(1).max(500).describe("Natural language description (used for retrieval)"),
-    triggerPattern: z.string().min(1).max(300).describe("When to suggest this skill"),
-    implementationType: SkillImplementationTypeSchema.describe("Execution type: bash | python | mcp_tool_chain | instruction_sequence"),
-    implementation: z.string().min(1).max(5000).describe("Executable content"),
-    inputSchema: z.record(z.string(), z.unknown()).optional().describe("Parameter definition (JSON Schema)"),
-    verification: z.string().max(500).optional().describe("How to verify execution success"),
-    scope: z.string().min(1).max(160).describe("Required scope such as project:recallnest"),
-    source: z.enum(["manual", "agent", "api"]).default("agent").describe("How this skill was captured"),
-    tags: z.array(z.string().max(60)).max(6).default([]).describe("Optional tags"),
+    name: z.string().min(1).max(120).describe("Unique skill identifier, e.g. 'deploy_production' or 'run_migrations'"),
+    description: z.string().min(1).max(500).describe("Natural language description of what the skill does (used for semantic retrieval matching)"),
+    triggerPattern: z.string().min(1).max(300).describe("Natural language pattern describing when to suggest this skill, e.g. 'user asks to deploy to production'"),
+    implementationType: SkillImplementationTypeSchema.describe("Execution type: 'bash' for shell scripts, 'python' for Python code, 'mcp_tool_chain' for MCP sequences, 'instruction_sequence' for step-by-step instructions"),
+    implementation: z.string().min(1).max(5000).describe("Executable content: the actual script, code, or instruction steps to run"),
+    inputSchema: z.record(z.string(), z.unknown()).optional().describe("JSON Schema defining the skill's input parameters, e.g. {\"env\": {\"type\": \"string\"}}"),
+    verification: z.string().max(500).optional().describe("Steps to verify the skill executed correctly, e.g. 'check deployment URL returns 200'"),
+    scope: z.string().min(1).max(160).describe("Scope to store the skill under, e.g. 'project:recallnest'"),
+    source: z.enum(["manual", "agent", "api"]).default("agent").describe("How this skill was captured: 'manual' by user, 'agent' by AI, or 'api' programmatically"),
+    tags: z.array(z.string().max(60)).max(6).default([]).describe("Optional categorization tags, e.g. ['deployment', 'production']"),
   },
   async ({ name, description, triggerPattern, implementationType, implementation, inputSchema, verification, scope, source, tags }) => {
     const { store, embedder } = getComponents();
@@ -1457,9 +1457,9 @@ registerTool(
   "retrieve_skill",
   "Retrieve executable skills matching a task description by semantic similarity. Read-only. Use when you need a stored procedure to act on, not just recall knowledge.",
   {
-    query: z.string().min(1).max(300).describe("Task description to match against stored skills"),
-    scope: z.string().min(1).max(160).optional().describe("Optional scope filter"),
-    limit: z.number().min(1).max(10).default(3).describe("Max results to return"),
+    query: z.string().min(1).max(300).describe("Natural language task description to match, e.g. 'deploy the app to production'"),
+    scope: z.string().min(1).max(160).optional().describe("Restrict to skills in a specific scope, e.g. 'project:myapp'. Omit to search all scopes"),
+    limit: z.number().min(1).max(10).default(3).describe("Maximum number of matching skills to return, sorted by relevance (default: 3)"),
   },
   async ({ query, scope, limit }) => {
     const { store, embedder } = getComponents();
