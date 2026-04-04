@@ -230,7 +230,7 @@ registerTool(
 
 registerTool(
   "workflow_health",
-  "Inspect workflow observation health. With workflowId, return a 7d/30d health report; without workflowId, return a dashboard of the most degraded workflows.",
+  "Inspect workflow observation health: 7d/30d report for one workflow or dashboard of degraded workflows. Read-only. Use when checking if continuity primitives are succeeding or degrading.",
   {
     workflowId: z.string().min(1).max(120).optional().describe("Optional workflow primitive id"),
     scope: z.string().min(1).max(160).optional().describe("Optional scope filter"),
@@ -251,10 +251,10 @@ registerTool(
 
 registerTool(
   "workflow_evidence",
-  "Generate an evidence pack for a workflow primitive, including recent issue observations, top signals, and suggested next actions.",
+  "Generate an evidence pack for a workflow primitive with recent issues, top signals, and suggested actions. Read-only. Use when investigating why a workflow is degraded and you need concrete failure examples.",
   {
-    workflowId: z.string().min(1).max(120).describe("Workflow primitive id"),
-    scope: z.string().min(1).max(160).optional().describe("Optional scope filter"),
+    workflowId: z.string().min(1).max(120).describe("Workflow primitive id, e.g. 'resume_context'"),
+    scope: z.string().min(1).max(160).optional().describe("Scope filter, e.g. 'project:recallnest'"),
     limit: z.number().int().min(1).max(20).default(5).describe("Max recent issue observations to include"),
   },
   async ({ workflowId, scope, limit }) => {
@@ -373,7 +373,7 @@ registerTool(
 
 registerTool(
   "set_reminder",
-  "Set a prospective memory reminder: 'next time X comes up, remind me about Y'. The reminder is stored and automatically triggered during future retrievals when the trigger condition is matched.",
+  "Set a prospective memory reminder that auto-triggers during future search_memory calls when the trigger keywords match. Side effect: stores a reminder entry. Use when you need a future nudge tied to a specific context.",
   {
     trigger: z.string().min(1).max(200).describe("Trigger condition — keywords that should activate this reminder"),
     action: z.string().min(1).max(500).describe("What to remind about when the trigger fires"),
@@ -521,7 +521,7 @@ registerTool(
 
 registerTool(
   "promote_memory",
-  "Promote an evidence memory into durable memory. Use this when a transcript snippet or imported artifact contains a fact worth keeping across windows, and you want an explicit authority upgrade instead of leaving it as raw evidence.",
+  "Promote an evidence memory into durable memory with an authority upgrade. Side effect: creates a new durable entry linked to the source evidence. Use when a transcript snippet or imported artifact contains a fact worth keeping across windows.",
   {
     memoryId: z.string().min(1).max(128).describe("Existing evidence memory ID or unique prefix"),
     text: z.string().min(1).max(4000).optional().describe("Optional cleaned durable text; defaults to the source entry text"),
@@ -563,9 +563,9 @@ registerTool(
 
 registerTool(
   "list_conflicts",
-  "List or inspect open conflict candidates when incoming evidence promotions disagree with an existing durable memory for the same canonical key.",
+  "List or inspect conflict candidates where promoted evidence disagrees with existing durable memory. Read-only. Use when reviewing pending conflicts before resolution.",
   {
-    conflictId: z.string().min(1).max(128).optional().describe("Optional conflict ID to inspect a single record"),
+    conflictId: z.string().min(1).max(128).optional().describe("Conflict ID to inspect a single record, e.g. 'c1d2e3f4'"),
     status: ConflictStatusSchema.optional().describe("Optional status filter"),
     attention: z.enum(CONFLICT_ATTENTION_LEVELS).optional().describe("Optional lifecycle filter: fresh / aging / stale / escalated / resolved"),
     canonicalKey: z.string().min(1).max(120).optional().describe("Optional canonical key filter"),
@@ -599,7 +599,7 @@ registerTool(
 
 registerTool(
   "resolve_conflict",
-  "Resolve a stored conflict candidate by keeping the existing durable memory, accepting the incoming promoted evidence, or merging the two texts.",
+  "Resolve a conflict candidate by keeping existing, accepting incoming, or merging texts. Side effect: updates conflict status and may modify durable memory. Use when list_conflicts shows open conflicts that need a decision.",
   {
     conflictId: z.string().min(1).max(128).describe("Conflict ID to resolve"),
     resolution: z.enum(["accept_incoming", "keep_existing", "merge"]).describe("How to resolve the conflict"),
@@ -630,7 +630,7 @@ registerTool(
 
 registerTool(
   "audit_conflicts",
-  "Generate a terminal-friendly conflict audit summary so you can see which stale or escalated conflict clusters should be reviewed first.",
+  "Generate a conflict audit summary showing priority clusters by staleness and escalation level. Read-only. Use when triaging which conflict clusters to resolve first.",
   {
     status: ConflictStatusSchema.optional().describe("Optional status filter"),
     canonicalKey: z.string().min(1).max(120).optional().describe("Optional canonical key filter"),
@@ -655,7 +655,7 @@ registerTool(
 
 registerTool(
   "escalate_conflicts",
-  "Preview or apply the conflict aging policy so stale or escalated open conflicts are explicitly marked for operator review.",
+  "Preview or apply conflict aging policy to mark stale conflicts for operator review. Side effect: when apply=true, persists escalation metadata. Use when conflicts have aged past their attention threshold.",
   {
     attention: z.enum(["stale", "escalated"]).default("stale").describe("Only consider stale or escalated conflicts"),
     canonicalKey: z.string().min(1).max(120).optional().describe("Optional canonical key filter"),
@@ -728,10 +728,10 @@ registerTool(
 
 registerTool(
   "latest_checkpoint",
-  "Fetch the latest saved checkpoint for a session or shared scope. Useful for inspecting current work state before resume_context exists.",
+  "Fetch the most recent saved checkpoint for a session or shared scope. Read-only. Use when you need to inspect current work state without running a full resume_context.",
   {
-    sessionId: z.string().min(1).max(160).optional().describe("Optional session identifier filter"),
-    scope: z.string().min(1).max(160).optional().describe("Optional shared scope filter"),
+    sessionId: z.string().min(1).max(160).optional().describe("Session identifier filter, e.g. 'abc123'"),
+    scope: z.string().min(1).max(160).optional().describe("Shared scope filter, e.g. 'project:recallnest'"),
   },
   async ({ sessionId, scope }) => {
     const latest = await checkpointStore.getLatest({ sessionId, scope });
@@ -746,7 +746,7 @@ registerTool(
 
 registerTool(
   "resume_context",
-  "Compose startup context for a fresh window by combining stable durable memory, relevant patterns and cases, plus the latest checkpoint for the current scope or session.",
+  "Compose startup context for a fresh window by combining durable memory, patterns, cases, and the latest checkpoint. Read-only. Use when entering a new session and you need to recover prior decisions, open loops, and next actions.",
   {
     task: z.string().min(1).max(500).optional().describe("Optional current task or question to bias recall"),
     scope: z.string().min(1).max(160).optional().describe("Optional shared scope for project or terminal continuity"),
@@ -838,7 +838,7 @@ registerTool(
 // --- search_memory tool ---
 registerTool(
   "search_memory",
-  "IMPORTANT: Use this tool proactively at the start of tasks to recall relevant past conversations, decisions, and patterns. Search when: starting a new task, debugging, writing, making decisions, or when the user references past work. Do NOT wait for the user to ask you to search. Query with key nouns/verbs from the user's message.",
+  "Search indexed memories by semantic similarity and return ranked results with optional temporal filtering. Read-only, but may fire stored reminders as a side effect. Use proactively at the start of tasks, when debugging, writing, or when the user references past work.",
   {
     query: z.string().describe("Search query — natural language or keywords"),
     limit: z.number().min(1).max(20).default(5).describe("Max results to return"),
@@ -937,7 +937,7 @@ registerTool(
 
 registerTool(
   "explain_memory",
-  "Explain why the indexed memories matched: retrieval path, freshness, file/session, and matched terms.",
+  "Explain why memories matched a query: retrieval path, freshness, scope, and matched terms. Read-only. Use when search results seem unexpected and you need to debug ranking or scope filtering.",
   {
     query: z.string().describe("Search query — natural language or keywords"),
     limit: z.number().min(1).max(20).default(5).describe("Max results to analyze"),
@@ -1042,16 +1042,16 @@ registerTool(
 
 registerTool(
   "pin_memory",
-  "Promote one retrieved memory into a pinned asset for later reuse.",
+  "Pin a retrieved memory as a high-importance reusable asset on disk. Side effect: boosts importance to 0.95, writes pin asset file, and indexes it. Use when a search result is critical and should be surfaced in future recalls.",
   {
-    memory_id: z.string().describe("Memory ID or unique prefix from search/explain output"),
-    scope: z.string().optional().describe("Optional explicit scope"),
-    sessionId: z.string().min(1).max(160).optional().describe("Optional session identifier to infer session:<id> scope"),
-    allScopes: z.boolean().default(false).describe("When true, explicitly allow cross-scope reads"),
-    title: z.string().optional().describe("Optional pinned title"),
-    summary: z.string().optional().describe("Optional pinned summary"),
-    query: z.string().optional().describe("Optional query that led to this pin"),
-    profile: z.enum(["default", "writing", "debug", "fact-check"]).optional().describe("Retrieval profile"),
+    memory_id: z.string().describe("Memory ID or unique prefix from search/explain output, e.g. 'a1b2c3d4'"),
+    scope: z.string().optional().describe("Explicit scope filter, e.g. 'project:recallnest'"),
+    sessionId: z.string().min(1).max(160).optional().describe("Session identifier to infer session:<id> scope, e.g. 'abc123'"),
+    allScopes: z.boolean().default(false).describe("When true, allow cross-scope reads to find the memory"),
+    title: z.string().optional().describe("Human-readable title for the pin, e.g. 'Auth migration decision'"),
+    summary: z.string().optional().describe("Short summary override for the pinned asset"),
+    query: z.string().optional().describe("Original query that led to this pin, e.g. 'auth decisions'"),
+    profile: z.enum(["default", "writing", "debug", "fact-check"]).optional().describe("Retrieval profile for ranking, e.g. 'debug'"),
   },
   async ({ memory_id, scope, sessionId, allScopes, title, summary, query, profile: profileName }) => {
     const { store, embedder } = getComponents(profileName);
@@ -1087,15 +1087,15 @@ registerTool(
 
 registerTool(
   "export_memory",
-  "Export a distilled memory briefing to a markdown or json artifact on disk.",
+  "Export a distilled memory briefing to a markdown or JSON file on disk. Side effect: writes an export artifact file. Use when you need an offline-readable snapshot of knowledge on a topic.",
   {
-    query: z.string().describe("Topic or task to export"),
-    limit: z.number().min(1).max(20).default(8).describe("Max results to export"),
-    scope: z.string().optional().describe("Optional explicit scope"),
-    sessionId: z.string().min(1).max(160).optional().describe("Optional session identifier to infer session:<id> scope"),
-    allScopes: z.boolean().default(false).describe("When true, explicitly allow cross-scope search"),
-    profile: z.enum(["default", "writing", "debug", "fact-check"]).optional().describe("Retrieval profile"),
-    format: z.enum(["md", "json"]).default("md").describe("Export format"),
+    query: z.string().describe("Topic or task to export, e.g. 'auth migration decisions'"),
+    limit: z.number().min(1).max(20).default(8).describe("Max source memories to include, e.g. 8"),
+    scope: z.string().optional().describe("Explicit scope filter, e.g. 'project:recallnest'"),
+    sessionId: z.string().min(1).max(160).optional().describe("Session identifier to infer session:<id> scope, e.g. 'abc123'"),
+    allScopes: z.boolean().default(false).describe("When true, search across all scopes"),
+    profile: z.enum(["default", "writing", "debug", "fact-check"]).optional().describe("Retrieval profile for ranking, e.g. 'writing'"),
+    format: z.enum(["md", "json"]).default("md").describe("Export format: 'md' for markdown, 'json' for structured JSON"),
   },
   async ({ query, limit, scope, sessionId, allScopes, profile: profileName, format }) => {
     const { retriever, profile } = getComponents(profileName || "writing");
@@ -1128,9 +1128,9 @@ registerTool(
 
 registerTool(
   "list_assets",
-  "List recent structured memory assets, including pinned memories and distilled briefs.",
+  "List recent structured memory assets including pins and briefs. Read-only. Use when reviewing what assets have been created or checking for stale briefs.",
   {
-    limit: z.number().min(1).max(50).default(12).describe("Max assets to list"),
+    limit: z.number().min(1).max(50).default(12).describe("Max assets to return, e.g. 12"),
   },
   async ({ limit }) => {
     const rows = listMemoryAssets(limit);
@@ -1148,7 +1148,7 @@ registerTool(
 
 registerTool(
   "list_dirty_briefs",
-  "Preview dirty memory briefs that were generated before the current brief-cleanup rules.",
+  "List memory briefs generated before current cleanup rules that may need re-indexing. Read-only. Use when auditing brief quality or before running clean_dirty_briefs.",
   {},
   async () => {
     const rows = listDirtyBriefAssets();
@@ -1166,9 +1166,9 @@ registerTool(
 
 registerTool(
   "clean_dirty_briefs",
-  "Archive dirty briefs and remove their indexed asset scopes. Use preview mode first if unsure.",
+  "Archive dirty briefs and remove their indexed asset entries. Side effect: when apply=true, moves briefs to archive and deletes index rows. Use when list_dirty_briefs shows stale briefs that need cleanup.",
   {
-    apply: z.boolean().default(false).describe("When false, preview only. When true, archive and delete indexed rows."),
+    apply: z.boolean().default(false).describe("When false, preview only (no writes). When true, archive briefs and delete indexed rows."),
   },
   async ({ apply }) => {
     const rows = listDirtyBriefAssets();
@@ -1205,7 +1205,7 @@ registerTool(
 
 registerTool(
   "consolidate_memories",
-  "Run semantic consolidation on a scope: cluster similar memories, merge near-duplicates, link related entries, and detect contradictions. Dry-run by default — set apply=true to actually archive merged entries.",
+  "Run semantic consolidation: cluster similar memories, merge near-duplicates, and detect contradictions. Side effect: when apply=true, archives merged entries. Use when a scope has grown large and needs deduplication.",
   {
     scope: z.string().min(1).max(160).describe("Scope to consolidate (e.g. project:recallnest)"),
     clusterThreshold: z.number().min(0.5).max(1.0).default(0.82).describe("Min similarity to form a cluster (default 0.82)"),
@@ -1247,9 +1247,9 @@ registerTool(
 
 registerTool(
   "list_pins",
-  "List recently pinned memory assets.",
+  "List recently pinned memory assets sorted by date. Read-only. Use when reviewing which memories have been pinned for quick access.",
   {
-    limit: z.number().min(1).max(50).default(10).describe("Max pinned assets to list"),
+    limit: z.number().min(1).max(50).default(10).describe("Max pinned assets to return, e.g. 10"),
   },
   async ({ limit }) => {
     const rows = listPinAssets(limit);
@@ -1268,7 +1268,7 @@ registerTool(
 // --- memory_stats tool ---
 registerTool(
   "memory_stats",
-  "Show statistics of the indexed memory database",
+  "Show aggregate statistics of the memory database: total entries, counts by source and category. Read-only. Use when you need an overview of memory store health or size.",
   {},
   async () => {
     const stats = await store.stats();
@@ -1306,7 +1306,7 @@ registerTool(
 
 registerTool(
   "data_checkup",
-  "Run health checks on the memory database: vector dimension consistency, orphan memories, tier distribution, conflict backlog, and version group integrity. Use proactively to diagnose data quality issues.",
+  "Run health checks on the memory database: vector dimensions, orphans, tier distribution, and conflict backlog. Read-only. Use when diagnosing data quality issues or before a consolidation run.",
   {},
   async () => {
     const openConflicts = (await conflictStore.listRecent({ status: "open", limit: 200 })).length;
@@ -1323,7 +1323,7 @@ registerTool(
 
 registerTool(
   "dream",
-  "Run a full memory consolidation cycle (Orient→Gather→Consolidate→Prune). Clusters similar memories, generates insights, discovers cross-memory patterns, and archives low-value entries. Use periodically to maintain memory health.",
+  "Run a full memory consolidation cycle (Orient, Gather, Consolidate, Prune). Side effect: may archive low-value entries and generate insight memories. Use when memory count is high and you need periodic maintenance.",
   {
     scope: z.string().min(1).max(160).optional().describe("Scope to consolidate (defaults to all)"),
     force: z.boolean().default(false).describe("Force run even if write count is below threshold"),
@@ -1350,9 +1350,9 @@ registerTool(
 
 registerTool(
   "memory_drill_down",
-  "Get deeper content for a memory entry. Use after seeing compact summaries to get the full text or structured overview.",
+  "Retrieve the full or overview-level content of a single memory entry. Read-only. Use when search returned compact summaries and you need the complete text or L1 overview.",
   {
-    id: z.string().describe("Memory ID or prefix (at least 8 hex chars)"),
+    id: z.string().describe("Memory ID or unique prefix (at least 8 hex chars), e.g. 'a1b2c3d4'"),
     level: z.enum(["overview", "full"]).optional().default("full")
       .describe("Content depth: 'overview' (L1) or 'full' (L2, default)"),
   },
@@ -1409,7 +1409,7 @@ registerTool(
 
 registerTool(
   "store_skill",
-  "Store an executable skill — a reusable procedure with trigger conditions, implementation, and verification steps. Skills are 'what the agent can do' vs memories which are 'what the agent learned'.",
+  "Store an executable skill with trigger conditions, implementation, and verification steps. Side effect: persists a new skill entry and indexes it. Use when you identify a reusable procedure worth automating across sessions.",
   {
     name: z.string().min(1).max(120).describe("Unique skill identifier (e.g. 'deploy_production')"),
     description: z.string().min(1).max(500).describe("Natural language description (used for retrieval)"),
@@ -1455,7 +1455,7 @@ registerTool(
 
 registerTool(
   "retrieve_skill",
-  "Retrieve skills matching a task description. Returns executable procedures, not just text — use these to act, not just to recall.",
+  "Retrieve executable skills matching a task description by semantic similarity. Read-only. Use when you need a stored procedure to act on, not just recall knowledge.",
   {
     query: z.string().min(1).max(300).describe("Task description to match against stored skills"),
     scope: z.string().min(1).max(160).optional().describe("Optional scope filter"),
@@ -1499,7 +1499,7 @@ registerTool(
 // --- D-2: scan_skill_promotions tool ---
 registerTool(
   "scan_skill_promotions",
-  "Scan for cases/patterns that could be promoted to reusable skills. Returns promotion suggestions — review before acting.",
+  "Scan cases and patterns in a scope for potential promotion to reusable skills. Read-only. Use when you want to discover recurring procedures that deserve formalization as skills.",
   {
     scope: z.string().min(1).max(160).describe("Project scope to scan for promotion candidates"),
     minOccurrences: z.number().min(2).max(20).default(3).describe("Minimum similar cases to trigger a promotion suggestion"),
@@ -1522,7 +1522,7 @@ registerTool(
 // --- MCP-1: list_tools tool ---
 registerTool(
   "list_tools",
-  "List available RecallNest tools beyond the core set. Use this to discover advanced tools when needed.",
+  "List available RecallNest tools with one-line descriptions, filtered by tier. Read-only. Use when you need to discover advanced or governance tools beyond the core set.",
   {
     tier: z.enum(["core", "advanced", "full"]).default("advanced").optional()
       .describe("Which tier of tools to list. Returns tools at this tier and below."),
@@ -1554,7 +1554,7 @@ registerTool(
 // --- MCP-3: batch_store tool ---
 registerTool(
   "batch_store",
-  "Store multiple memories in one call. More efficient than calling store_memory repeatedly.",
+  "Store multiple memories in a single call with deduplication. Side effect: persists up to 20 entries. Use when you have several facts to store at once, more efficient than repeated store_memory calls.",
   {
     memories: z.array(z.object({
       text: z.string().min(1),
