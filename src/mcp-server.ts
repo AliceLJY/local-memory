@@ -1128,9 +1128,9 @@ registerTool(
 
 registerTool(
   "list_assets",
-  "List recent structured memory assets including pins and briefs. Read-only. Use when reviewing what assets have been created or checking for stale briefs.",
+  "List recent structured memory assets (pinned memories and distilled briefs) sorted by creation date. Read-only. Use when you need an inventory of persisted knowledge artifacts — for example, before creating a new brief to avoid duplicates. Returns asset type, title, scope, creation date, and file path for each entry.",
   {
-    limit: z.number().min(1).max(50).default(12).describe("Max assets to return, e.g. 12"),
+    limit: z.number().min(1).max(50).default(12).describe("Maximum number of assets to return, sorted most-recent-first (default: 12, max: 50)"),
   },
   async ({ limit }) => {
     const rows = listMemoryAssets(limit);
@@ -1247,9 +1247,9 @@ registerTool(
 
 registerTool(
   "list_pins",
-  "List recently pinned memory assets sorted by date. Read-only. Use when reviewing which memories have been pinned for quick access.",
+  "List pinned memory assets sorted by creation date, showing title, scope, importance score, and file path. Read-only. Use when you need to review high-value memories that were explicitly pinned via pin_memory, or to check if a topic already has a pinned reference before creating a new one.",
   {
-    limit: z.number().min(1).max(50).default(10).describe("Max pinned assets to return, e.g. 10"),
+    limit: z.number().min(1).max(50).default(10).describe("Maximum number of pinned assets to return, sorted most-recent-first (default: 10, max: 50)"),
   },
   async ({ limit }) => {
     const rows = listPinAssets(limit);
