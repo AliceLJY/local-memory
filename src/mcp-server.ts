@@ -970,14 +970,14 @@ registerTool(
 
 registerTool(
   "distill_memory",
-  "Distill retrieved memories into a compact briefing with source map, takeaways, and reusable evidence.",
+  "Distill retrieved memories into a compact briefing with source map, key takeaways, and reusable evidence. Use this when you need a synthesized summary of stored knowledge on a topic rather than raw search results. Returns a structured briefing with citations. Read-only — does not modify stored memories.",
   {
-    query: z.string().describe("Topic or task to distill"),
-    limit: z.number().min(1).max(20).default(8).describe("Max results to distill"),
-    scope: z.string().optional().describe("Optional explicit scope"),
-    sessionId: z.string().min(1).max(160).optional().describe("Optional session identifier to infer session:<id> scope"),
-    allScopes: z.boolean().default(false).describe("When true, explicitly allow cross-scope search"),
-    profile: z.enum(["default", "writing", "debug", "fact-check"]).optional().describe("Retrieval profile"),
+    query: z.string().describe("Natural language topic or task to distill, e.g. 'authentication migration decisions'"),
+    limit: z.number().min(1).max(20).default(8).describe("Maximum number of retrieved memories to include in the distillation (default: 8)"),
+    scope: z.string().optional().describe("Restrict search to a specific scope, e.g. 'project:myapp'. Omit to use the default scope"),
+    sessionId: z.string().min(1).max(160).optional().describe("Session identifier to infer session-scoped search, e.g. 'abc123'"),
+    allScopes: z.boolean().default(false).describe("Set to true to search across all scopes instead of the default scope"),
+    profile: z.enum(["default", "writing", "debug", "fact-check"]).optional().describe("Retrieval profile that tunes ranking weights: 'writing' for narrative, 'debug' for technical, 'fact-check' for high-precision"),
   },
   async ({ query, limit, scope, sessionId, allScopes, profile: profileName }) => {
     const { retriever, profile } = getComponents(profileName || "writing");
@@ -1001,15 +1001,15 @@ registerTool(
 
 registerTool(
   "brief_memory",
-  "Create a structured memory brief from retrieved results and feed it back into recall.",
+  "Create a structured memory brief by retrieving and summarizing relevant memories, then persist it as a reusable asset indexed for future recall. Use this when you want to consolidate scattered knowledge on a topic into a single retrievable document. Side effect: writes a new brief asset to disk and indexes it in the vector store for future search.",
   {
-    query: z.string().describe("Topic or task to turn into a memory brief"),
-    limit: z.number().min(1).max(20).default(8).describe("Max results to distill into the brief"),
-    scope: z.string().optional().describe("Optional explicit scope"),
-    sessionId: z.string().min(1).max(160).optional().describe("Optional session identifier to infer session:<id> scope"),
-    allScopes: z.boolean().default(false).describe("When true, explicitly allow cross-scope search"),
-    profile: z.enum(["default", "writing", "debug", "fact-check"]).optional().describe("Retrieval profile"),
-    title: z.string().optional().describe("Optional brief title"),
+    query: z.string().describe("Natural language topic or task to brief, e.g. 'deployment pipeline architecture decisions'"),
+    limit: z.number().min(1).max(20).default(8).describe("Maximum number of source memories to include in the brief (default: 8)"),
+    scope: z.string().optional().describe("Restrict search to a specific scope, e.g. 'project:myapp'. Omit to use the default scope"),
+    sessionId: z.string().min(1).max(160).optional().describe("Session identifier to infer session-scoped search, e.g. 'abc123'"),
+    allScopes: z.boolean().default(false).describe("Set to true to search across all scopes instead of the default scope"),
+    profile: z.enum(["default", "writing", "debug", "fact-check"]).optional().describe("Retrieval profile that tunes ranking weights: 'writing' for narrative, 'debug' for technical, 'fact-check' for high-precision"),
+    title: z.string().optional().describe("Human-readable title for the brief asset, e.g. 'Q1 Auth Migration Summary'. Auto-generated if omitted"),
   },
   async ({ query, limit, scope, sessionId, allScopes, profile: profileName, title }) => {
     const { retriever, profile, store, embedder } = getComponents(profileName || "writing");
