@@ -1,0 +1,11 @@
+node_modules/
+data/*
+!data/alias-map.example.json
+logs/
+.env
+.git/
+*.md
+src/__tests__/
+eval/
+integrations/
+scripts/
