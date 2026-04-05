@@ -54,6 +54,7 @@ import type { LLMClient } from "./llm-client.js";
 import type { KGExtractor } from "./kg-extractor.js";
 import { scanForPII } from "./pii-detector.js";
 import type { AuditLogger } from "./audit-log.js";
+import { checkAdmission, type ScopeRateLimiter, type AdmissionConfig } from "./admission-control.js";
 
 type StoreDeps = Pick<MemoryStore, "store"> & Partial<Pick<MemoryStore, "list" | "update" | "getById" | "get" | "vectorSearch">>;
 type ConflictStoreDeps = Pick<ConflictCandidateStore, "save" | "replace" | "getOpenByFingerprint" | "getLatestByFingerprint">;
@@ -68,6 +69,10 @@ interface PersistMemoryDeps {
   kgExtractor?: KGExtractor | null;
   /** F-1: Optional audit logger for recording store operations */
   auditLogger?: AuditLogger | null;
+  /** LME-8: Optional rate limiter for admission control */
+  rateLimiter?: ScopeRateLimiter | null;
+  /** LME-8: Optional admission config overrides */
+  admissionConfig?: Partial<AdmissionConfig>;
 }
 
 interface DurableWriteInput {
@@ -747,6 +752,30 @@ export async function persistMemory(
     } catch {
       // LLM importance assessment must never block memory writes
     }
+  }
+
+  // LME-8: Admission control — reject low-quality writes before expensive embedding
+  const admissionScope = input.scope || "unknown";
+  const admission = checkAdmission(
+    input.text,
+    input.importance,
+    admissionScope,
+    deps.rateLimiter ?? undefined,
+    deps.admissionConfig,
+  );
+  if (admission.verdict === "rejected") {
+    return {
+      id: `rejected-${Date.now()}`,
+      text: input.text,
+      category: input.category,
+      importance: input.importance,
+      scope: admissionScope,
+      source: input.source,
+      tags: input.tags ?? [],
+      resolvedScope: admissionScope,
+      storedAt: new Date().toISOString(),
+      disposition: "rejected" as const,
+    };
   }
 
   const vector = await deps.embedder.embedPassage(input.text);

@@ -29,7 +29,7 @@ export const STORE_MEMORY_SOURCES = ["manual", "agent", "api"] as const;
 export const DurableMemoryCategorySchema = z.enum(DURABLE_MEMORY_CATEGORIES);
 export const MemoryCategorySchema = z.enum(ALL_MEMORY_CATEGORIES);
 export const StoreMemorySourceSchema = z.enum(STORE_MEMORY_SOURCES);
-export const WriteDispositionSchema = z.enum(["stored", "updated", "deduped", "promoted", "conflict"]);
+export const WriteDispositionSchema = z.enum(["stored", "updated", "deduped", "promoted", "conflict", "rejected"]);
 
 export type DurableMemoryCategory = z.infer<typeof DurableMemoryCategorySchema>;
 export type MemoryCategoryValue = z.infer<typeof MemoryCategorySchema>;
