@@ -42,6 +42,7 @@ import { buildConflictCandidateRecord, buildConflictFingerprint, reopenConflictC
 import type { ConflictCandidateStore } from "./conflict-store.js";
 import {
   inferPreferenceSlot,
+  inferImplicitUsageSlot,
   samePreferenceSlot,
   type AtomicBrandItemPreferenceSlot,
   type PreferenceSlot,
@@ -915,6 +916,38 @@ export async function persistMemory(
         }
       })
       .catch(() => {}); // Must never block
+  }
+
+  // LME-1: Implicit preference dual-write — when a non-preference memory
+  // contains an implicit usage signal ("I use X", "I have X", etc.),
+  // store an additional preferences copy so it can be recalled via the
+  // low-threshold preference retrieval path (hardMinScore 0.25 vs 0.35).
+  // Async & non-blocking: the primary write is already done.
+  if (
+    disposition !== "deduped" &&
+    input.category !== "preferences" &&
+    inferImplicitUsageSlot(input.text)
+  ) {
+    const prefCanonicalKey = buildDefaultCanonicalKey("preferences", input.text);
+    const prefSlot = inferImplicitUsageSlot(input.text);
+    const prefMetadata = buildStructuredMetadata({
+      source: input.source,
+      tags: [...(input.tags ?? []), "derived-preference", `derived-from:${entry.id}`],
+      capture: "implicit_preference_dual_write_v1",
+      category: "preferences",
+      canonicalKey: prefCanonicalKey,
+      extra: prefSlot ? { preferenceSlot: prefSlot } : undefined,
+    });
+    writeDurableEntry(deps, {
+      text: input.text,
+      vector,
+      category: "preferences",
+      scope: resolvedScope,
+      importance: Math.min(input.importance, 0.5),
+      metadata: prefMetadata,
+      canonicalKey: prefCanonicalKey,
+      source: input.source,
+    }).catch(() => {}); // Dual-write must never block the primary write
   }
 
   return toStoredRecord(input, entry, disposition, canonicalKey, conflictId);
