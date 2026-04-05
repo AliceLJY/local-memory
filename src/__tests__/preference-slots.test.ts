@@ -6,6 +6,7 @@ import {
   parseBrandItemPreference,
   inferReplyStylePreferenceSlot,
   inferToolChoicePreferenceSlot,
+  inferImplicitUsageSlot,
   samePreferenceSlot,
 } from "../preference-slots.js";
 
@@ -102,5 +103,103 @@ describe("preference slots", () => {
       preferredTool: "rg",
       avoidedTool: "grep",
     });
+  });
+
+  it("detects implicit usage preferences from 'I use X' patterns", () => {
+    expect(inferImplicitUsageSlot("I use Adobe Premiere Pro for video editing.")).toEqual({
+      type: "implicit-usage",
+      subject: "adobepremierepro",
+    });
+
+    expect(inferImplicitUsageSlot("User uses Python for data analysis.")).toEqual({
+      type: "implicit-usage",
+      subject: "python",
+    });
+
+    expect(inferImplicitUsageSlot("I have been using VS Code.")).toEqual({
+      type: "implicit-usage",
+      subject: "vscode",
+    });
+  });
+
+  it("detects implicit ownership preferences from 'I have X' patterns", () => {
+    expect(inferImplicitUsageSlot("I have a Sony A7III camera")).toEqual({
+      type: "implicit-usage",
+      subject: "sonya7iii",
+    });
+
+    expect(inferImplicitUsageSlot("User bought a Canon EOS R5 camera")).toEqual({
+      type: "implicit-usage",
+      subject: "canoneosr5",
+    });
+  });
+
+  it("detects implicit activity preferences from 'I enjoy X' patterns", () => {
+    expect(inferImplicitUsageSlot("I enjoy hiking.")).toEqual({
+      type: "implicit-usage",
+      subject: "hiking",
+    });
+
+    expect(inferImplicitUsageSlot("User loves ocean views.")).toEqual({
+      type: "implicit-usage",
+      subject: "oceanviews",
+    });
+
+    expect(inferImplicitUsageSlot("I really like photography.")).toEqual({
+      type: "implicit-usage",
+      subject: "photography",
+    });
+  });
+
+  it("detects implicit interest preferences from 'I'm learning X' patterns", () => {
+    expect(inferImplicitUsageSlot("I'm learning Spanish.")).toEqual({
+      type: "implicit-usage",
+      subject: "spanish",
+    });
+
+    expect(inferImplicitUsageSlot("User is interested in machine learning.")).toEqual({
+      type: "implicit-usage",
+      subject: "machinelearning",
+    });
+  });
+
+  it("detects Chinese implicit usage preferences", () => {
+    expect(inferImplicitUsageSlot("我在用Figma做设计。")).toEqual({
+      type: "implicit-usage",
+      subject: "figma",
+    });
+
+    expect(inferImplicitUsageSlot("我在学西班牙语。")).toEqual({
+      type: "implicit-usage",
+      subject: "西班牙语",
+    });
+  });
+
+  it("rejects short/empty implicit usage subjects", () => {
+    // "I use it" → subject "it" normalizes to 2 chars — at threshold
+    expect(inferImplicitUsageSlot("I use a.")).toBeNull();
+  });
+
+  it("explicit patterns take priority over implicit in inferPreferenceSlot", () => {
+    // "I like Big Mac from McDonald's" → brand-item, not implicit-usage
+    expect(inferPreferenceSlot("I like Big Mac from McDonald's")?.type).toBe("brand-item");
+
+    // "Uses Bun over Node." → tool-choice, not implicit-usage
+    expect(inferPreferenceSlot("Uses Bun over Node.")?.type).toBe("tool-choice");
+
+    // "I use Adobe Premiere Pro for video editing." → implicit-usage (no explicit pattern matches)
+    expect(inferPreferenceSlot("I use Adobe Premiere Pro for video editing.")?.type).toBe("implicit-usage");
+  });
+
+  it("compares implicit-usage slots by normalized subject", () => {
+    expect(samePreferenceSlot(
+      inferImplicitUsageSlot("I use Adobe Premiere Pro."),
+      inferImplicitUsageSlot("User uses Adobe Premiere Pro for editing."),
+    )).toBe(true);
+
+    expect(samePreferenceSlot(
+      inferImplicitUsageSlot("I use Premiere Pro."),
+      inferImplicitUsageSlot("I use DaVinci Resolve."),
+    )).toBe(false);
   });
 });

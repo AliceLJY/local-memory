@@ -105,6 +105,20 @@ export interface RetrievalConfig {
   rifThreshold?: number;
   /** RIF score ratio: demote if score < ratio * stronger result's score (default: 0.80). */
   rifScoreRatio?: number;
+  /**
+   * Source diversity: ensure top-k results span multiple scopes/sessions.
+   * When > 0 and candidates come from >= 3 distinct scopes, applies round-robin
+   * selection (one per scope first, then fill remaining slots by score).
+   * 0 = disabled (default). Recommended: 0.5 (moderate diversity).
+   */
+  sourceDiversity?: number;
+  /**
+   * Adaptive candidate pool multiplier for aggregation queries.
+   * When a query contains counting/listing signals ("how many", "all the", etc.),
+   * candidatePoolSize is multiplied by this factor.
+   * 1 = disabled (default). Recommended: 1.5.
+   */
+  adaptivePoolMultiplier?: number;
 }
 
 export interface RetrievalContext {
@@ -214,6 +228,74 @@ function applyAnchorBoost(results: RetrievalResult[], query: string): RetrievalR
     const boost = 1 + overlap * ANCHOR_BOOST_MAX;
     return { ...r, score: r.score * boost };
   });
+}
+
+// ============================================================================
+// Source Diversity — round-robin across scopes for multi-session coverage
+// ============================================================================
+
+/** Minimum distinct sources to activate diversity logic. */
+const SOURCE_DIVERSITY_MIN_SOURCES = 3;
+
+/**
+ * Ensures top-k results span multiple scopes/sessions via round-robin.
+ * Each distinct source gets its top-1 result first, remaining slots fill by score.
+ */
+function applySourceDiversity(results: RetrievalResult[], limit: number): RetrievalResult[] {
+  if (results.length <= limit) return results;
+
+  // Group by scope
+  const byScope = new Map<string, RetrievalResult[]>();
+  for (const r of results) {
+    const key = r.entry.scope || "__default__";
+    const bucket = byScope.get(key);
+    if (bucket) bucket.push(r);
+    else byScope.set(key, [r]);
+  }
+
+  if (byScope.size < SOURCE_DIVERSITY_MIN_SOURCES) {
+    return results.slice(0, limit);
+  }
+
+  // Round-robin: each scope contributes its top-1
+  const selected: RetrievalResult[] = [];
+  const usedIds = new Set<string>();
+
+  // Sort scopes by their best result score (highest first)
+  const scopeEntries = [...byScope.entries()].sort(
+    (a, b) => (b[1][0]?.score ?? 0) - (a[1][0]?.score ?? 0),
+  );
+
+  for (const [, items] of scopeEntries) {
+    if (selected.length >= limit) break;
+    const top = items[0];
+    if (top && !usedIds.has(top.entry.id)) {
+      selected.push(top);
+      usedIds.add(top.entry.id);
+    }
+  }
+
+  // Fill remaining slots by global score
+  for (const r of results) {
+    if (selected.length >= limit) break;
+    if (!usedIds.has(r.entry.id)) {
+      selected.push(r);
+      usedIds.add(r.entry.id);
+    }
+  }
+
+  return selected;
+}
+
+// ============================================================================
+// Adaptive Candidate Pool — detect aggregation queries
+// ============================================================================
+
+const AGGREGATION_EN_RE = /\b(?:how many|how much|all the|every|list all|total number|count)\b/i;
+const AGGREGATION_CN_RE = /(?:多少[个件条只]?|一共|总共|所有的?|列举|有几[个件条只])/u;
+
+function isAggregationQuery(query: string): boolean {
+  return AGGREGATION_EN_RE.test(query) || AGGREGATION_CN_RE.test(query);
 }
 
 function parseMetadata(raw?: string): Record<string, unknown> {
@@ -629,8 +711,13 @@ export class MemoryRetriever {
     // LC-P2: Cluster insight dedup — prefer cluster summary over individual source memories
     const clusterDeduped = deduplicateByClusterInsight(versionDeduped);
 
-    trace?.startStage("final_limit", clusterDeduped.length);
-    const final = clusterDeduped.slice(0, limit);
+    // Source diversity: round-robin across scopes for multi-session coverage
+    const diversified = (this.config.sourceDiversity ?? 0) > 0
+      ? applySourceDiversity(clusterDeduped, limit)
+      : clusterDeduped;
+
+    trace?.startStage("final_limit", diversified.length);
+    const final = diversified.slice(0, limit);
     trace?.endStage(final.length, final.map(r => r.score));
 
     return final;
@@ -645,7 +732,14 @@ export class MemoryRetriever {
     trace?: TraceCollector,
     graph?: boolean,
   ): Promise<RetrievalResult[]> {
-    const candidatePoolSize = Math.max(this.config.candidatePoolSize, limit * 2);
+    // Adaptive pool: widen candidate pool for aggregation queries ("how many", "all the")
+    const multiplier = (this.config.adaptivePoolMultiplier ?? 1) > 1 && isAggregationQuery(query)
+      ? (this.config.adaptivePoolMultiplier ?? 1)
+      : 1;
+    const candidatePoolSize = Math.max(
+      Math.ceil(this.config.candidatePoolSize * multiplier),
+      limit * 2,
+    );
 
     // Temporal reasoning: extract time constraint and clean query for semantic search
     const temporal = parseTemporalQuery(query);
@@ -795,8 +889,13 @@ export class MemoryRetriever {
     // LC-P2: Cluster insight dedup — prefer cluster summary over individual source memories
     const clusterDeduped = deduplicateByClusterInsight(versionDeduped);
 
-    trace?.startStage("final_limit", clusterDeduped.length);
-    const final = clusterDeduped.slice(0, limit);
+    // Source diversity: round-robin across scopes for multi-session coverage
+    const diversified = (this.config.sourceDiversity ?? 0) > 0
+      ? applySourceDiversity(clusterDeduped, limit)
+      : clusterDeduped;
+
+    trace?.startStage("final_limit", diversified.length);
+    const final = diversified.slice(0, limit);
     trace?.endStage(final.length, final.map(r => r.score));
 
     return final;

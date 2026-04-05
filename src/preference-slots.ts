@@ -92,10 +92,17 @@ export interface ToolChoicePreferenceSlot {
   avoidedTool: string;
 }
 
+export interface ImplicitUsagePreferenceSlot {
+  type: "implicit-usage";
+  /** Normalized subject: the tool, product, or activity mentioned */
+  subject: string;
+}
+
 export type PreferenceSlot =
   | AtomicBrandItemPreferenceSlot
   | ReplyStylePreferenceSlot
-  | ToolChoicePreferenceSlot;
+  | ToolChoicePreferenceSlot
+  | ImplicitUsagePreferenceSlot;
 
 function normalizePreferenceText(value: string): string {
   return value
@@ -227,10 +234,62 @@ export function inferToolChoicePreferenceSlot(text: string): ToolChoicePreferenc
   return null;
 }
 
+// ---------------------------------------------------------------------------
+// Implicit usage preference detection
+// Captures "I use X", "I have a X", "I enjoy X", "I'm learning X" etc.
+// These are indirect signals — user never says "I prefer X" explicitly.
+// ---------------------------------------------------------------------------
+
+const IMPLICIT_USAGE_EN_PATTERNS: RegExp[] = [
+  // "I/User use(s)/using X for..." or at end of sentence
+  /\b(?:i|user)\s+(?:use[sd]?|using|am\s+using|have\s+been\s+using|work[s]?\s+with)\s+(?<subject>[A-Za-z][A-Za-z0-9\s.+#\-']{1,40}?)\s*(?=\s+(?:for|to|in|at|on|as|which|because|since)\b|[,.:;!?]|$)/i,
+  // "I/User have/own a X (camera|phone|...)" or at end
+  /\b(?:i|user)\s+(?:have|has|own[s]?|bought|got)\s+(?:a |an |the )?(?<subject>[A-Za-z][A-Za-z0-9\s.+#\-']{1,40}?)\s*(?=\s+(?:camera|phone|laptop|computer|tablet|watch|car|bike|guitar|piano|keyboard|headphones|monitor|setup|kit|device)\b|[,.:;!?]|$)/i,
+  // "I/User enjoy(s)/love(s) (to use) X" (no "from" — avoids brand-item overlap)
+  /\b(?:i|user)\s+(?:enjoy[s]?|love[s]?|really\s+like[s]?)\s+(?:to\s+(?:use\s+)?)?(?<subject>[A-Za-z][A-Za-z0-9\s.+#\-']{1,40}?)\s*(?=[,.:;!?]|$)/i,
+  // "I'm learning/studying X"
+  /\b(?:i'm|i\s+am|user\s+is)\s+(?:learning|studying|interested\s+in|passionate\s+about)\s+(?<subject>[A-Za-z][A-Za-z0-9\s.+#\-']{1,40}?)\s*(?=[,.:;!?]|$)/i,
+];
+
+const IMPLICIT_USAGE_CN_PATTERNS: RegExp[] = [
+  // "我用/在用 X" (lookahead stops at verb complements or punctuation; no \b for CJK)
+  /(?:我|用户)(?:在)?(?:用|使用)\s*(?<subject>[\p{Script=Han}A-Za-z0-9][\p{Script=Han}A-Za-z0-9\s.+#\-]{0,30}?)(?=\s*(?:来|做|进行|处理|开发|编辑)|[，。！？,.:;!?]|$)/u,
+  // "我有/买了 X"
+  /(?:我|用户)(?:有|买了|入了)\s*(?:一[个台部套])?(?<subject>[\p{Script=Han}A-Za-z0-9][\p{Script=Han}A-Za-z0-9\s.+#\-]{0,30}?)(?=[，。！？,.:;!?]|$)/u,
+  // "我喜欢做 X" / "我爱 X" (activity, not brand-item — no "的" connector)
+  /(?:我|用户)(?:很)?(?:喜欢|爱|享受)\s*(?:做|玩|学|用)\s*(?<subject>[\p{Script=Han}A-Za-z0-9][\p{Script=Han}A-Za-z0-9\s.+#\-]{0,30}?)(?=[，。！？,.:;!?]|$)/u,
+  // "我在学/研究 X"
+  /(?:我|用户)(?:在学|正在学|在研究)\s*(?<subject>[\p{Script=Han}A-Za-z0-9][\p{Script=Han}A-Za-z0-9\s.+#\-]{0,30}?)(?=[，。！？,.:;!?]|$)/u,
+];
+
+/** Minimum normalized subject length to avoid false positives like "I use it" */
+const IMPLICIT_USAGE_MIN_SUBJECT_LEN = 2;
+
+export function inferImplicitUsageSlot(text: string): ImplicitUsagePreferenceSlot | null {
+  const normalizedText = normalizePreferenceText(text);
+
+  for (const pattern of [...IMPLICIT_USAGE_EN_PATTERNS, ...IMPLICIT_USAGE_CN_PATTERNS]) {
+    const match = normalizedText.match(pattern);
+    if (!match?.groups?.subject) continue;
+
+    const subject = normalizePreferenceToken(match.groups.subject);
+    if (subject.length < IMPLICIT_USAGE_MIN_SUBJECT_LEN) continue;
+
+    return {
+      type: "implicit-usage",
+      subject,
+    };
+  }
+
+  return null;
+}
+
 export function inferPreferenceSlot(text: string): PreferenceSlot | null {
+  // Explicit patterns take priority over implicit detection
   return inferAtomicBrandItemPreferenceSlot(text)
     || inferReplyStylePreferenceSlot(text)
-    || inferToolChoicePreferenceSlot(text);
+    || inferToolChoicePreferenceSlot(text)
+    || inferImplicitUsageSlot(text);
 }
 
 export function samePreferenceSlot(
@@ -253,6 +312,10 @@ export function samePreferenceSlot(
   if (left.type === "tool-choice" && right.type === "tool-choice") {
     return left.preferredTool === right.preferredTool &&
       left.avoidedTool === right.avoidedTool;
+  }
+
+  if (left.type === "implicit-usage" && right.type === "implicit-usage") {
+    return left.subject === right.subject;
   }
 
   return false;
