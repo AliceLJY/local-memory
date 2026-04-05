@@ -119,6 +119,17 @@ export interface RetrievalConfig {
    * 1 = disabled (default). Recommended: 1.5.
    */
   adaptivePoolMultiplier?: number;
+  /**
+   * Enable multi-hop retrieval: after first-pass results, extract entities
+   * and run focused follow-up queries to improve cross-session coverage.
+   * Costs 1-3 extra embedding calls per retrieve. Default: false.
+   */
+  multiHop?: boolean;
+  /**
+   * Maximum number of entity-focused follow-up queries in multi-hop mode.
+   * Default: 3.
+   */
+  multiHopMaxQueries?: number;
 }
 
 export interface RetrievalContext {
@@ -136,6 +147,8 @@ export interface RetrievalContext {
   trace?: TraceCollector;
   /** Enable KG graph traversal (PPR) as an additional retrieval signal. */
   graph?: boolean;
+  /** Override config-level multiHop for this single retrieval call. */
+  multiHop?: boolean;
 }
 
 export interface RetrievalResult extends MemorySearchResult {
@@ -296,6 +309,58 @@ const AGGREGATION_CN_RE = /(?:多少[个件条只]?|一共|总共|所有的?|列
 
 function isAggregationQuery(query: string): boolean {
   return AGGREGATION_EN_RE.test(query) || AGGREGATION_CN_RE.test(query);
+}
+
+// ============================================================================
+// Multi-hop Entity Extraction — extract entities from retrieval results
+// ============================================================================
+
+const MULTI_HOP_STOP_WORDS = new Set([
+  "the", "a", "an", "is", "are", "was", "were", "be", "been",
+  "have", "has", "had", "will", "would", "can", "could", "should",
+  "do", "does", "did", "not", "no", "but", "and", "or", "if",
+  "this", "that", "these", "those", "it", "its", "user", "assistant",
+  "my", "your", "his", "her", "our", "their", "i", "you", "he", "she",
+  "we", "they", "me", "him", "us", "them", "who", "what", "where",
+  "when", "how", "why", "which", "about", "with", "from", "for",
+  "into", "also", "just", "very", "some", "more", "most", "other",
+]);
+
+const COMMON_CJK_STOP = /^(用户|助手|可以|需要|已经|没有|什么|这个|那个|因为|所以|但是|如果)$/;
+
+/**
+ * Extract salient entities from retrieval result texts.
+ * Focuses on proper nouns and CJK named entities.
+ * Returns unique entities sorted by frequency (most common first).
+ */
+function extractEntitiesFromResults(results: RetrievalResult[]): string[] {
+  const freq = new Map<string, number>();
+
+  for (const r of results) {
+    const text = r.entry.text;
+
+    // Capitalized multi-word entities: "Adobe Premiere Pro", "Sony A7III"
+    const capPattern = /\b([A-Z][a-zA-Z0-9]*(?:[\s\-][A-Z][a-zA-Z0-9]*)*)\b/g;
+    let match: RegExpExecArray | null;
+    while ((match = capPattern.exec(text)) !== null) {
+      const entity = match[1].trim();
+      if (entity.length < 2 || MULTI_HOP_STOP_WORDS.has(entity.toLowerCase())) continue;
+      freq.set(entity, (freq.get(entity) ?? 0) + 1);
+    }
+
+    // CJK named entities: sequences of 2-8 CJK chars (simple heuristic)
+    const cjkPattern = /([\p{Script=Han}]{2,8})/gu;
+    while ((match = cjkPattern.exec(text)) !== null) {
+      const entity = match[1];
+      if (COMMON_CJK_STOP.test(entity)) continue;
+      freq.set(entity, (freq.get(entity) ?? 0) + 1);
+    }
+  }
+
+  // Sort by frequency descending, then by length descending (prefer specific entities)
+  return [...freq.entries()]
+    .sort((a, b) => b[1] - a[1] || b[0].length - a[0].length)
+    .map(([entity]) => entity);
 }
 
 function parseMetadata(raw?: string): Record<string, unknown> {
@@ -543,6 +608,13 @@ export class MemoryRetriever {
       results = await this.hybridRetrieval(query, safeLimit, scopeFilter, category, includeArchived, trace, graph);
     }
 
+    // LME-2: Multi-hop retrieval — extract entities from first-pass results,
+    // run focused follow-up queries, merge to improve cross-session coverage.
+    const useMultiHop = context.multiHop ?? this.config.multiHop ?? false;
+    if (useMultiHop && results.length > 0) {
+      results = await this.multiHopExpand(results, context);
+    }
+
     // Record access for returned results (async, non-blocking).
     // Only reinforce on manual retrieval — auto-recall must not strengthen noise.
     // Tier 3.2: pass similarity scores for novelty gating — only novel retrievals
@@ -584,6 +656,61 @@ export class MemoryRetriever {
     }
 
     return results;
+  }
+
+  /**
+   * LME-2: Multi-hop expansion — extract entities from first-pass results,
+   * run entity-focused follow-up queries, merge with original results.
+   * Improves cross-session coverage for aggregation/counting queries.
+   */
+  private async multiHopExpand(
+    firstPass: RetrievalResult[],
+    context: RetrievalContext,
+  ): Promise<RetrievalResult[]> {
+    const maxQueries = this.config.multiHopMaxQueries ?? 3;
+    const entities = extractEntitiesFromResults(firstPass);
+    if (entities.length === 0) return firstPass;
+
+    // Pick top entities that aren't already well-covered in the query
+    const queryLower = context.query.toLowerCase();
+    const novelEntities = entities
+      .filter(e => !queryLower.includes(e.toLowerCase()))
+      .slice(0, maxQueries);
+
+    if (novelEntities.length === 0) return firstPass;
+
+    // Run follow-up queries in parallel (entity + original query context)
+    const followUpPromises = novelEntities.map(entity =>
+      this.hybridRetrieval(
+        `${entity} ${context.query}`,
+        context.limit,
+        context.scopeFilter,
+        context.category,
+        context.includeArchived,
+        undefined, // no trace for follow-up
+        context.graph,
+      ).catch(() => [] as RetrievalResult[]),
+    );
+    const followUpResults = await Promise.all(followUpPromises);
+
+    // Merge: deduplicate by memory ID, keep highest score
+    const merged = new Map<string, RetrievalResult>();
+    for (const r of firstPass) {
+      merged.set(r.entry.id, r);
+    }
+    for (const batch of followUpResults) {
+      for (const r of batch) {
+        const existing = merged.get(r.entry.id);
+        if (!existing || r.score > existing.score) {
+          merged.set(r.entry.id, r);
+        }
+      }
+    }
+
+    // Sort by score descending, limit
+    return [...merged.values()]
+      .sort((a, b) => b.score - a.score)
+      .slice(0, context.limit);
   }
 
   private async vectorOnlyRetrieval(
