@@ -14,6 +14,88 @@
  */
 
 import OpenAI from "openai";
+import { logInfo } from "./stderr-log.js";
+
+// ============================================================================
+// LME-9: Circuit Breaker — LLM 降级策略
+// ============================================================================
+
+type CircuitState = "closed" | "open" | "half-open";
+
+export interface CircuitBreakerConfig {
+  /** Consecutive failures before opening the circuit (default: 3) */
+  failureThreshold: number;
+  /** Cooldown in ms before trying again (default: 30_000 = 30s) */
+  cooldownMs: number;
+}
+
+const DEFAULT_BREAKER_CONFIG: CircuitBreakerConfig = {
+  failureThreshold: 3,
+  cooldownMs: 30_000,
+};
+
+export class CircuitBreaker {
+  private state: CircuitState = "closed";
+  private consecutiveFailures = 0;
+  private openedAt = 0;
+  private readonly config: CircuitBreakerConfig;
+
+  constructor(config?: Partial<CircuitBreakerConfig>) {
+    this.config = { ...DEFAULT_BREAKER_CONFIG, ...config };
+  }
+
+  /** Check if a call should be allowed through. */
+  canAttempt(): boolean {
+    if (this.state === "closed") return true;
+    if (this.state === "open") {
+      // Check if cooldown has elapsed → transition to half-open
+      if (Date.now() - this.openedAt >= this.config.cooldownMs) {
+        this.state = "half-open";
+        logInfo("[circuit-breaker] transitioning to half-open, allowing probe");
+        return true;
+      }
+      return false;
+    }
+    // half-open: allow one probe
+    return true;
+  }
+
+  /** Record a successful call. */
+  recordSuccess(): void {
+    if (this.state !== "closed") {
+      logInfo("[circuit-breaker] probe succeeded, circuit closed");
+    }
+    this.consecutiveFailures = 0;
+    this.state = "closed";
+  }
+
+  /** Record a failed call. */
+  recordFailure(): void {
+    this.consecutiveFailures++;
+    if (this.state === "half-open") {
+      // Probe failed → reopen
+      this.state = "open";
+      this.openedAt = Date.now();
+      logInfo("[circuit-breaker] probe failed, circuit re-opened");
+      return;
+    }
+    if (this.consecutiveFailures >= this.config.failureThreshold) {
+      this.state = "open";
+      this.openedAt = Date.now();
+      logInfo(`[circuit-breaker] ${this.consecutiveFailures} consecutive failures, circuit opened`);
+    }
+  }
+
+  /** Current circuit state (for testing/diagnostics). */
+  getState(): CircuitState {
+    return this.state;
+  }
+
+  /** Current failure count (for testing/diagnostics). */
+  getFailureCount(): number {
+    return this.consecutiveFailures;
+  }
+}
 
 // ============================================================================
 // Types
@@ -96,8 +178,10 @@ export class LLMClient {
   private model: string;
   private temperature: number;
   private timeoutMs: number;
+  /** LME-9: Circuit breaker for graceful LLM degradation */
+  readonly breaker: CircuitBreaker;
 
-  constructor(config: LLMConfig) {
+  constructor(config: LLMConfig, breakerConfig?: Partial<CircuitBreakerConfig>) {
     const apiKey = resolveEnvVars(config.apiKey);
     this.client = new OpenAI({
       apiKey,
@@ -106,6 +190,7 @@ export class LLMClient {
     this.model = config.model;
     this.temperature = config.temperature ?? 0.1;
     this.timeoutMs = config.timeoutMs ?? 15000;
+    this.breaker = new CircuitBreaker(breakerConfig);
   }
 
   /**
@@ -599,6 +684,11 @@ export class LLMClient {
   // --------------------------------------------------------------------------
 
   private async chat(system: string, user: string): Promise<string | null> {
+    // LME-9: Circuit breaker — short-circuit when LLM is down
+    if (!this.breaker.canAttempt()) {
+      return null;
+    }
+
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
 
@@ -616,7 +706,12 @@ export class LLMClient {
         { signal: controller.signal },
       );
 
-      return response.choices[0]?.message?.content?.trim() || null;
+      const result = response.choices[0]?.message?.content?.trim() || null;
+      this.breaker.recordSuccess();
+      return result;
+    } catch (err) {
+      this.breaker.recordFailure();
+      throw err;
     } finally {
       clearTimeout(timeout);
     }
