@@ -1,6 +1,7 @@
 import { composeResumeContext, type ResumeContextDeps } from "./context-composer.js";
 import { resolveTier } from "./decay-engine.js";
 import type { DurableMemoryCategory } from "./memory-schema.js";
+import { governResults, truncateQuery, type GovernorConfig, type GovernorSession } from "./recall-governor.js";
 import type { RetrievalResult } from "./retriever.js";
 import { buildRetrievalContext, resolveScopeSelection } from "./scope-policy.js";
 import type { RetrievalProfileName, ResumeContextResponse } from "./session-schema.js";
@@ -18,6 +19,10 @@ export interface AutoRecallRequest {
   profile?: RetrievalProfileName;
   env?: NodeJS.ProcessEnv;
   operation?: string;
+  /** Governor config overrides (charBudget, maxItems, maxQueryChars) */
+  governor?: Partial<GovernorConfig>;
+  /** Governor session for cross-call dedup within a single conversation turn */
+  governorSession?: GovernorSession;
 }
 
 export interface AutoRecallResponse {
@@ -32,8 +37,10 @@ export async function runAutoRecall(
   deps: ResumeContextDeps,
   request: AutoRecallRequest,
 ): Promise<AutoRecallResponse> {
-  const message = request.message.replace(/\s+/g, " ").trim();
-  const task = (request.task || message).replace(/\s+/g, " ").trim();
+  const govCfg = request.governor;
+  const maxQ = govCfg?.maxQueryChars ?? 1000;
+  const message = truncateQuery(request.message.replace(/\s+/g, " ").trim(), maxQ);
+  const task = truncateQuery((request.task || message).replace(/\s+/g, " ").trim(), maxQ);
 
   if (!message) {
     throw new Error("message is required");
@@ -101,9 +108,12 @@ export async function runAutoRecall(
       demoted.push({ ...r, score: r.score * 0.85 });
     }
   }
-  const results = [...promoted, ...demoted]
+  const tierFiltered = [...promoted, ...demoted]
     .sort((a, b) => b.score - a.score)
     .slice(0, effectiveLimit);
+
+  // LME-7: Recall Governor — evolution filter, budget control, session dedup
+  const results = governResults(tierFiltered, request.governorSession, govCfg);
 
   return {
     mode: "resume+search",
