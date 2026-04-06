@@ -19,9 +19,13 @@
  *
  * Retrieval integration: confidence multiplies into the score pipeline
  * as `score *= (0.5 + 0.5 * confidence)` — same pattern as importance.
+ *
+ * Design: returns metadata patches instead of directly mutating the store.
+ * Callers apply patches via their own store.update() / patchMetadata().
+ * This keeps the module store-agnostic and easier to test.
  */
 
-import type { MemoryStore, MemoryEntry } from "./store.js";
+import type { MemoryEntry } from "./store.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -32,11 +36,39 @@ export const CONFIDENCE_CONFIRMED = 1.0;
 export const CONFIDENCE_CORRECTED = 0.3;
 export const CONFIDENCE_CONTRADICTED = 0.0;
 
+/** Max history entries to keep per memory (prevents unbounded growth). */
+const MAX_CONFIDENCE_HISTORY = 20;
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+export interface ConfidenceUpdate {
+  entryId: string;
+  oldConfidence: number;
+  newConfidence: number;
+}
+
+export interface ConfidencePatch {
+  /** The metadata object to merge/write back. */
+  metadata: Record<string, unknown>;
+  /** Summary of what changed. */
+  update: ConfidenceUpdate;
+}
+
+interface ConfidenceHistoryEntry {
+  action: "confirmed" | "corrected" | "contradicted";
+  from: number;
+  to: number;
+  date: string;
+  correctedBy?: string;
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-function parseMeta(entry: MemoryEntry): Record<string, any> {
+function parseMeta(entry: MemoryEntry): Record<string, unknown> {
   try { return JSON.parse(entry.metadata || "{}"); } catch { return {}; }
 }
 
@@ -48,56 +80,57 @@ export function getConfidence(entry: MemoryEntry): number {
   return typeof meta.confidence === "number" ? meta.confidence : CONFIDENCE_DEFAULT;
 }
 
-// ---------------------------------------------------------------------------
-// Core operations
-// ---------------------------------------------------------------------------
-
-export interface ConfidenceUpdate {
-  entryId: string;
-  oldConfidence: number;
-  newConfidence: number;
+function appendHistory(
+  meta: Record<string, unknown>,
+  entry: ConfidenceHistoryEntry,
+): void {
+  if (!Array.isArray(meta.confidence_history)) meta.confidence_history = [];
+  const history = meta.confidence_history as ConfidenceHistoryEntry[];
+  history.push(entry);
+  // Cap history length
+  if (history.length > MAX_CONFIDENCE_HISTORY) {
+    meta.confidence_history = history.slice(-MAX_CONFIDENCE_HISTORY);
+  }
 }
 
+// ---------------------------------------------------------------------------
+// Patch builders (store-agnostic — return patches, don't write)
+// ---------------------------------------------------------------------------
+
 /**
- * Mark a memory as confirmed (user validated it).
- * Bumps confidence to CONFIRMED (1.0).
+ * Build a patch to mark a memory as confirmed (user validated it).
+ * Returns null if entry is null (not found).
  */
-export async function confirmMemory(
-  store: MemoryStore,
-  entryId: string,
-  scope: string,
-): Promise<ConfidenceUpdate | null> {
-  const entry = await store.getById(entryId);
+export function buildConfirmPatch(
+  entry: MemoryEntry | null,
+): ConfidencePatch | null {
   if (!entry) return null;
 
   const meta = parseMeta(entry);
   const oldConfidence = typeof meta.confidence === "number" ? meta.confidence : CONFIDENCE_DEFAULT;
 
   meta.confidence = CONFIDENCE_CONFIRMED;
-  if (!Array.isArray(meta.confidence_history)) meta.confidence_history = [];
-  meta.confidence_history.push({
+  appendHistory(meta, {
     action: "confirmed",
     from: oldConfidence,
     to: CONFIDENCE_CONFIRMED,
     date: new Date().toISOString().slice(0, 10),
   });
 
-  await store.update(entryId, { metadata: JSON.stringify(meta) }, [scope]);
-
-  return { entryId, oldConfidence, newConfidence: CONFIDENCE_CONFIRMED };
+  return {
+    metadata: meta,
+    update: { entryId: entry.id, oldConfidence, newConfidence: CONFIDENCE_CONFIRMED },
+  };
 }
 
 /**
- * Mark a memory as corrected (user provided updated info).
- * Drops confidence to CORRECTED (0.3).
+ * Build a patch to mark a memory as corrected (user provided updated info).
+ * Returns null if entry is null (not found).
  */
-export async function correctMemory(
-  store: MemoryStore,
-  entryId: string,
-  scope: string,
+export function buildCorrectPatch(
+  entry: MemoryEntry | null,
   correctedById?: string,
-): Promise<ConfidenceUpdate | null> {
-  const entry = await store.getById(entryId);
+): ConfidencePatch | null {
   if (!entry) return null;
 
   const meta = parseMeta(entry);
@@ -105,8 +138,7 @@ export async function correctMemory(
 
   meta.confidence = CONFIDENCE_CORRECTED;
   if (correctedById) meta.corrected_by = correctedById;
-  if (!Array.isArray(meta.confidence_history)) meta.confidence_history = [];
-  meta.confidence_history.push({
+  appendHistory(meta, {
     action: "corrected",
     from: oldConfidence,
     to: CONFIDENCE_CORRECTED,
@@ -114,39 +146,91 @@ export async function correctMemory(
     date: new Date().toISOString().slice(0, 10),
   });
 
-  await store.update(entryId, { metadata: JSON.stringify(meta) }, [scope]);
-
-  return { entryId, oldConfidence, newConfidence: CONFIDENCE_CORRECTED };
+  return {
+    metadata: meta,
+    update: { entryId: entry.id, oldConfidence, newConfidence: CONFIDENCE_CORRECTED },
+  };
 }
 
 /**
- * Mark a memory as contradicted (explicitly wrong).
- * Drops confidence to CONTRADICTED (0.0).
+ * Build a patch to mark a memory as contradicted (explicitly wrong).
+ * Returns null if entry is null (not found).
  */
-export async function contradictMemory(
-  store: MemoryStore,
-  entryId: string,
-  scope: string,
-): Promise<ConfidenceUpdate | null> {
-  const entry = await store.getById(entryId);
+export function buildContradictPatch(
+  entry: MemoryEntry | null,
+): ConfidencePatch | null {
   if (!entry) return null;
 
   const meta = parseMeta(entry);
   const oldConfidence = typeof meta.confidence === "number" ? meta.confidence : CONFIDENCE_DEFAULT;
 
   meta.confidence = CONFIDENCE_CONTRADICTED;
-  if (!Array.isArray(meta.confidence_history)) meta.confidence_history = [];
-  meta.confidence_history.push({
+  appendHistory(meta, {
     action: "contradicted",
     from: oldConfidence,
     to: CONFIDENCE_CONTRADICTED,
     date: new Date().toISOString().slice(0, 10),
   });
 
-  await store.update(entryId, { metadata: JSON.stringify(meta) }, [scope]);
-
-  return { entryId, oldConfidence, newConfidence: CONFIDENCE_CONTRADICTED };
+  return {
+    metadata: meta,
+    update: { entryId: entry.id, oldConfidence, newConfidence: CONFIDENCE_CONTRADICTED },
+  };
 }
+
+// ---------------------------------------------------------------------------
+// Convenience wrappers (for callers who DO have a store)
+// ---------------------------------------------------------------------------
+
+/**
+ * Confirm a memory and write back to store. Convenience wrapper.
+ */
+export async function confirmMemory(
+  store: { getById(id: string): Promise<MemoryEntry | null>; update(id: string, data: { metadata: string }, scopes: string[]): Promise<void> },
+  entryId: string,
+  scope: string,
+): Promise<ConfidenceUpdate | null> {
+  const entry = await store.getById(entryId);
+  const patch = buildConfirmPatch(entry);
+  if (!patch) return null;
+  await store.update(entryId, { metadata: JSON.stringify(patch.metadata) }, [scope]);
+  return patch.update;
+}
+
+/**
+ * Correct a memory and write back to store. Convenience wrapper.
+ */
+export async function correctMemory(
+  store: { getById(id: string): Promise<MemoryEntry | null>; update(id: string, data: { metadata: string }, scopes: string[]): Promise<void> },
+  entryId: string,
+  scope: string,
+  correctedById?: string,
+): Promise<ConfidenceUpdate | null> {
+  const entry = await store.getById(entryId);
+  const patch = buildCorrectPatch(entry, correctedById);
+  if (!patch) return null;
+  await store.update(entryId, { metadata: JSON.stringify(patch.metadata) }, [scope]);
+  return patch.update;
+}
+
+/**
+ * Contradict a memory and write back to store. Convenience wrapper.
+ */
+export async function contradictMemory(
+  store: { getById(id: string): Promise<MemoryEntry | null>; update(id: string, data: { metadata: string }, scopes: string[]): Promise<void> },
+  entryId: string,
+  scope: string,
+): Promise<ConfidenceUpdate | null> {
+  const entry = await store.getById(entryId);
+  const patch = buildContradictPatch(entry);
+  if (!patch) return null;
+  await store.update(entryId, { metadata: JSON.stringify(patch.metadata) }, [scope]);
+  return patch.update;
+}
+
+// ---------------------------------------------------------------------------
+// Retrieval integration (unchanged — already store-agnostic)
+// ---------------------------------------------------------------------------
 
 /**
  * Apply confidence weighting to retrieval scores.

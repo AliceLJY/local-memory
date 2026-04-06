@@ -4,6 +4,9 @@ import {
   confirmMemory,
   correctMemory,
   contradictMemory,
+  buildConfirmPatch,
+  buildCorrectPatch,
+  buildContradictPatch,
   getConfidence,
   applyConfidenceWeight,
   CONFIDENCE_DEFAULT,
@@ -175,6 +178,56 @@ describe("confidence-tracker", () => {
       });
       const weighted = applyConfidenceWeight(0.8, entry);
       expect(weighted).toBeCloseTo(0.8 * 0.65, 2);
+    });
+  });
+
+  describe("patch builders (store-agnostic)", () => {
+    it("buildConfirmPatch returns metadata patch without touching store", () => {
+      const entry = makeEntry("e1", "test fact");
+      const patch = buildConfirmPatch(entry);
+      expect(patch).not.toBeNull();
+      expect(patch!.metadata.confidence).toBe(CONFIDENCE_CONFIRMED);
+      expect(patch!.update.entryId).toBe("e1");
+      expect(patch!.update.newConfidence).toBe(CONFIDENCE_CONFIRMED);
+      // Original entry metadata should NOT be mutated
+      expect(JSON.parse(entry.metadata!).confidence).toBeUndefined();
+    });
+
+    it("buildCorrectPatch includes correctedBy in history", () => {
+      const entry = makeEntry("e1", "old info");
+      const patch = buildCorrectPatch(entry, "new-id-123");
+      expect(patch).not.toBeNull();
+      expect(patch!.metadata.confidence).toBe(CONFIDENCE_CORRECTED);
+      expect(patch!.metadata.corrected_by).toBe("new-id-123");
+      const history = patch!.metadata.confidence_history as Array<{ correctedBy?: string }>;
+      expect(history[0].correctedBy).toBe("new-id-1"); // 8 chars
+    });
+
+    it("buildContradictPatch returns zero confidence", () => {
+      const entry = makeEntry("e1", "wrong");
+      const patch = buildContradictPatch(entry);
+      expect(patch!.metadata.confidence).toBe(CONFIDENCE_CONTRADICTED);
+    });
+
+    it("all patch builders return null for null entry", () => {
+      expect(buildConfirmPatch(null)).toBeNull();
+      expect(buildCorrectPatch(null)).toBeNull();
+      expect(buildContradictPatch(null)).toBeNull();
+    });
+
+    it("caps confidence history at 20 entries", () => {
+      const longHistory = Array.from({ length: 25 }, (_, i) => ({
+        action: "confirmed",
+        from: 0.5,
+        to: 1.0,
+        date: `2026-01-${String(i + 1).padStart(2, "0")}`,
+      }));
+      const entry = makeEntry("e1", "test", {
+        metadata: JSON.stringify({ confidence: 0.5, confidence_history: longHistory }),
+      });
+      const patch = buildConfirmPatch(entry);
+      const history = patch!.metadata.confidence_history as unknown[];
+      expect(history.length).toBeLessThanOrEqual(20);
     });
   });
 
