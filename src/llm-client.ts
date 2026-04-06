@@ -679,6 +679,40 @@ export class LLMClient {
     }
   }
 
+  /**
+   * Public raw chat — for callers that need custom max_tokens or raw text output.
+   * Uses circuit breaker and timeout like all other methods.
+   */
+  async chatRaw(system: string, user: string, maxTokens = 2000): Promise<string | null> {
+    if (!this.breaker.canAttempt()) return null;
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+
+    try {
+      const response = await this.client.chat.completions.create(
+        {
+          model: this.model,
+          messages: [
+            { role: "system", content: system },
+            { role: "user", content: user },
+          ],
+          temperature: this.temperature,
+          max_tokens: maxTokens,
+        },
+        { signal: controller.signal },
+      );
+      const result = response.choices[0]?.message?.content?.trim() || null;
+      this.breaker.recordSuccess();
+      return result;
+    } catch (err) {
+      this.breaker.recordFailure();
+      throw err;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
   // --------------------------------------------------------------------------
   // Internals
   // --------------------------------------------------------------------------

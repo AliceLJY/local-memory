@@ -54,6 +54,7 @@ const TOOL_TIERS: Record<string, ToolTier> = {
   export_memory: "advanced",
   store_skill: "advanced",
   retrieve_skill: "advanced",
+  distill_session: "advanced",
   scan_skill_promotions: "governance",
 
   // Governance (CLI-only, not in MCP by default)
@@ -1595,6 +1596,67 @@ registerTool(
       content: [{
         type: "text" as const,
         text: `Stored ${stored.length} memories (${counts.new} new, ${counts.deduped} deduped, ${counts.updated} updated)`,
+      }],
+    };
+  },
+);
+
+registerTool(
+  "distill_session",
+  "Distill a conversation session into structured knowledge and persist to long-term memory. Three layers: (1) microcompact clears old tool results at zero cost, (2) LLM summarizes into 9 dimensions, (3) extracts durable knowledge into RecallNest. Use when a session is ending or context is getting large. Side effect: persists extracted memories.",
+  {
+    messages: z.array(z.object({
+      role: z.enum(["user", "assistant", "system"]),
+      content: z.union([
+        z.string(),
+        z.array(z.object({
+          type: z.enum(["text", "tool_use", "tool_result"]),
+          name: z.string().optional(),
+          id: z.string().optional(),
+          input: z.record(z.unknown()).optional(),
+          content: z.string().optional(),
+          text: z.string().optional(),
+          tool_use_id: z.string().optional(),
+        })),
+      ]),
+    })).min(1).max(500).describe("Conversation messages to distill"),
+    scope: z.string().min(1).max(160).describe("Memory scope for persisted knowledge, e.g. 'project:recallnest'"),
+    preserveRecent: z.number().min(0).max(20).default(6).describe("Keep the N most recent messages verbatim (default: 6)"),
+    keepRecentTools: z.number().min(0).max(20).default(5).describe("Keep the N most recent tool results during microcompact (default: 5)"),
+    persist: z.boolean().default(true).describe("Whether to persist extracted knowledge to RecallNest (default: true)"),
+  },
+  async ({ messages, scope, preserveRecent, keepRecentTools, persist }) => {
+    const { store, embedder } = getComponents();
+    const { distillSession } = await import("./session-distiller.js");
+
+    const result = await distillSession(
+      { messages, scope, preserveRecent, keepRecentTools, persist },
+      {
+        llm: llmClient,
+        persistMemory: async (input) => {
+          const stored = await persistMemory({
+            store, embedder, conflictStore, kgExtractor,
+          }, input);
+          return { disposition: stored.disposition, id: stored.id };
+        },
+      },
+    );
+
+    const lines = [
+      `Microcompact: ${result.microcompact.toolsCleared} tool results cleared, ~${result.microcompact.tokensFreed} tokens freed`,
+    ];
+    if (result.summary) {
+      lines.push(`Summary: 9-dimension structured summary generated`);
+    }
+    if (result.persisted) {
+      const p = result.persisted;
+      lines.push(`Persisted: ${p.memoriesStored} stored, ${p.memoriesDeduped} deduped, ${p.memoriesConflicted} conflicted, ${p.memoriesRejected} rejected`);
+    }
+
+    return {
+      content: [{
+        type: "text" as const,
+        text: lines.join("\n"),
       }],
     };
   },
