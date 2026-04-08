@@ -24,35 +24,22 @@ A local-first memory system backed by LanceDB that turns scattered conversation 
 
 ## Why RecallNest?
 
-Most coding agents forget everything when you open a new window. Worse — your history is scattered across three different terminals with no shared memory.
+Coding agents forget everything between windows. Your context — project configs, debugging decisions, entity mappings — is scattered across Claude Code, Codex, and Gemini CLI with no shared memory.
 
-### Without RecallNest — every window starts from zero:
+RecallNest solves this: **a single LanceDB-backed memory layer that all three terminals read and write**. Context stored in one window is auto-recalled in another. Sessions checkpoint on exit and resume on start. Memory decays, evolves, and self-organizes — not just raw log storage.
 
-> **You (Claude Code):** "The Docker config lives at `/opt/app/config.json`, use port 4318."
->
-> *(switch to Codex)*
->
-> **You:** "The config is at... wait, let me find it again." 😤
->
-> *(next day, new Claude Code window)*
->
-> **You:** "We already fixed this exact bug last week! The solution was..."
->
-> **Agent:** "I don't have context about previous sessions." 🤷
+### Benchmark: LongMemEval (ICLR 2025)
 
-### With RecallNest — context carries over:
+Evaluated on 500 questions across 6 memory abilities ([methodology](https://arxiv.org/abs/2407.15168)):
 
-> **You (Claude Code):** "The Docker config lives at `/opt/app/config.json`, use port 4318."
->
-> *(switch to Codex — same memory layer)*
->
-> **Agent:** *(auto-recalls project entities)* "Using config at `/opt/app/config.json`, port 4318." ✅
->
-> *(next day, new window)*
->
-> **Agent:** *(resume_context fires)* "Continuing from yesterday — the Docker port conflict was resolved by..." ✅
+| | RecallNest | Vector-only baseline | Delta |
+|---|---|---|---|
+| Overall Accuracy | **29.6%** | 24.2% | **+5.4pp** |
+| User Facts | **64.3%** | 52.9% | +11.4pp |
+| Knowledge Update | **43.6%** | 42.3% | +1.3pp |
+| Abstention Rate | **55.6%** | 67.8% | **−12.2pp** |
 
-That's the difference: **one memory shared across terminals**, with context that survives window boundaries.
+Wins or ties in **all 6 categories**, with no regression. The hybrid retrieval pipeline (BM25 + vector + recency + RIF dedup) surfaces 12.2% more relevant context than vector-only search.
 
 ### Memory Dashboard
 
@@ -131,19 +118,6 @@ RecallNest is not just a vector search wrapper. Key design decisions:
 - **Vector Pre-filter + LLM Dedup** — 90% of dedup decisions use cheap cosine similarity (≥ 0.92); only borderline cases invoke LLM judgment, keeping costs low without sacrificing accuracy
 - **Category-Aware Merge Strategies** — `profile` and `preferences` use merge-on-conflict (latest wins); `events` and `cases` use append-only (history preserved). No one-size-fits-all
 - **Display Score vs Elimination Score** — retrieval uses a dual-track system: tier floor prevents core memories from ever dropping out, while decay boost lets fresh memories surface temporarily without permanently displacing stable ones
-
-### Benchmark: LongMemEval (ICLR 2025)
-
-Evaluated on 500 questions across 6 memory abilities ([methodology: LongMemEval, ICLR 2025](https://arxiv.org/abs/2407.15168)):
-
-| | RecallNest | Vector-only baseline | Delta |
-|---|---|---|---|
-| Overall Accuracy | **29.6%** | 24.2% | **+5.4pp** |
-| User Facts | **64.3%** | 52.9% | +11.4pp |
-| Knowledge Update | **43.6%** | 42.3% | +1.3pp |
-| Abstention Rate | **55.6%** | 67.8% | **−12.2pp** |
-
-Wins or ties in **all 6 categories**, with no regression. The hybrid retrieval pipeline (BM25 + vector + recency + RIF dedup) surfaces 12.2% more relevant context than vector-only search. Both systems are bottlenecked by the gpt-4o-mini reader — retrieval quality headroom is larger than what accuracy numbers show.
 
 ---
 
