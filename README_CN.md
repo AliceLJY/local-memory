@@ -474,7 +474,7 @@ RecallNest 最初从 [memory-lancedb-pro](https://github.com/CortexReach/memory-
 
 | 来源 | 贡献 |
 |------|------|
-| [claude-memory-pro](https://github.com/CortexReach/claude-memory-pro) by [@win4r](https://github.com/win4r) | 检索核心思路和实现基础 |
+| [memory-lancedb-pro](https://github.com/CortexReach/memory-lancedb-pro) by [@win4r](https://github.com/win4r) | Fork 基础 — 混合检索、衰减建模、记忆工程化架构 |
 | Claude Code | 基础架构和早期搭建 |
 | OpenAI Codex | 产品化和 MCP 扩展 |
 
