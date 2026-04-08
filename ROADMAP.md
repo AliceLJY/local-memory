@@ -28,29 +28,39 @@ What matters first is this: opening another window should not erase stable conte
 ### Already Done
 
 - Shared local LanceDB index
-- MCP server for Claude Code, Gemini CLI, and Codex
-- HTTP API for custom agents
+- MCP server for Claude Code, Gemini CLI, and Codex (40 tools in 3 tiers)
+- HTTP API for custom agents (21 endpoints)
 - Ingestion from existing transcripts and memory files
-- Hybrid retrieval: vector + BM25 + reranking
-- 6-category memory classification
-- Tier-aware decay and access reinforcement
+- Hybrid retrieval: vector + BM25 + reranking + 4 retrieval profiles
+- 6-channel retrieval: vector + BM25 + L0/L1/L2 multi-vector + KG graph (PPR)
+- 6-category memory classification with topic tags (15 auto-detected topics)
+- Tier-aware decay (Weibull) and access reinforcement
 - Brief and pin assets re-indexed into recall
 - Session checkpoints for active work state
-- `resume_context` composition for fresh windows
+- `resume_context` composition for fresh windows (full/light/summary modes)
 - Continuity eval harness with seed cases and baseline reports
 - Setup scripts, diagnostics, and debugging UI
 - Explicit evidence -> durable promotion with provenance and `canonicalKey`
 - Conflict candidates, review, audit, escalation, merge resolution, and audit export
+- Session Distiller: 3-layer conversation compression to durable memory
+- Conversation import from Claude Code, Claude.ai, ChatGPT, Slack, and plaintext
+- Skill Memory: store, retrieve, and auto-promote executable skills
+- Admission Control: write-time gating with noise filter, importance floor, dedup, and rate limiting
+- Memory Lint: contradiction, duplicate, stale, and orphan detection with health score
+- Knowledge Graph: interactive D3.js visualization with cross-scope semantic bridges
+- Memory Dashboard: Web UI with stats, category distribution, growth trends, and health
+- SKILL.md: Memory Partner Protocol for LLM onboarding
+- Offline consolidation (`dream`): clustering, merging, pruning
+- Batch operations (`batch_store`): up to 20 memories per call with dedup
+- Data quality health checks (`data_checkup`)
 
 ### Current Gap
 
-RecallNest is already usable as a three-terminal continuity layer, but a few operating gaps remain.
-
-The main gaps are:
+RecallNest is a mature three-terminal continuity layer. The remaining gaps are operational, not architectural:
 
 - continuity eval still depends on the latest live checkpoint in one case
-- conflict review is strong in CLI, but scheduled audit/export is still missing
-- high-signal memory extraction and promotion quality can still improve
+- scheduled conflict audit/export for recurring review is still missing
+- cross-scope semantic bridge threshold may need per-user tuning
 
 ## Phase 1: Shared Memory Foundation
 
@@ -73,121 +83,126 @@ Goal: make the memory base actually retrievable.
 
 Delivered:
 
-- hybrid retrieval
-- retrieval profiles
-- memory categories
-- tiering and decay
-- explain, distill, brief, and pin flows
+- ✅ hybrid retrieval (vector + BM25 + RRF)
+- ✅ 6-channel retrieval: vector + BM25 + L0/L1/L2 multi-vector + KG graph (PPR)
+- ✅ 4 retrieval profiles (default, writing, debug, fact-check)
+- ✅ 6 memory categories with topic tags
+- ✅ Weibull decay + tiering (core / working / peripheral)
+- ✅ explain, distill, brief, and pin flows
+- ✅ Recall Governor: auto-recall governance with budget control and session dedup
 
 ## Phase 3: Cross-Window Continuity Layer
 
-Status: usable in the current stage
+Status: ~~usable~~ **done**
 
 Goal: a fresh window should recall stable context without depending on the user to restate it.
 
 Delivered:
 
-- session checkpoints for active work state
-- `resume_context` for fresh windows
-- context composition that prefers stable background over blindly replaying the last topic
-- managed continuity rules installed by setup for Claude Code, Codex, and Gemini CLI
+- ✅ session checkpoints for active work state
+- ✅ `resume_context` for fresh windows (full/light/summary modes)
+- ✅ ultra-light wake-up: `resume_context(mode='light')` returns <300 tokens for low-budget terminals
+- ✅ context composition that prefers stable background over blindly replaying the last topic
+- ✅ managed continuity rules installed by setup for Claude Code, Codex, and Gemini CLI
+- ✅ repo-state guard: `checkpoint_session` scrubs volatile git status before handoff
+- ✅ session distiller: 3-layer conversation compression to durable memory
 
 Remaining work:
 
-- isolate eval from live checkpoint drift
-- keep measuring instruction-driven startup continuity across the three terminals
-- expand checkpoint-aware continuity coverage and keep tracking trendlines
-
-Likely interfaces:
-
-- `resume_context`
-- `checkpoint_session`
-- startup-oriented MCP and API flows
+- ⬜ isolate eval from live checkpoint drift
+- ⬜ keep measuring instruction-driven startup continuity across the three terminals
 
 ## Phase 4: High-Signal Memory Capture
 
-Status: usable in the current stage
+Status: ~~usable~~ **done**
 
 Goal: store more useful memory and less raw transcript residue.
 
 Delivered:
 
-- `store_memory` for MCP
-- dedicated workflow-pattern capture for durable `patterns`
-- structured capture endpoints for non-MCP agents
-- explicit evidence promotion into durable memory
-- boundary guards for `evidence / durable / session`
-- conflict handling when new durable candidates disagree with existing canonical owners
-
-Remaining work:
-
-- improve extraction toward durable facts, preferences, entities, cases, and patterns
-- better dedup before low-value text reaches the index
-
-Likely interfaces:
-
-- `store_memory` for MCP
-- structured capture endpoints for non-MCP agents
+- ✅ `store_memory` for MCP
+- ✅ dedicated workflow-pattern capture for durable `patterns`
+- ✅ structured capture endpoints for non-MCP agents
+- ✅ explicit evidence promotion into durable memory
+- ✅ boundary guards for `evidence / durable / session`
+- ✅ conflict handling when new durable candidates disagree with existing canonical owners
+- ✅ admission control: noise filter, importance floor, dedup, rate limiting
+- ✅ conversation import from Claude Code, ChatGPT, Slack, plaintext
+- ✅ batch store: up to 20 memories per call with dedup
+- ✅ auto capture: zero-LLM heuristic extraction from text
+- ✅ skill memory: store, retrieve, auto-promote executable skills from recurring patterns
+- ✅ topic tags: 15 auto-detected topics per scope, filterable in `search_memory`
 
 ## Phase 5: Memory Boundary and Conflict Operations
 
-Status: usable in the current stage
+Status: ~~usable~~ **done**
 
 Goal: stop durable memory from drifting silently and make conflicts operable in the terminal.
 
 Delivered:
 
-- `promote_memory` with provenance and `canonicalKey`
-- conflict candidates instead of silent overwrite
-- terminal conflict review: `list / show / resolve`
-- conflict advice, clusters, audit, escalation, and `merge`
-- audit export snapshots in markdown or JSON
+- ✅ `promote_memory` with provenance and `canonicalKey`
+- ✅ conflict candidates instead of silent overwrite
+- ✅ terminal conflict review: `list / show / resolve`
+- ✅ conflict advice, clusters, audit, escalation, and `merge`
+- ✅ audit export snapshots in markdown or JSON
+- ✅ workflow observation: append-only health records outside regular memory
+- ✅ workflow health dashboard and evidence pack generation
 
 Remaining work:
 
-- scheduled audit / export for recurring review
-- stronger merge and promotion heuristics
-
-Likely interfaces:
-
-- `resolve_conflict`
-- `audit_conflicts`
-- `escalate_conflicts`
-- CLI `recallnest conflicts ...`
+- ⬜ scheduled audit / export for recurring review
+- ⬜ stronger merge and promotion heuristics
 
 ## Phase 6: Self-Evolution Engine
 
-Status: planned
+Status: ~~planned~~ **done**
 
 Goal: make memory quality improve over time.
 
-Planned work:
+Delivered:
 
-- memory consolidation for merge-style categories
-- duplicate cleanup for append-style categories
-- gap detection from weak or failed searches
-- promotion suggestions for memories that should become persistent rules
-- better tier maintenance and archival policies
+- ✅ memory consolidation for merge-style categories (`consolidate_memories`, dry-run by default)
+- ✅ duplicate detection and cleanup (`memory_lint` duplicate check, cosine >= 0.92)
+- ✅ stale memory detection (90+ days, low access count)
+- ✅ contradiction detection with category-aware filtering (skip append-only categories)
+- ✅ orphan detection (missing scope, broken consolidation links)
+- ✅ health score formula: 100 - weighted penalties, clamped 0-100
+- ✅ promotion suggestions for memories that should become skills (`scan_skill_promotions`)
+- ✅ offline consolidation via `dream` (clustering, merging, pruning)
+- ✅ admission control: write-time noise filter, importance floor, dedup, rate limiting
 
-Likely endpoints:
+Interfaces:
 
-- `POST /v1/consolidate`
-- `GET /v1/gaps`
-- MCP `consolidate_memory`
+- `memory_lint` (MCP + CLI + HTTP)
+- `consolidate_memories` (MCP)
+- `dream` (MCP)
+- `scan_skill_promotions` (MCP)
+- `data_checkup` (MCP)
+- `GET /v1/lint` (HTTP)
 
 ## Phase 7: Product Polish
 
-Status: ongoing
+Status: ~~ongoing~~ **mostly done**
 
 Goal: make RecallNest easier to trust, measure, and operate.
 
-Planned work:
+Delivered:
 
-- continuity eval isolation from live checkpoints
-- broader continuity-focused evals and benchmarks
-- stronger docs around achieved vs planned capabilities
-- health and quality summaries in CLI
-- cleaner setup for long-running background usage
+- ✅ health and quality summaries in CLI (`lint` command with health score 0-100)
+- ✅ Memory Dashboard: Web UI homepage with stat cards, category bars, lint summary, growth trends
+- ✅ Knowledge Graph export: interactive HTML visualization with D3.js force-directed layout
+- ✅ Cross-scope semantic bridges: auto-discover hidden cross-domain knowledge connections
+- ✅ SKILL.md: Memory Partner Protocol for LLM onboarding (session protocol, anti-patterns, tool decision tree)
+- ✅ stronger docs: updated README/README_CN with screenshots, v2.0 highlights, 40 tools, 21 endpoints
+- ✅ Session Distiller: 3-layer conversation compression (microcompact -> LLM summary -> knowledge extraction)
+- ✅ Conversation Import: Claude Code, Claude.ai, ChatGPT, Slack, plaintext — auto-detected
+
+Remaining work:
+
+- ⬜ continuity eval isolation from live checkpoints
+- ⬜ broader continuity-focused evals and benchmarks
+- ⬜ cleaner setup for long-running background usage
 
 ## Principles
 
