@@ -484,11 +484,14 @@ Part of the **小试AI** open-source AI workflow:
 |---------|-------------|
 | [content-alchemy](https://github.com/AliceLJY/content-alchemy) | 5-stage AI writing pipeline |
 | [content-publisher](https://github.com/AliceLJY/content-publisher) | Image generation + layout + WeChat publishing |
-| [openclaw-tunnel](https://github.com/AliceLJY/openclaw-tunnel) | Docker ↔ host CLI bridge (/cc /codex /gemini) |
-| [digital-clone-skill](https://github.com/AliceLJY/digital-clone-skill) | Build digital clones from corpus data |
+| [wechat-ai-bridge](https://github.com/AliceLJY/wechat-ai-bridge) | Run Claude Code / Codex / Gemini in WeChat with session management |
 | [telegram-ai-bridge](https://github.com/AliceLJY/telegram-ai-bridge) | Telegram bots for Claude, Codex, and Gemini |
 | [telegram-cli-bridge](https://github.com/AliceLJY/telegram-cli-bridge) | Telegram CLI bridge for Gemini CLI |
+| [openclaw-tunnel](https://github.com/AliceLJY/openclaw-tunnel) | Docker ↔ host CLI bridge (/cc /codex /gemini) |
+| [openclaw-config](https://github.com/AliceLJY/openclaw-config) | OpenClaw bots configuration and memory backup |
+| [digital-clone-skill](https://github.com/AliceLJY/digital-clone-skill) | Build digital clones from corpus data |
 | [claude-code-studio](https://github.com/AliceLJY/claude-code-studio) | Multi-session collaboration platform for Claude Code |
+| [cc-genius](https://github.com/AliceLJY/cc-genius) | Web-based Claude chat client (PWA) — self-hosted, iPad-ready |
 | [agent-nexus](https://github.com/AliceLJY/agent-nexus) | One-command installer for memory + remote control |
 | [cc-cabin](https://github.com/AliceLJY/cc-cabin) | Complete Claude Code workflow scaffold |
 
