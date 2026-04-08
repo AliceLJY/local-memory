@@ -24,6 +24,7 @@ import { WorkflowObservationStore } from "./workflow-observation-store.js";
 import { buildManagedCheckpointObservation, buildManagedResumeObservation } from "./workflow-observation-managed.js";
 import { runAutoRecall } from "./auto-recall.js";
 import { buildRetrievalContext, resolveScopeSelection } from "./scope-policy.js";
+import { runMemoryLint } from "./memory-lint.js";
 
 const config = (loadDotEnv(), loadConfig());
 const getComponents = createComponentResolver(config);
@@ -589,6 +590,14 @@ async function handleStats(): Promise<Response> {
   });
 }
 
+/** GET /v1/lint — memory quality lint */
+async function handleLint(searchParams: URLSearchParams): Promise<Response> {
+  const { store } = getComponents();
+  const scope = searchParams.get("scope") || undefined;
+  const report = await runMemoryLint({ store, scope });
+  return jsonResponse(report);
+}
+
 /** GET /v1/health — health check */
 async function handleHealth(): Promise<Response> {
   try {
@@ -652,6 +661,7 @@ const server = Bun.serve({
         if (pathname === "/v1/workflow-health") return await handleWorkflowHealth(request);
         if (pathname === "/v1/workflow-evidence") return await handleWorkflowEvidence(request);
         if (pathname === "/v1/stats") return await handleStats();
+        if (pathname === "/v1/lint") return await handleLint(url.searchParams);
         if (pathname === "/v1/health") return await handleHealth();
       }
 

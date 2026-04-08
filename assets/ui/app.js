@@ -25,7 +25,7 @@ const toggleTraceButton = document.getElementById('toggleTraceButton');
 const viewTabs = Array.from(document.querySelectorAll('.view-tab'));
 const quickCards = Array.from(document.querySelectorAll('[data-quick-action]'));
 
-let currentView = 'search';
+let currentView = 'dashboard';
 let lastItems = [];
 let lastMode = 'search';
 let lastArtifact = null;
@@ -904,7 +904,7 @@ assetTagBar.addEventListener('click', (event) => {
 
 queryInput.value = 'telegram bridge';
 profileInput.value = 'debug';
-setActiveView('search');
+setActiveView('dashboard');
 renderArtifactBar();
 renderStats();
 renderPinsPanel();
@@ -914,4 +914,118 @@ renderMainSurface();
 loadPins();
 loadExports();
 loadStats();
-runMode('search');
+
+// ---------------------------------------------------------------------------
+// Dashboard
+// ---------------------------------------------------------------------------
+
+const dashTotal = document.getElementById('dashTotal');
+const dashHealth = document.getElementById('dashHealth');
+const dashWeek = document.getElementById('dashWeek');
+const dashMonth = document.getElementById('dashMonth');
+const dashCategoryBars = document.getElementById('dashCategoryBars');
+const dashLintSummary = document.getElementById('dashLintSummary');
+const dashStaleList = document.getElementById('dashStaleList');
+const dashStaleCount = document.getElementById('dashStaleCount');
+const dashboardView = document.getElementById('dashboardView');
+const searchView = document.getElementById('searchView');
+const resultView = document.getElementById('resultView');
+const sideView = document.getElementById('sideView');
+const refreshDashboard = document.getElementById('refreshDashboard');
+
+const CATEGORY_COLORS = {
+  profile: '#f59e0b',
+  preferences: '#3b82f6',
+  entities: '#10b981',
+  events: '#6b7280',
+  cases: '#ef4444',
+  patterns: '#8b5cf6',
+};
+
+async function loadDashboard() {
+  try {
+    const [statsRes, lintRes, staleRes] = await Promise.all([
+      fetch('/api/dashboard-stats'),
+      fetch('/api/lint-summary'),
+      fetch('/api/stale-memories'),
+    ]);
+    const stats = await statsRes.json();
+    const lint = await lintRes.json();
+    const stale = await staleRes.json();
+
+    dashTotal.textContent = stats.totalCount.toLocaleString();
+    dashWeek.textContent = '+' + stats.growth.thisWeek;
+    dashMonth.textContent = '+' + stats.growth.thisMonth;
+    dashHealth.textContent = lint.healthScore + '/100';
+    dashHealth.className = 'stat-value ' + (lint.healthScore >= 80 ? 'good' : lint.healthScore >= 50 ? 'warn' : 'bad');
+
+    const cats = stats.categoryCounts || {};
+    const maxCount = Math.max(1, ...Object.values(cats));
+    const barHtml = Object.entries(cats)
+      .sort((a, b) => b[1] - a[1])
+      .map(([cat, count]) => {
+        const pct = Math.round((count / maxCount) * 100);
+        const color = CATEGORY_COLORS[cat] || '#6b7280';
+        return '<div class="bar-row">'
+          + '<span class="bar-label">' + escapeHtml(cat) + '</span>'
+          + '<div class="bar-track"><div class="bar-fill" style="width:' + pct + '%;background:' + color + '"></div></div>'
+          + '<span class="bar-count">' + count + '</span>'
+          + '</div>';
+      }).join('');
+    dashCategoryBars.innerHTML = barHtml;
+
+    const s = lint.summary;
+    const issues = [];
+    if (s.contradictions > 0) issues.push(s.contradictions + ' contradiction' + (s.contradictions > 1 ? 's' : ''));
+    if (s.duplicates > 0) issues.push(s.duplicates + ' duplicate' + (s.duplicates > 1 ? 's' : ''));
+    if (s.staleMemories > 0) issues.push(s.staleMemories + ' stale');
+    if (s.orphans > 0) issues.push(s.orphans + ' orphan' + (s.orphans > 1 ? 's' : ''));
+    if (issues.length === 0) {
+      dashLintSummary.innerHTML = '<div class="lint-ok">All Clear — no issues found</div>';
+    } else {
+      dashLintSummary.innerHTML = issues.map(function(i) {
+        return '<div class="lint-issue">' + escapeHtml(i) + '</div>';
+      }).join('');
+    }
+
+    dashStaleCount.textContent = stale.count;
+    if (stale.items.length === 0) {
+      dashStaleList.innerHTML = '<div class="lint-ok">No stale memories</div>';
+    } else {
+      dashStaleList.innerHTML = stale.items
+        .map(function(item) { return '<div class="stale-item">' + escapeHtml(item.detail) + '</div>'; })
+        .join('');
+    }
+  } catch (err) {
+    console.error('Dashboard load error:', err);
+    dashLintSummary.textContent = 'Failed to load dashboard data';
+  }
+}
+
+const originalViewTabs = Array.from(document.querySelectorAll('.view-tab'));
+for (const tab of originalViewTabs) {
+  tab.addEventListener('click', () => {
+    const view = tab.dataset.view;
+    originalViewTabs.forEach(t => t.classList.toggle('is-active', t === tab));
+
+    if (view === 'dashboard') {
+      if (dashboardView) dashboardView.classList.remove('is-hidden');
+      if (searchView) searchView.classList.add('is-hidden');
+      if (resultView) resultView.classList.add('is-hidden');
+      if (sideView) sideView.classList.add('is-hidden');
+    } else {
+      if (dashboardView) dashboardView.classList.add('is-hidden');
+      if (searchView) searchView.classList.remove('is-hidden');
+      if (resultView) resultView.classList.remove('is-hidden');
+      if (sideView) sideView.classList.remove('is-hidden');
+    }
+
+    currentView = view;
+  });
+}
+
+if (refreshDashboard) {
+  refreshDashboard.addEventListener('click', loadDashboard);
+}
+
+loadDashboard();

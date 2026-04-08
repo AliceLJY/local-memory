@@ -12,7 +12,7 @@ A local-first memory system backed by LanceDB that turns scattered conversation 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Bun](https://img.shields.io/badge/Runtime-Bun-f9f1e1?logo=bun)](https://bun.sh)
 [![LanceDB](https://img.shields.io/badge/LanceDB-Vector+FTS-orange)](https://lancedb.com)
-[![MCP](https://img.shields.io/badge/MCP-38_tools-blue)](https://modelcontextprotocol.io)
+[![MCP](https://img.shields.io/badge/MCP-40_tools-blue)](https://modelcontextprotocol.io)
 [![Tests](https://img.shields.io/badge/Tests-1168_pass-brightgreen)](https://github.com/AliceLJY/recallnest)
 [![CC Plugin](https://img.shields.io/badge/Claude_Code-Plugin-blueviolet)](https://github.com/AliceLJY/recallnest)
 
@@ -54,6 +54,22 @@ Most coding agents forget everything when you open a new window. Worse — your 
 
 That's the difference: **one memory shared across terminals**, with context that survives window boundaries.
 
+### Memory Dashboard
+
+See your memories grow — total count, category distribution, health score, and growth trends at a glance.
+
+<p align="center">
+  <img src="assets/dashboard.png" alt="RecallNest Dashboard" width="800" />
+</p>
+
+### Knowledge Graph
+
+Visualize your memory network as an interactive force-directed graph. Each node is a memory, colored by category.
+
+<p align="center">
+  <img src="assets/knowledge-graph.png" alt="RecallNest Knowledge Graph" width="800" />
+</p>
+
 ### What you get
 
 | | Capability |
@@ -76,6 +92,9 @@ That's the difference: **one memory shared across terminals**, with context that
 | **6 Categories** | profile, preferences, entities, events, cases, patterns |
 | **4 Retrieval Profiles** | default, writing, debug, fact-check — tuned for different tasks |
 | **Admission Control** | Write-time gating: noise filter, importance floor, rate limiting |
+| **Memory Lint** | Contradiction, duplicate, stale, and orphan detection with health score |
+| **Knowledge Graph** | Export interactive HTML visualization of your memory network |
+| **Dashboard** | Web UI with stats, category distribution, growth trends, and health |
 
 ---
 
@@ -86,8 +105,8 @@ RecallNest has evolved from a simple transcript search tool into a full **memory
 | Metric | Value |
 |--------|-------|
 | Core code | 31,800+ lines across 108 source files |
-| MCP tools | 38 tools in 3 tiers (core / advanced / governance) |
-| HTTP endpoints | 20 REST endpoints |
+| MCP tools | 40 tools in 3 tiers (core / advanced / governance) |
+| HTTP endpoints | 21 REST endpoints |
 | Test coverage | 1,168 tests, 0 failures |
 | Retrieval | 6-channel hybrid: vector + BM25 + L0/L1/L2 multi-vector + KG graph (PPR) |
 | Memory evolution | Supersede chains, Weibull decay, LLM importance scoring, auto-archival |
@@ -100,14 +119,26 @@ RecallNest has evolved from a simple transcript search tool into a full **memory
 - **Ultra-Light Wake-up** — `resume_context(mode='light')` returns <300 tokens for low-budget terminals
 - **Skill Memory** — store, retrieve, and auto-promote executable skills from recurring patterns
 - **Admission Control** — write-time gating with noise filter, importance floor, dedup, and rate limiting
+- **Memory Lint** — content quality checker with health score (contradictions, duplicates, stale, orphans)
+- **Knowledge Graph** — interactive D3.js force-directed visualization of your memory network
 
 ---
 
 ## Web UI
 
+<p align="center">
+<img src="assets/dashboard.png" alt="RecallNest Dashboard — stats, health score, category distribution" width="720" />
+</p>
+<p align="center"><em>Dashboard: 55K+ memories, 100/100 health score, category distribution at a glance.</em></p>
+
+<p align="center">
+<img src="assets/knowledge-graph.png" alt="RecallNest Knowledge Graph — D3.js force-directed visualization" width="720" />
+</p>
+<p align="center"><em>Knowledge Graph: 80 nodes across 6 categories with evolution edges.</em></p>
+
 <div align="center">
 <img src="assets/screenshots/ui-full.png" alt="RecallNest Web UI — search, skills, assets, exports" width="720" />
-<p><em>Debugging workbench: hybrid search with topic tag filtering, 4 retrieval profiles, Skills browser, and asset management.</em></p>
+<p><em>Workbench: hybrid search with topic tag filtering, 4 retrieval profiles, Skills browser, and asset management.</em></p>
 </div>
 
 ```bash
@@ -325,7 +356,7 @@ Details: [`docs/memory-categories.md`](docs/memory-categories.md)
 ---
 
 <details>
-<summary><strong>MCP Tools (38 tools)</strong></summary>
+<summary><strong>MCP Tools (40 tools)</strong></summary>
 
 | Tool | Description |
 |------|-------------|
@@ -367,11 +398,13 @@ Details: [`docs/memory-categories.md`](docs/memory-categories.md)
 | `import_conversations` | Import conversations from Claude Code, ChatGPT, Slack, and more |
 | `data_checkup` | Run data quality health checks on the memory store |
 | `dream` | Run offline memory consolidation (clustering, merging, pruning) |
+| `memory_lint` | Run memory quality checks: contradictions, duplicates, stale entries, orphans |
+| `export_graph` | Export memories as an interactive HTML knowledge graph |
 
 </details>
 
 <details>
-<summary><strong>HTTP API (20 endpoints)</strong></summary>
+<summary><strong>HTTP API (21 endpoints)</strong></summary>
 
 Base URL: `http://localhost:4318`
 
@@ -395,6 +428,7 @@ Base URL: `http://localhost:4318`
 | `/v1/resume` | POST | Compose startup context for a fresh window |
 | `/v1/search` | POST | Advanced search with full metadata |
 | `/v1/stats` | GET | Memory statistics |
+| `/v1/lint` | GET | Memory quality lint report |
 | `/v1/health` | GET | Health check |
 
 Full documentation: [`docs/api-reference.md`](docs/api-reference.md)
@@ -428,6 +462,12 @@ bun run src/cli.ts conflicts resolve af70545a --keep-existing
 bun run src/cli.ts conflicts resolve af70545a --merge
 bun run src/cli.ts conflicts resolve --all --keep-existing --status open
 
+# Memory health & visualization
+bun run src/cli.ts lint                         # memory quality report
+bun run src/cli.ts lint --scope project:myapp   # lint a specific scope
+bun run src/cli.ts graph --open                 # export & open knowledge graph
+bun run src/cli.ts graph --max-nodes 50         # smaller graph
+
 # Ingestion & diagnostics
 bun run src/cli.ts ingest --source all
 bun run src/cli.ts doctor
@@ -436,14 +476,14 @@ bun run src/cli.ts doctor
 </details>
 
 <details>
-<summary><strong>Web UI (debugging)</strong></summary>
+<summary><strong>Web UI</strong></summary>
 
 ```bash
 bun run src/ui-server.ts
 # → http://localhost:4317
 ```
 
-The Web UI is for debugging and exploration, not the primary production interface.
+The Web UI provides a **Memory Dashboard** (stats, category distribution, health score, growth trends, stale memories) and a **Search Workbench** (search, explain, distill, pin, export).
 
 </details>
 

@@ -49,6 +49,8 @@ const TOOL_TIERS: Record<string, ToolTier> = {
   list_pins: "advanced",
   memory_stats: "advanced",
   data_checkup: "advanced",
+  memory_lint: "advanced",
+  export_graph: "advanced",
   dream: "advanced",
   memory_drill_down: "advanced",
   export_memory: "advanced",
@@ -106,6 +108,8 @@ import { resolveConflictCandidate } from "./conflict-engine.js";
 import { escalateConflicts } from "./conflict-escalation.js";
 import { ConflictCandidateStore } from "./conflict-store.js";
 import { runDataCheckup, formatCheckupReport } from "./data-checkup.js";
+import { runMemoryLint, formatMemoryLintReport } from "./memory-lint.js";
+import { exportMemoryGraph, formatGraphExportResult } from "./graph-export.js";
 import { runDream, formatDreamResult } from "./dream-pipeline.js";
 import { formatConflictAudit, formatConflictClusters, formatConflictEscalation, formatConflictList, formatConflictRecord, formatConflictResolution } from "./conflict-output.js";
 import { CONFLICT_ATTENTION_LEVELS, summarizeConflictLifecycle } from "./conflict-lifecycle.js";
@@ -1359,6 +1363,44 @@ registerTool(
     const report = await runDataCheckup({ store, openConflictCount: openConflicts });
     return {
       content: [{ type: "text" as const, text: formatCheckupReport(report) }],
+    };
+  }
+);
+
+// ============================================================================
+// Memory Lint Tool
+// ============================================================================
+
+registerTool(
+  "memory_lint",
+  "Run memory quality lint checks: contradictions, duplicates, stale entries, and orphans. Read-only. Returns a health score (0-100) and actionable findings. Use for periodic memory hygiene or before consolidation.",
+  {
+    scope: z.string().min(1).max(160).optional().describe("Optional scope filter, e.g. 'project:recallnest'. Omit to lint all scopes"),
+    verbose: z.boolean().default(false).describe("Include all individual findings in output (default: summarized)"),
+  },
+  async ({ scope, verbose }) => {
+    const report = await runMemoryLint({ store, scope, verbose });
+    return {
+      content: [{ type: "text" as const, text: formatMemoryLintReport(report) }],
+    };
+  }
+);
+
+// ============================================================================
+// Knowledge Graph Export Tool
+// ============================================================================
+
+registerTool(
+  "export_graph",
+  "Export memories as an interactive HTML knowledge graph. Creates a self-contained HTML file with a force-directed visualization. Open in any browser. Use when the user wants to visualize their memory network.",
+  {
+    scope: z.string().min(1).max(160).optional().describe("Optional scope filter"),
+    maxNodes: z.number().int().min(10).max(500).default(200).describe("Maximum nodes to include (default 200)"),
+  },
+  async ({ scope, maxNodes }) => {
+    const { path, graph } = await exportMemoryGraph(store, { scope, maxNodes });
+    return {
+      content: [{ type: "text" as const, text: formatGraphExportResult(path, graph) }],
     };
   }
 );

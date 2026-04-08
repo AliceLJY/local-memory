@@ -445,6 +445,52 @@ const server = Bun.serve({
         });
       }
 
+      // ----- Dashboard API -----
+      if (request.method === "GET" && url.pathname === "/api/dashboard-stats") {
+        const { store } = getComponents();
+        const stats = await store.stats();
+        const allEntries = await store.list(undefined, undefined, 10000, 0);
+
+        const now = Date.now();
+        const weekAgo = now - 7 * 24 * 60 * 60 * 1000;
+        const monthAgo = now - 30 * 24 * 60 * 60 * 1000;
+        const thisWeek = allEntries.filter(e => e.timestamp > weekAgo).length;
+        const thisMonth = allEntries.filter(e => e.timestamp > monthAgo).length;
+
+        return Response.json({
+          totalCount: stats.totalCount,
+          categoryCounts: stats.categoryCounts,
+          scopeCounts: stats.scopeCounts,
+          growth: { thisWeek, thisMonth },
+        });
+      }
+
+      if (request.method === "GET" && url.pathname === "/api/stale-memories") {
+        const { store } = getComponents();
+        const { runMemoryLint } = await import("./memory-lint.js");
+        const report = await runMemoryLint({ store });
+        const staleFindings = report.findings.filter(f => f.check === "stale");
+        return Response.json({
+          count: staleFindings.length,
+          items: staleFindings.slice(0, 20).map(f => ({
+            detail: f.detail,
+            memoryIds: f.memoryIds,
+          })),
+        });
+      }
+
+      if (request.method === "GET" && url.pathname === "/api/lint-summary") {
+        const { store } = getComponents();
+        const { runMemoryLint } = await import("./memory-lint.js");
+        const report = await runMemoryLint({ store });
+        return Response.json({
+          healthScore: report.healthScore,
+          totalScanned: report.totalScanned,
+          summary: report.summary,
+          timestamp: report.timestamp,
+        });
+      }
+
       return new Response("Not Found", { status: 404 });
     } catch (error) {
       return errorResponse(error);

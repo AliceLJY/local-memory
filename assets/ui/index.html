@@ -42,14 +42,57 @@
       </section>
 
       <main class="workspace">
-        <section class="control-panel card">
+        <section id="dashboardView" class="dashboard-view card">
+          <div class="section-head">
+            <h2>Memory Dashboard</h2>
+            <button id="refreshDashboard" class="ghost-button">Refresh</button>
+          </div>
+
+          <div class="dash-stats-row" id="dashStatsRow">
+            <div class="stat-card">
+              <span class="stat-value" id="dashTotal">-</span>
+              <span class="stat-label">Total Memories</span>
+            </div>
+            <div class="stat-card">
+              <span class="stat-value" id="dashHealth">-</span>
+              <span class="stat-label">Health Score</span>
+            </div>
+            <div class="stat-card">
+              <span class="stat-value" id="dashWeek">-</span>
+              <span class="stat-label">This Week</span>
+            </div>
+            <div class="stat-card">
+              <span class="stat-value" id="dashMonth">-</span>
+              <span class="stat-label">This Month</span>
+            </div>
+          </div>
+
+          <div class="dash-grid">
+            <div class="dash-panel">
+              <h3>Category Distribution</h3>
+              <div id="dashCategoryBars" class="category-bars"></div>
+            </div>
+            <div class="dash-panel">
+              <h3>Lint Summary</h3>
+              <div id="dashLintSummary" class="lint-summary">Loading...</div>
+            </div>
+          </div>
+
+          <div class="dash-panel full-width">
+            <h3>Stale Memories <span id="dashStaleCount" class="badge">0</span></h3>
+            <div id="dashStaleList" class="stale-list">Loading...</div>
+          </div>
+        </section>
+
+        <section class="control-panel card is-hidden" id="searchView">
           <div class="section-head">
             <h2>Query Console</h2>
             <button id="statsButton" class="ghost-button">Refresh Stats</button>
           </div>
 
           <div class="view-switch" id="viewSwitch">
-            <button class="view-tab is-active" data-view="search">Search</button>
+            <button class="view-tab is-active" data-view="dashboard">Dashboard</button>
+            <button class="view-tab" data-view="search">Search</button>
             <button class="view-tab" data-view="skills">Skills</button>
             <button class="view-tab" data-view="pins">Assets</button>
             <button class="view-tab" data-view="exports">Exports</button>
@@ -122,7 +165,7 @@
           <p id="statusLine" class="status-line">Ready.</p>
         </section>
 
-        <section class="result-panel card">
+        <section class="result-panel card is-hidden" id="resultView">
           <div class="section-head">
             <h2 id="resultTitle">Result Surface</h2>
             <button id="reloadPinsButton" class="ghost-button">Load Assets</button>
@@ -140,7 +183,7 @@
           <div id="resultCards" class="result-cards"></div>
         </section>
 
-        <section class="side-panel card">
+        <section class="side-panel card is-hidden" id="sideView">
           <div class="section-head">
             <h2>Recall Actions</h2>
           </div>

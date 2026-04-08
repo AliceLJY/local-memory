@@ -1954,6 +1954,59 @@ program
     if (hasFailure) process.exitCode = 1;
   });
 
+program
+  .command("lint")
+  .description("Run memory quality lint checks")
+  .option("--scope <scope>", "Limit to a specific scope")
+  .option("--json", "Output raw JSON instead of formatted report")
+  .option("--verbose", "Show all individual findings")
+  .action(async (options) => {
+    const { runMemoryLint, formatMemoryLintReport } = await import("./memory-lint.js");
+    const config = loadConfig();
+    const { store } = createComponents(config);
+
+    const report = await runMemoryLint({
+      store,
+      scope: options.scope,
+      verbose: options.verbose,
+    });
+
+    if (options.json) {
+      console.log(JSON.stringify(report, null, 2));
+    } else {
+      console.log();
+      console.log(formatMemoryLintReport(report));
+    }
+  });
+
+program
+  .command("graph")
+  .description("Export interactive knowledge graph as HTML")
+  .option("--scope <scope>", "Limit to a specific scope")
+  .option("--max-nodes <n>", "Maximum nodes (default 200)", "200")
+  .option("--out <path>", "Output file path")
+  .option("--open", "Open in browser after export")
+  .action(async (options) => {
+    const { exportMemoryGraph, formatGraphExportResult } = await import("./graph-export.js");
+    const config = loadConfig();
+    const { store } = createComponents(config);
+
+    const maxNodes = parseInt(options.maxNodes, 10) || 200;
+    const { path, graph } = await exportMemoryGraph(store, {
+      scope: options.scope,
+      maxNodes,
+      outputPath: options.out,
+    });
+
+    console.log();
+    console.log(formatGraphExportResult(path, graph));
+
+    if (options.open) {
+      const proc = Bun.spawn(["open", path]);
+      await proc.exited;
+    }
+  });
+
 // Run
 loadDotEnv();
 program.parseAsync(process.argv).catch((error) => {

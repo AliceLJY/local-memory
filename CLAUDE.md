@@ -24,9 +24,9 @@
 
 ## 4. Git Push 规则（重要！）
 
-- **所有 push 只推 origin**（`trihippo/recallnest`）
+- **所有 push 只推 origin**（`AliceLJY/recallnest`）
 - **绝对不要 push 到 upstream**（`CortexReach/memory-lancedb-pro`）—— 那是上游公开仓库，推了等于暴露私有改造
-- **绝对不要 push 到 public**（`AliceLJY/recallnest`）—— 除非用户明确要求
+- `trihippo/recallnest` 已停止维护，不再推送
 - 默认 `git push` 即可（默认推 origin）
 - 需要给上游提 PR 时，走 fork + PR 流程，不直接 push
 
