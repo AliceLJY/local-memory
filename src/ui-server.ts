@@ -157,14 +157,17 @@ function serveStatic(pathname: string): Response | null {
 async function handleSearch(mode: "search" | "explain" | "distill", body: Record<string, any>) {
   const query = requireString(body.query, "query");
   const { retriever, profile } = getComponents(readOptionalString(body.profile));
+  const explicitScope = readOptionalString(body.scope);
   const results = await retriever.retrieve(buildRetrievalContext({
     query,
     limit: readLimit(body.limit, 5, 1, 20),
-    scope: readOptionalString(body.scope),
+    scope: explicitScope,
     sessionId: readOptionalString(body.sessionId),
-    allScopes: body.allScopes === true,
+    allScopes: explicitScope ? false : true,
+    topicTag: readOptionalString(body.topicTag),
   }, {
     operation: `ui:${mode}`,
+    allowUnscoped: true,
   }));
   const context = { query, profile: profile.name };
   const output = mode === "explain"
@@ -318,7 +321,7 @@ const server = Bun.serve({
         const scopeSelection = resolveScopeSelection({
           scope: readOptionalString(body.scope),
           sessionId: readOptionalString(body.sessionId),
-          allScopes: body.allScopes === true,
+          allScopes: readOptionalString(body.scope) ? false : true,
           operation: "ui:pin",
         });
         const entry = await store.get(memoryId, scopeSelection.scopeFilter);
@@ -349,7 +352,7 @@ const server = Bun.serve({
           limit: readLimit(body.limit, 8, 1, 20),
           scope: readOptionalString(body.scope),
           sessionId: readOptionalString(body.sessionId),
-          allScopes: body.allScopes === true,
+          allScopes: readOptionalString(body.scope) ? false : true,
         }, {
           operation: "ui:brief",
         }));
@@ -399,7 +402,7 @@ const server = Bun.serve({
           limit: readLimit(body.limit, 8, 1, 20),
           scope: readOptionalString(body.scope),
           sessionId: readOptionalString(body.sessionId),
-          allScopes: body.allScopes === true,
+          allScopes: readOptionalString(body.scope) ? false : true,
         }, {
           operation: "ui:export",
         }));
