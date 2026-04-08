@@ -96,7 +96,7 @@ import { ConsolidationEngine, formatConsolidationResult } from "./consolidation-
 import { renderMemories, type RenderMode } from "./context-renderer.js";
 import { buildSessionCheckpointResult } from "./session-engine.js";
 import { SessionCheckpointStore } from "./session-store.js";
-import { composeResumeContext } from "./context-composer.js";
+import { composeLightResumeContext, composeResumeContext } from "./context-composer.js";
 import { formatCheckpointSaved, formatCheckpointSummary, formatResumeContext } from "./session-output.js";
 import { ConflictStatusSchema } from "./conflict-schema.js";
 import { KGStore } from "./kg-store.js";
@@ -284,8 +284,9 @@ registerTool(
     source: StoreMemorySourceSchema.default("manual").describe("How this memory was captured"),
     tags: z.array(z.string().min(1).max(40)).max(8).default([]).describe("Optional tags"),
     canonicalKey: z.string().min(1).max(120).optional().describe("Optional stable key for merge/update semantics"),
+    topicTag: z.string().min(1).max(60).optional().describe("Optional topic tag for intra-scope partitioning (e.g. 'auth', 'deploy', 'testing'). Auto-detected if omitted."),
   },
-  async ({ text, category, importance, scope, source, tags, canonicalKey }) => {
+  async ({ text, category, importance, scope, source, tags, canonicalKey, topicTag }) => {
     const { store, embedder } = getComponents();
     const stored = await persistMemory({
       store,
@@ -300,6 +301,7 @@ registerTool(
       source,
       tags,
       canonicalKey,
+      topicTag,
     });
 
     return {
@@ -755,7 +757,7 @@ registerTool(
     limitPerSection: z.number().int().min(1).max(6).default(3).describe("Max items per section"),
     includeLatestCheckpoint: z.boolean().default(true).describe("Whether to include the latest checkpoint summary"),
     profile: z.enum(["default", "writing", "debug", "fact-check"]).optional().describe("Retrieval profile"),
-    mode: z.enum(["full", "summary", "off"]).optional().describe("Override recall mode (default: from config.recallMode)"),
+    mode: z.enum(["full", "light", "summary", "off"]).optional().describe("Override recall mode: 'full' (default), 'light' (<300 tokens), 'summary' (checkpoint only), 'off'"),
   },
   async ({ task, scope, sessionId, limitPerSection, includeLatestCheckpoint, profile: profileName, mode: modeOverride }) => {
     const effectiveMode = resolveRecallMode(config, modeOverride);
@@ -798,6 +800,44 @@ registerTool(
         content: [{
           type: "text" as const,
           text: summaryText,
+        }],
+      };
+    }
+
+    // --- light mode: <300 token ultra-light wake-up ---
+    if (effectiveMode === "light") {
+      const { retriever: lightRetriever } = getComponents(profileName);
+      const lightScope = resolveScopeSelection({
+        scope,
+        sessionId,
+        operation: "resume_context",
+        allowUnscoped: true,
+      });
+      const lightResult = await composeLightResumeContext({
+        retriever: lightRetriever,
+        checkpointStore,
+      }, {
+        task,
+        scope: lightScope.resolvedScope,
+        sessionId,
+        limitPerSection: limitPerSection,
+        includeLatestCheckpoint,
+        profile: profileName,
+      });
+      await saveManagedObservation({
+        workflowId: "resume_context",
+        outcome: "success",
+        summary: `Managed resume_context returned light-mode context (~${lightResult.text.length} chars).`,
+        scope: lightScope.resolvedScope || scope || "global",
+        source: "managed:recallnest",
+        signal: "managed-resume-light",
+        task,
+        tags: ["managed", "recallnest", "light-mode"],
+      });
+      return {
+        content: [{
+          type: "text" as const,
+          text: lightResult.text,
         }],
       };
     }
@@ -855,20 +895,23 @@ registerTool(
     includeArchived: z.boolean().default(false).optional().describe("When true, also return archived/superseded/consolidated memories (default: only active)"),
     detail_level: z.enum(["brief", "normal", "full"]).default("normal").optional()
       .describe("Result detail level: brief (ID+score+one-liner), normal (default, current behavior), full (include metadata)"),
+    topicTag: z.string().min(1).max(60).optional()
+      .describe("Filter by topic tag (e.g. 'auth', 'deploy', 'testing'). Only returns memories tagged with this topic."),
   },
-  async ({ query, limit, scope, sessionId, allScopes, category, profile: profileName, render, after, before, graph, includeArchived, detail_level }) => {
+  async ({ query, limit, scope, sessionId, allScopes, category, profile: profileName, render, after, before, graph, includeArchived, detail_level, topicTag }) => {
     const { retriever, profile } = getComponents(profileName);
     // Ensure KG store is attached to non-default profile retrievers for PPR
     if (graph && kgStoreInstance) retriever.setKGStore(kgStoreInstance);
     let results = await retriever.retrieve(buildRetrievalContext({
       query,
-      limit: (after || before) ? limit * 3 : limit, // Over-fetch when temporal filtering will reduce results
+      limit: (after || before || topicTag) ? limit * 3 : limit,
       category,
       scope,
       sessionId,
       allScopes,
       graph,
       includeArchived,
+      topicTag,
     }, {
       operation: "search_memory",
     }));

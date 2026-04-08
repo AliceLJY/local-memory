@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 
-import { composeResumeContext } from "../context-composer.js";
+import { composeLightResumeContext, composeResumeContext } from "../context-composer.js";
 import type { RetrievalContext, RetrievalResult } from "../retriever.js";
 import type { SessionCheckpointRecord } from "../session-schema.js";
 
@@ -4739,5 +4739,160 @@ describe("composeResumeContext", () => {
     const stableJoined = response.stableContext.join(" ");
     expect(stableJoined).toContain("RecallNest");
     expect(response.relevantPatterns.join(" ")).toContain("resume_context");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// MP-3: composeLightResumeContext — Ultra-Light Wake-up Mode
+// ---------------------------------------------------------------------------
+
+describe("composeLightResumeContext", () => {
+  const checkpoint: SessionCheckpointRecord = {
+    checkpointId: "cp-light-1",
+    sessionId: "session-light",
+    resolvedScope: "project:recallnest",
+    summary: "Implemented LME-9 circuit breaker for LLM degradation",
+    task: "LME-9 circuit breaker",
+    decisions: ["Three-layer degradation"],
+    openLoops: ["Soak test pending"],
+    nextActions: ["Run full eval"],
+    entities: ["RecallNest"],
+    files: ["src/llm-client.ts"],
+    updatedAt: "2026-04-06T10:00:00.000Z",
+  };
+
+  it("returns checkpoint summary and stable memories under token budget", async () => {
+    const retriever = {
+      async retrieve(): Promise<RetrievalResult[]> {
+        return [
+          buildResult("p1", "profile", "User builds local-first memory systems with RecallNest."),
+          buildResult("pref1", "preferences", "User prefers concise technical replies without fluff."),
+          buildResult("e1", "entities", "RecallNest is a cross-terminal shared memory layer."),
+        ];
+      },
+    };
+
+    const result = await composeLightResumeContext({
+      retriever,
+      checkpointStore: { async getLatest() { return checkpoint; } },
+      listPins: () => [],
+    }, {
+      task: "继续 RecallNest 项目",
+      scope: "project:recallnest",
+      includeLatestCheckpoint: true,
+      limitPerSection: 3,
+    });
+
+    expect(result.text).toContain("session-light");
+    expect(result.text).toContain("LME-9");
+    expect(result.text).toContain("resume_context(mode='full')");
+    expect(result.resolvedScope).toBe("project:recallnest");
+    expect(result.generatedAt).toBeTruthy();
+    // Budget check: <300 tokens ≈ <1200 chars
+    expect(result.text.length).toBeLessThan(1200);
+  });
+
+  it("works without checkpoint", async () => {
+    const retriever = {
+      async retrieve(): Promise<RetrievalResult[]> {
+        return [
+          buildResult("p1", "profile", "Data scientist working on observability."),
+        ];
+      },
+    };
+
+    const result = await composeLightResumeContext({
+      retriever,
+      checkpointStore: { async getLatest() { return null; } },
+      listPins: () => [],
+    }, {
+      includeLatestCheckpoint: true,
+      limitPerSection: 3,
+    });
+
+    expect(result.text).not.toContain("Last session");
+    expect(result.text).toContain("observability");
+    expect(result.text).toContain("resume_context(mode='full')");
+  });
+
+  it("includes pin assets as stable context", async () => {
+    const retriever = {
+      async retrieve(): Promise<RetrievalResult[]> {
+        return [];
+      },
+    };
+
+    const result = await composeLightResumeContext({
+      retriever,
+      checkpointStore: { async getLatest() { return checkpoint; } },
+      listPins: () => [{
+        path: "/tmp/pin1.md",
+        title: "Auth migration decision",
+        summary: "Session tokens must comply with new legal requirements",
+        pinId: "pin-1",
+        memoryId: "mem-1",
+        createdAt: "2026-04-01T00:00:00.000Z",
+      }],
+    }, {
+      scope: "project:recallnest",
+      includeLatestCheckpoint: true,
+      limitPerSection: 3,
+    });
+
+    expect(result.text).toContain("legal requirements");
+  });
+
+  it("deduplicates pin content from stable memories", async () => {
+    const retriever = {
+      async retrieve(): Promise<RetrievalResult[]> {
+        return [
+          buildResult("dup1", "profile", "Session tokens must comply with new legal requirements"),
+        ];
+      },
+    };
+
+    const result = await composeLightResumeContext({
+      retriever,
+      checkpointStore: { async getLatest() { return null; } },
+      listPins: () => [{
+        path: "/tmp/pin1.md",
+        title: "Auth migration",
+        summary: "Session tokens must comply with new legal requirements",
+        pinId: "pin-1",
+        memoryId: "mem-1",
+        createdAt: "2026-04-01T00:00:00.000Z",
+      }],
+    }, {
+      includeLatestCheckpoint: true,
+      limitPerSection: 3,
+    });
+
+    // Should not have duplicate entries
+    const matches = result.text.match(/legal requirements/g);
+    expect(matches?.length).toBeLessThanOrEqual(1);
+  });
+
+  it("respects scope from input over checkpoint", async () => {
+    const calls: RetrievalContext[] = [];
+    const retriever = {
+      async retrieve(ctx: RetrievalContext): Promise<RetrievalResult[]> {
+        calls.push(ctx);
+        return [];
+      },
+    };
+
+    const result = await composeLightResumeContext({
+      retriever,
+      checkpointStore: { async getLatest() { return checkpoint; } },
+      listPins: () => [],
+    }, {
+      scope: "project:custom",
+      includeLatestCheckpoint: true,
+      limitPerSection: 3,
+    });
+
+    expect(result.resolvedScope).toBe("project:custom");
+    // retrieveCandidates fires scoped + global in parallel; at least one must have the scope filter
+    expect(calls.some(c => c.scopeFilter?.includes("project:custom"))).toBe(true);
   });
 });

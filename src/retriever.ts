@@ -13,6 +13,7 @@ import { weibullDecay, resolveTier, isDecayExempt } from "./decay-engine.js";
 import { logWarn } from "./stderr-log.js";
 import { extractBoundaryMetadata, isDurableMemoryScope, isTranscriptScope } from "./memory-boundaries.js";
 import type { TraceCollector } from "./retrieval-trace.js";
+import { extractTopicTag } from "./topic-tag.js";
 import { filterInterference } from "./rif.js";
 import { FrequencyTracker } from "./frequency-tracker.js";
 import { applyConfidenceWeight } from "./confidence-tracker.js";
@@ -149,6 +150,8 @@ export interface RetrievalContext {
   graph?: boolean;
   /** Override config-level multiHop for this single retrieval call. */
   multiHop?: boolean;
+  /** MP-1: Filter results by topicTag stored in metadata. */
+  topicTag?: string;
 }
 
 export interface RetrievalResult extends MemorySearchResult {
@@ -640,6 +643,15 @@ export class MemoryRetriever {
             await this.store.update!(r.entry.id, { metadata: updated });
           } catch { /* evolution tracking must never block retrieval */ }
         }
+      });
+    }
+
+    // MP-1: Topic Tag post-filter — only keep results matching the requested topicTag
+    if (context.topicTag && results.length > 0) {
+      const tag = context.topicTag.toLowerCase();
+      results = results.filter(r => {
+        const entryTag = extractTopicTag(r.entry.metadata);
+        return entryTag?.toLowerCase() === tag;
       });
     }
 

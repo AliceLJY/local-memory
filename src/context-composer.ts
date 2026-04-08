@@ -213,6 +213,85 @@ function buildEssentialContext(params: {
   };
 }
 
+// ---------------------------------------------------------------------------
+// MP-3: Ultra-Light Wake-up — <300 token resume for low-budget terminals
+// ---------------------------------------------------------------------------
+
+const LIGHT_TOKEN_BUDGET = 300;
+const LIGHT_MEMORY_CHAR_LIMIT = 200; // ~50 tokens
+
+export interface LightResumeResult {
+  text: string;
+  resolvedScope?: string;
+  generatedAt: string;
+}
+
+export async function composeLightResumeContext(
+  deps: ResumeContextDeps,
+  rawInput: unknown,
+): Promise<LightResumeResult> {
+  const input = ResumeContextRequestSchema.parse(rawInput);
+  const latestCheckpoint = await resolveLatestCheckpoint(deps.checkpointStore, {
+    includeLatestCheckpoint: true,
+    sessionId: input.sessionId,
+    scope: input.scope,
+  });
+
+  const resolvedScope = input.scope || latestCheckpoint?.resolvedScope;
+
+  // Retrieve top 3 stable memories (profile + preferences + entities combined)
+  const stableResults = await retrieveCandidates(deps.retriever, {
+    query: input.task || "identity key facts and preferences",
+    limit: 3,
+    scope: resolvedScope,
+  });
+
+  // Pin assets provide high-signal stable context
+  const pinAssets = (deps.listPins || listPinAssets)(3);
+
+  const parts: string[] = [];
+  let tokensUsed = 0;
+
+  // 1. Checkpoint summary (1 sentence, ~30 tokens)
+  if (latestCheckpoint) {
+    const cpLine = `Last session (${latestCheckpoint.sessionId}): ${cleanText(latestCheckpoint.summary, 120)}`;
+    parts.push(cpLine);
+    tokensUsed += estimateTokens(cpLine);
+  }
+
+  // 2. Top pinned memories (most reliable stable context)
+  if (pinAssets.length > 0) {
+    for (const pin of pinAssets) {
+      if (tokensUsed >= LIGHT_TOKEN_BUDGET - 40) break;
+      const line = `- ${cleanText(pin.summary || pin.title, LIGHT_MEMORY_CHAR_LIMIT)}`;
+      parts.push(line);
+      tokensUsed += estimateTokens(line);
+    }
+  }
+
+  // 3. Top stable memories (fill remaining budget)
+  if (stableResults.length > 0 && tokensUsed < LIGHT_TOKEN_BUDGET - 40) {
+    const pinTexts = new Set(pinAssets.map(p => (p.summary || p.title).toLowerCase()));
+    for (const r of stableResults) {
+      if (tokensUsed >= LIGHT_TOKEN_BUDGET - 40) break;
+      const textLower = r.entry.text.toLowerCase().slice(0, 100);
+      if (pinTexts.has(textLower)) continue;
+      const line = `- ${cleanText(r.entry.text, LIGHT_MEMORY_CHAR_LIMIT)}`;
+      parts.push(line);
+      tokensUsed += estimateTokens(line);
+    }
+  }
+
+  // 4. Upgrade hint
+  parts.push("\nFor complete context, call resume_context(mode='full').");
+
+  return {
+    text: parts.join("\n"),
+    resolvedScope,
+    generatedAt: new Date().toISOString(),
+  };
+}
+
 export async function composeResumeContext(
   deps: ResumeContextDeps,
   rawInput: unknown,

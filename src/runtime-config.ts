@@ -11,7 +11,7 @@ import { FrequencyTracker } from "./frequency-tracker.js";
 import { createLLMClient, type LLMClient, type LLMConfig } from "./llm-client.js";
 import { logInfo } from "./stderr-log.js";
 
-export type RecallMode = "full" | "summary" | "off";
+export type RecallMode = "full" | "light" | "summary" | "off";
 
 export interface LocalMemoryConfig {
   dbPath: string;
@@ -163,7 +163,7 @@ export function createComponentResolver(config: LocalMemoryConfig) {
   };
 }
 
-const VALID_RECALL_MODES: RecallMode[] = ["full", "summary", "off"];
+const VALID_RECALL_MODES: RecallMode[] = ["full", "light", "summary", "off"];
 
 /**
  * Resolve effective recall mode: per-call override > env var > config > default ("summary").

@@ -5,6 +5,7 @@ import { verifyWrite } from "./write-verifier.js";
 // batchInternalDedup is available in ingest.ts for large-batch scenarios;
 // persistMemoryBatch relies on per-item conflict detection (A-2) instead.
 import { defaultEvolution, buildSupersedeMetadata, buildSupersedeMetadataForNew, buildPendingReviewMetadata, isActiveMemory } from "./memory-evolution.js";
+import { detectTopicTag, injectTopicTag } from "./topic-tag.js";
 import {
   type CaseMemoryInput,
   CaseMemoryInputSchema,
@@ -882,6 +883,13 @@ export async function persistMemory(
       severity: piiResult.detections.some(d => d.severity === "high") ? "high" : "medium",
     };
     metadata = JSON.stringify(parsed);
+  }
+
+  // MP-1: Topic Tag — auto-detect or use explicit tag from caller
+  const topicTag = (input as Record<string, unknown>).topicTag as string | undefined
+    ?? detectTopicTag(input.text);
+  if (topicTag) {
+    metadata = injectTopicTag(metadata, topicTag);
   }
 
   // HP-1: Bidirectional supersede link — mark new memory as superseding old

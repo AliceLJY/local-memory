@@ -64,6 +64,7 @@ export const StoreMemoryInputSchema = z.object({
   source: StoreMemorySourceSchema.default("manual"),
   tags: MemoryTagsSchema,
   canonicalKey: CanonicalKeySchema,
+  topicTag: z.string().min(1).max(60).optional(),
 });
 
 export const StoredMemoryRecordSchema = StoreMemoryInputSchema.extend({

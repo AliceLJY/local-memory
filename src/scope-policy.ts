@@ -137,6 +137,7 @@ export function buildRetrievalContext(
     includeArchived: base.includeArchived,
     trace: base.trace,
     graph: base.graph,
+    topicTag: base.topicTag,
     scopeFilter: selection.scopeFilter,
   };
 }
