@@ -54,6 +54,7 @@ const TOOL_TIERS: Record<string, ToolTier> = {
   export_memory: "advanced",
   store_skill: "advanced",
   retrieve_skill: "advanced",
+  import_conversations: "advanced",
   distill_session: "advanced",
   scan_skill_promotions: "governance",
 
@@ -117,6 +118,7 @@ import { buildManagedCheckpointObservation, buildManagedResumeObservation } from
 import { buildRetrievalContext, resolveScopeSelection } from "./scope-policy.js";
 import { matchesTemporalConstraint, type TemporalConstraint } from "./temporal-parser.js";
 import { setReminder, checkTriggers, fireReminder, formatReminders } from "./prospective-memory.js";
+// distill_session uses dynamic import("./session-distiller.js") at call time
 
 function entryToRetrievalResult(entry: Awaited<ReturnType<MemoryStore["get"]>>): RetrievalResult {
   if (!entry) {
@@ -1644,6 +1646,54 @@ registerTool(
   },
 );
 
+// --- MP-2: import_conversations tool ---
+
+registerTool(
+  "import_conversations",
+  "Import a conversation file (Claude Code JSONL, Claude.ai JSON, ChatGPT JSON, Slack JSON, or plaintext) into memory. Auto-detects format or use explicit format parameter. Messages are normalized and stored via the standard persistMemory pipeline.",
+  {
+    content: z.string().min(1).max(500_000).describe("Raw file content to import"),
+    scope: z.string().min(1).max(160).describe("Target scope for imported memories, e.g. 'project:myapp'"),
+    format: z.enum(["auto", "claude-code", "claude-ai", "chatgpt", "slack", "plaintext"]).default("auto").describe("Conversation format. Use 'auto' to detect automatically."),
+  },
+  async ({ content, scope, format }) => {
+    const { detectFormat, normalizeConversation, ingestNormalizedMessages } = await import("./conversation-importer.js");
+    const { embedder } = getComponents();
+
+    const resolvedFormat = format === "auto" ? detectFormat(content) : format;
+    const messages = normalizeConversation(content, resolvedFormat);
+
+    if (messages.length === 0) {
+      return {
+        content: [{
+          type: "text" as const,
+          text: `No messages found (detected format: ${resolvedFormat})`,
+        }],
+      };
+    }
+
+    const result = await ingestNormalizedMessages(
+      { store, embedder, llm, conflictStore, kgExtractor },
+      messages,
+      scope,
+    );
+
+    return {
+      content: [{
+        type: "text" as const,
+        text: [
+          `Import complete (format: ${resolvedFormat})`,
+          `Total: ${result.total}`,
+          `Stored: ${result.stored}`,
+          `Rejected: ${result.rejected}`,
+          result.errors.length > 0 ? `Errors: ${result.errors.join("; ")}` : null,
+        ].filter(Boolean).join("\n"),
+      }],
+    };
+  },
+);
+
+// --- S15: distill_session tool ---
 registerTool(
   "distill_session",
   "Distill a conversation session into structured knowledge and persist to long-term memory. Three layers: (1) microcompact clears old tool results at zero cost, (2) LLM summarizes into 9 dimensions, (3) extracts durable knowledge into RecallNest. Use when a session is ending or context is getting large. Side effect: persists extracted memories.",

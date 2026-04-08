@@ -1,470 +1,327 @@
-/**
- * Session Distiller — 会话蒸馏器
- *
- * 三层蒸馏：
- * - Layer 1: 微压缩（零成本，清除旧工具调用结果）
- * - Layer 2: LLM 结构化摘要（9 维度）
- * - Layer 3: 记忆沉淀（提取知识存入 RecallNest）
- *
- * 来源：OpenHarness auto-compaction 模式 → RecallNest 适配
- * CC/OpenHarness compact 完就丢，这里补上"沉淀为持久记忆"的闭环。
- */
-
 import type { LLMClient } from "./llm-client.js";
-import type { DurableMemoryCategory } from "./memory-schema.js";
+import type { Embedder } from "./embedder.js";
+import type { MemoryStore } from "./store.js";
+import type { ConflictCandidateStore } from "./conflict-store.js";
+import type { KGExtractor } from "./kg-extractor.js";
+import type { AuditLogger } from "./audit-log.js";
+import type { StoredMemoryRecord, DurableMemoryCategory } from "./memory-schema.js";
+import { persistMemory } from "./capture-engine.js";
 
 // ============================================================================
 // Types
 // ============================================================================
 
 export interface ConversationMessage {
-  role: "user" | "assistant" | "system";
-  content: string | ContentBlock[];
-}
-
-export interface ContentBlock {
-  type: "text" | "tool_use" | "tool_result";
-  /** tool_use / tool_result: tool name */
-  name?: string;
-  /** tool_use: tool call ID */
-  id?: string;
-  /** tool_use: input params */
-  input?: Record<string, unknown>;
-  /** tool_result: the result content */
-  content?: string;
-  /** text block content */
-  text?: string;
-  /** tool_result: the tool_use_id this result corresponds to */
-  tool_use_id?: string;
+  role: "user" | "assistant" | "system" | "tool";
+  content: string;
+  tool_name?: string;
+  timestamp?: string;
 }
 
 export interface MicrocompactResult {
-  messages: ConversationMessage[];
-  tokensFred: number;
-  toolsCleared: number;
+  tokens_freed: number;
+  tools_cleared: number;
 }
 
-export interface SummaryDimensions {
-  userIntent: string;
-  keyConcepts: string;
-  filesAndCode: string;
-  errorsAndFixes: string;
-  problemSolving: string;
-  userQuotes: string;
-  pendingTasks: string;
-  currentWork: string;
-  suggestedNext: string;
-}
-
-export interface SummarizeResult {
+export interface SummaryResult {
   text: string;
-  dimensions: SummaryDimensions;
+  dimensions: Record<string, string>;
 }
 
 export interface PersistResult {
-  memoriesStored: number;
-  memoriesDeduped: number;
-  memoriesConflicted: number;
-  memoriesRejected: number;
+  memories_stored: number;
+  memories_deduped: number;
+  memories_conflicted: number;
   ids: string[];
 }
 
-export interface DistillSessionResult {
-  microcompact: {
-    tokensFreed: number;
-    toolsCleared: number;
-  };
-  summary: SummarizeResult | null;
-  persisted: PersistResult | null;
-  compactedMessages: ConversationMessage[];
+export interface DistillResult {
+  microcompact: MicrocompactResult;
+  summary: SummaryResult;
+  persisted: PersistResult;
+  compacted_messages: ConversationMessage[];
+}
+
+interface PersistDeps {
+  store: Pick<MemoryStore, "store" | "list" | "update" | "getById" | "get" | "vectorSearch">;
+  embedder: Pick<Embedder, "embedPassage">;
+  conflictStore?: Pick<ConflictCandidateStore, "save" | "replace" | "getOpenByFingerprint" | "getLatestByFingerprint">;
+  llm?: LLMClient | null;
+  kgExtractor?: KGExtractor | null;
+  auditLogger?: AuditLogger | null;
 }
 
 // ============================================================================
 // Constants
 // ============================================================================
 
-/** Tools whose old results can be safely cleared */
-const COMPACTABLE_TOOLS = new Set([
-  "Read",
-  "read_file",
-  "Bash",
-  "bash",
-  "Grep",
-  "grep",
-  "Glob",
-  "glob",
-  "WebSearch",
-  "web_search",
-  "WebFetch",
-  "web_fetch",
-  "Edit",
-  "edit_file",
-  "Write",
-  "write_file",
+const CLEARABLE_TOOLS = new Set([
+  "read_file", "bash", "grep", "glob", "web_search", "web_fetch",
+  "edit_file", "write_file", "Read", "Write", "Edit", "Bash",
+  "Grep", "Glob", "WebSearch", "WebFetch",
 ]);
 
-const CLEARED_MARKER = "[Cleared]";
+const DIMENSION_LABELS: Record<string, string> = {
+  user_intent: "User intent and requests",
+  technical_concepts: "Key technical concepts",
+  files_and_code: "Files and code segments involved",
+  errors_and_fixes: "Errors and fix records",
+  problem_solving: "Problem solving process",
+  user_quotes: "User original quotes preserved",
+  unfinished_tasks: "Unfinished tasks",
+  current_state: "Current work state",
+  next_steps: "Suggested next steps",
+};
 
-const DEFAULT_KEEP_RECENT_TOOLS = 5;
-const DEFAULT_PRESERVE_RECENT = 6;
+const DIMENSION_KEYS = Object.keys(DIMENSION_LABELS);
+
+const SUMMARY_SYSTEM_PROMPT =
+  `You are a session summarizer. Analyze the conversation and produce a structured summary.
+
+Output format (MUST follow exactly):
+<analysis>
+Your reasoning process (will be discarded)
+</analysis>
+<summary>
+## 1. User intent and requests
+...
+## 2. Key technical concepts
+...
+## 3. Files and code segments involved
+...
+## 4. Errors and fix records
+...
+## 5. Problem solving process
+...
+## 6. User original quotes preserved
+...
+## 7. Unfinished tasks
+...
+## 8. Current work state
+...
+## 9. Suggested next steps
+...
+</summary>
+
+Rules:
+- Write concisely, preserve specific names/paths/numbers
+- If a dimension has nothing relevant, write "N/A"
+- Do NOT call any tools
+- Do NOT include content outside the XML tags`;
+
+interface DimensionMapping {
+  category: DurableMemoryCategory;
+  importance: number;
+}
+
+const DIMENSION_TO_MEMORY: Record<string, DimensionMapping> = {
+  user_intent: { category: "events", importance: 0.5 },
+  files_and_code: { category: "entities", importance: 0.6 },
+  errors_and_fixes: { category: "cases", importance: 0.7 },
+  problem_solving: { category: "patterns", importance: 0.8 },
+  user_quotes: { category: "preferences", importance: 0.7 },
+};
 
 // ============================================================================
-// Layer 1: Microcompact (zero cost, pure rules)
+// Layer 1: Microcompact
 // ============================================================================
 
-/** Estimate tokens from text: ~1 token per 4 chars, conservative. */
-function estimateTokens(text: string): number {
-  if (!text) return 0;
-  return Math.max(1, Math.ceil(text.length / 4));
-}
-
-/**
- * Extract text content from a message (handles both string and ContentBlock[]).
- */
-function getMessageText(msg: ConversationMessage): string {
-  if (typeof msg.content === "string") return msg.content;
-  return msg.content
-    .map((b) => b.text || b.content || "")
-    .filter(Boolean)
-    .join("\n");
-}
-
-/**
- * Collect all tool_use block IDs from compactable tools in message order.
- */
-function collectCompactableToolUseIds(messages: ConversationMessage[]): string[] {
-  const ids: string[] = [];
-  for (const msg of messages) {
-    if (typeof msg.content === "string") continue;
-    for (const block of msg.content) {
-      if (
-        block.type === "tool_use" &&
-        block.id &&
-        block.name &&
-        COMPACTABLE_TOOLS.has(block.name)
-      ) {
-        ids.push(block.id);
-      }
-    }
-  }
-  return ids;
-}
-
-/**
- * Layer 1: Microcompact — clear old tool results, keep recent N.
- *
- * Pure function. Returns a deep copy with cleared results + stats.
- * Does NOT call LLM.
- */
 export function microcompact(
   messages: ConversationMessage[],
-  keepRecent = DEFAULT_KEEP_RECENT_TOOLS,
-): MicrocompactResult {
-  const toolUseIds = collectCompactableToolUseIds(messages);
+  opts: { preserveRecent?: number; keepRecentTools?: number } = {},
+): { messages: ConversationMessage[]; result: MicrocompactResult } {
+  const preserveRecent = opts.preserveRecent ?? 6;
+  const keepRecentTools = opts.keepRecentTools ?? 5;
 
-  // Keep the most recent N tool results
-  const keepSet = new Set(toolUseIds.slice(-keepRecent));
+  if (messages.length === 0) {
+    return { messages: [], result: { tokens_freed: 0, tools_cleared: 0 } };
+  }
 
+  const cutoff = Math.max(0, messages.length - preserveRecent);
   let tokensFreed = 0;
   let toolsCleared = 0;
 
-  // Deep copy + clear old results
-  const result: ConversationMessage[] = messages.map((msg) => {
-    if (typeof msg.content === "string") {
-      return { ...msg };
+  // Find tool messages eligible for clearing (before the preserve window)
+  const toolIndices: number[] = [];
+  for (let i = 0; i < cutoff; i++) {
+    const msg = messages[i];
+    if (msg.role === "tool" && msg.tool_name && CLEARABLE_TOOLS.has(msg.tool_name)) {
+      toolIndices.push(i);
     }
-    const newContent: ContentBlock[] = msg.content.map((block) => {
-      if (
-        block.type === "tool_result" &&
-        block.tool_use_id &&
-        !keepSet.has(block.tool_use_id) &&
-        block.content
-      ) {
-        // Check if this tool_use_id belongs to a compactable tool
-        const isCompactable = toolUseIds.includes(block.tool_use_id);
-        if (isCompactable) {
-          const freed = estimateTokens(block.content);
-          tokensFreed += freed;
-          toolsCleared++;
-          return {
-            ...block,
-            content: CLEARED_MARKER,
-          };
-        }
-      }
-      return { ...block };
-    });
-    return { ...msg, content: newContent };
-  });
+  }
 
-  return { messages: result, tokensFred: tokensFreed, toolsCleared };
-}
+  // Keep the most recent N tool results even if they're before the cutoff
+  const indicesToClear = new Set(
+    toolIndices.slice(0, Math.max(0, toolIndices.length - keepRecentTools)),
+  );
 
-// ============================================================================
-// Layer 2: LLM Structured Summary (9 dimensions)
-// ============================================================================
-
-const SUMMARIZE_SYSTEM_PROMPT = `你是会话蒸馏助手。你的任务是把一段 AI 助手对话压缩为结构化摘要。
-
-严格按以下 9 个维度输出，每个维度用 ## 标题分隔。如果某个维度没有相关内容，写"无"。
-
-## 1. 用户意图与请求
-所有用户明确提出的请求，完整列出。
-
-## 2. 关键技术概念
-讨论过的技术、框架、模式、术语。
-
-## 3. 涉及的文件与代码段
-每个被查看或修改的文件，附行号和关键代码片段。
-
-## 4. 错误与修复记录
-遇到的每个错误、原因、解决方法。
-
-## 5. 问题解决过程
-尝试过的方法，哪些成功哪些失败，为什么。
-
-## 6. 用户原话保留
-用户说的非指令性话语（偏好表达、观点、要求风格等），原样保留。
-
-## 7. 未完成任务
-明确要求但尚未完成的工作。
-
-## 8. 当前工作状态
-蒸馏时正在进行的任务的详细状态。
-
-## 9. 建议的下一步
-基于上下文推断的最合理下一步操作。
-
-要求：
-- 直接输出内容，不要加任何前缀解释
-- 保真规则：文件路径、URL、端口号、API 名称原样保留
-- 每个维度简洁但完整，不遗漏关键信息`;
-
-/**
- * Parse LLM summary output into 9 dimensions.
- */
-function parseDimensions(text: string): SummaryDimensions {
-  const extract = (heading: string): string => {
-    const pattern = new RegExp(
-      `## \\d+\\.\\s*${heading}[\\s\\S]*?(?=## \\d+\\.|$)`,
-    );
-    const match = text.match(pattern);
-    if (!match) return "";
-    // Remove the heading line itself
-    return match[0]
-      .replace(/^## \d+\..*\n?/, "")
-      .trim();
-  };
+  const compacted: ConversationMessage[] = [];
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
+    if (indicesToClear.has(i)) {
+      const tokenCount = Math.ceil(msg.content.length / 4);
+      tokensFreed += tokenCount;
+      toolsCleared++;
+      compacted.push({
+        ...msg,
+        content: `[Cleared: ${msg.tool_name}, ~${tokenCount} tokens]`,
+      });
+    } else {
+      compacted.push({ ...msg });
+    }
+  }
 
   return {
-    userIntent: extract("用户意图与请求"),
-    keyConcepts: extract("关键技术概念"),
-    filesAndCode: extract("涉及的文件与代码段"),
-    errorsAndFixes: extract("错误与修复记录"),
-    problemSolving: extract("问题解决过程"),
-    userQuotes: extract("用户原话保留"),
-    pendingTasks: extract("未完成任务"),
-    currentWork: extract("当前工作状态"),
-    suggestedNext: extract("建议的下一步"),
+    messages: compacted,
+    result: { tokens_freed: tokensFreed, tools_cleared: toolsCleared },
   };
 }
 
-/**
- * Build a flat text from messages for LLM input.
- */
-function flattenMessages(messages: ConversationMessage[]): string {
-  return messages
-    .map((msg) => {
-      const text = getMessageText(msg);
-      return `[${msg.role}]: ${text}`;
-    })
-    .join("\n\n");
-}
+// ============================================================================
+// Layer 2: LLM Structured Summary
+// ============================================================================
 
-/**
- * Layer 2: Summarize session via LLM into 9 structured dimensions.
- *
- * Returns null if LLM is unavailable or fails.
- */
 export async function summarizeSession(
   messages: ConversationMessage[],
   llm: LLMClient,
-  preserveRecent = DEFAULT_PRESERVE_RECENT,
-): Promise<{ summary: SummarizeResult; compactedMessages: ConversationMessage[] } | null> {
-  if (messages.length <= preserveRecent) {
-    // Nothing old enough to summarize
-    return null;
+): Promise<SummaryResult> {
+  const conversationText = messages
+    .map((m) => `[${m.role}${m.tool_name ? `:${m.tool_name}` : ""}] ${m.content.slice(0, 500)}`)
+    .join("\n")
+    .slice(0, 8000);
+
+  const raw = await llm.chatLong(SUMMARY_SYSTEM_PROMPT, conversationText, 2000);
+
+  if (!raw) {
+    return { text: "", dimensions: {} };
   }
 
-  const older = messages.slice(0, -preserveRecent);
-  const newer = messages.slice(-preserveRecent);
+  // Extract <summary> block, discard <analysis>
+  const summaryMatch = raw.match(/<summary>([\s\S]*?)<\/summary>/);
+  const summaryText = summaryMatch ? summaryMatch[1].trim() : raw;
 
-  const userContent = flattenMessages(older);
-  if (!userContent.trim()) return null;
+  // Parse dimensions from ## headings
+  const dimensions: Record<string, string> = {};
+  const sections = summaryText.split(/^## \d+\.\s*/m).filter(Boolean);
 
-  // Call LLM via chatRaw (supports custom max_tokens, uses circuit breaker)
-  const rawText = await llm.chatRaw(SUMMARIZE_SYSTEM_PROMPT, userContent, 4000);
-  if (!rawText) return null;
+  for (const section of sections) {
+    const firstLine = section.split("\n")[0].trim().toLowerCase();
+    for (const key of DIMENSION_KEYS) {
+      const label = DIMENSION_LABELS[key].toLowerCase();
+      if (firstLine.includes(label) || label.includes(firstLine.replace(/\s+/g, " ").trim())) {
+        const body = section.split("\n").slice(1).join("\n").trim();
+        if (body && body !== "N/A") {
+          dimensions[key] = body;
+        }
+        break;
+      }
+    }
+  }
 
-  const dimensions = parseDimensions(rawText);
-  const summary: SummarizeResult = { text: rawText, dimensions };
-
-  // Build compacted messages: [summary as synthetic user msg] + [recent preserved]
-  const summaryMsg: ConversationMessage = {
-    role: "user",
-    content:
-      "此会话从之前的对话延续而来。以下摘要涵盖了早期部分的内容。\n\n" +
-      rawText +
-      "\n\n最近的消息已原样保留。" +
-      "\n请从上次中断处继续对话，不要询问用户任何进一步的问题。直接恢复——不要确认摘要，不要复述之前的内容。",
-  };
-
-  return {
-    summary,
-    compactedMessages: [summaryMsg, ...newer],
-  };
+  return { text: summaryText, dimensions };
 }
 
 // ============================================================================
-// Layer 3: Memory Persistence (RecallNest-specific)
+// Layer 3: Extract and Persist
 // ============================================================================
 
-interface DimensionMapping {
-  dimension: keyof SummaryDimensions;
-  category: DurableMemoryCategory;
-  importance: number;
-  /** Skip if content matches this */
-  skipIfEmpty: string;
-}
-
-const DIMENSION_MAPPINGS: DimensionMapping[] = [
-  { dimension: "userIntent", category: "events", importance: 0.5, skipIfEmpty: "无" },
-  { dimension: "errorsAndFixes", category: "cases", importance: 0.7, skipIfEmpty: "无" },
-  { dimension: "problemSolving", category: "patterns", importance: 0.8, skipIfEmpty: "无" },
-  { dimension: "userQuotes", category: "preferences", importance: 0.7, skipIfEmpty: "无" },
-  { dimension: "filesAndCode", category: "entities", importance: 0.6, skipIfEmpty: "无" },
-];
-
-/** Min content length to bother persisting (skip trivial extractions). */
-const MIN_PERSIST_LENGTH = 20;
-
-export interface PersistDeps {
-  persistMemory: (input: unknown) => Promise<{ disposition: string; id: string }>;
-}
-
-/**
- * Layer 3: Extract knowledge from structured summary and persist to RecallNest.
- *
- * Uses the existing persistMemory() flow (dedup, conflict detection, admission control).
- */
 export async function extractAndPersist(
-  dimensions: SummaryDimensions,
-  scope: string,
+  summary: SummaryResult,
   deps: PersistDeps,
+  scope: string,
 ): Promise<PersistResult> {
   const result: PersistResult = {
-    memoriesStored: 0,
-    memoriesDeduped: 0,
-    memoriesConflicted: 0,
-    memoriesRejected: 0,
+    memories_stored: 0,
+    memories_deduped: 0,
+    memories_conflicted: 0,
     ids: [],
   };
 
-  for (const mapping of DIMENSION_MAPPINGS) {
-    const content = dimensions[mapping.dimension];
-    if (!content || content.trim() === mapping.skipIfEmpty || content.trim().length < MIN_PERSIST_LENGTH) {
-      continue;
-    }
+  for (const [dimKey, mapping] of Object.entries(DIMENSION_TO_MEMORY)) {
+    const dimText = summary.dimensions[dimKey];
+    if (!dimText || dimText.trim().length < 10) continue;
 
     try {
-      const stored = await deps.persistMemory({
-        text: content.slice(0, 4000), // Respect MemoryTextSchema max
+      const stored = await persistMemory(deps, {
+        text: dimText.slice(0, 4000),
         category: mapping.category,
         importance: mapping.importance,
         scope,
-        source: "session_distill",
-        tags: ["session-distill"],
+        source: "agent" as const,
+        tags: ["session_distill", dimKey],
       });
 
-      switch (stored.disposition) {
-        case "stored":
-        case "updated":
-          result.memoriesStored++;
-          result.ids.push(stored.id);
-          break;
-        case "deduped":
-          result.memoriesDeduped++;
-          break;
-        case "conflict":
-          result.memoriesConflicted++;
-          break;
-        case "rejected":
-          result.memoriesRejected++;
-          break;
-      }
+      trackDisposition(result, stored);
     } catch {
-      // Non-fatal: skip this dimension on error
-      result.memoriesRejected++;
+      // Non-fatal: continue with other dimensions
     }
   }
 
   return result;
 }
 
-// ============================================================================
-// Orchestrator: distillSession (combines all 3 layers)
-// ============================================================================
-
-export interface DistillSessionInput {
-  messages: ConversationMessage[];
-  scope: string;
-  preserveRecent?: number;
-  keepRecentTools?: number;
-  persist?: boolean;
+function trackDisposition(result: PersistResult, stored: StoredMemoryRecord): void {
+  result.ids.push(stored.id);
+  switch (stored.disposition) {
+    case "deduped":
+      result.memories_deduped++;
+      break;
+    case "conflict":
+      result.memories_conflicted++;
+      break;
+    default:
+      result.memories_stored++;
+      break;
+  }
 }
 
-export interface DistillSessionDeps {
-  llm: LLMClient | null;
-  persistMemory: PersistDeps["persistMemory"];
-}
+// ============================================================================
+// Full Pipeline
+// ============================================================================
 
-/**
- * Full session distillation: microcompact → LLM summary → persist to RecallNest.
- */
 export async function distillSession(
-  input: DistillSessionInput,
-  deps: DistillSessionDeps,
-): Promise<DistillSessionResult> {
-  const preserveRecent = input.preserveRecent ?? DEFAULT_PRESERVE_RECENT;
-  const keepRecentTools = input.keepRecentTools ?? DEFAULT_KEEP_RECENT_TOOLS;
-  const shouldPersist = input.persist !== false;
+  messages: ConversationMessage[],
+  deps: PersistDeps & { llm: LLMClient },
+  opts: {
+    scope?: string;
+    preserveRecent?: number;
+    keepRecentTools?: number;
+    persist?: boolean;
+  } = {},
+): Promise<DistillResult> {
+  const scope = opts.scope || "default";
+  const shouldPersist = opts.persist ?? true;
 
   // Layer 1: Microcompact
-  const mc = microcompact(input.messages, keepRecentTools);
+  const { messages: compacted, result: microcompactResult } = microcompact(
+    messages,
+    { preserveRecent: opts.preserveRecent, keepRecentTools: opts.keepRecentTools },
+  );
 
-  // Layer 2: LLM summary (if LLM available)
-  let summaryResult: { summary: SummarizeResult; compactedMessages: ConversationMessage[] } | null = null;
-  if (deps.llm) {
-    summaryResult = await summarizeSession(mc.messages, deps.llm, preserveRecent);
-  }
+  // Layer 2: Summarize (using compacted messages minus preserved recent)
+  const preserveRecent = opts.preserveRecent ?? 6;
+  const cutoff = Math.max(0, compacted.length - preserveRecent);
+  const oldMessages = compacted.slice(0, cutoff);
+  const summaryResult = oldMessages.length > 0
+    ? await summarizeSession(oldMessages, deps.llm)
+    : { text: "", dimensions: {} };
 
-  // Layer 3: Persist (if summary succeeded and persist enabled)
-  let persistResult: PersistResult | null = null;
-  if (shouldPersist && summaryResult) {
-    persistResult = await extractAndPersist(
-      summaryResult.summary.dimensions,
-      input.scope,
-      { persistMemory: deps.persistMemory },
-    );
+  // Layer 3: Persist (optional)
+  let persistResult: PersistResult = {
+    memories_stored: 0,
+    memories_deduped: 0,
+    memories_conflicted: 0,
+    ids: [],
+  };
+
+  if (shouldPersist && Object.keys(summaryResult.dimensions).length > 0) {
+    persistResult = await extractAndPersist(summaryResult, deps, scope);
   }
 
   return {
-    microcompact: {
-      tokensFreed: mc.tokensFred,
-      toolsCleared: mc.toolsCleared,
-    },
-    summary: summaryResult?.summary ?? null,
+    microcompact: microcompactResult,
+    summary: summaryResult,
     persisted: persistResult,
-    compactedMessages: summaryResult?.compactedMessages ?? mc.messages,
+    compacted_messages: compacted,
   };
 }

@@ -60,7 +60,7 @@ import { checkAdmission, type ScopeRateLimiter, type AdmissionConfig } from "./a
 type StoreDeps = Pick<MemoryStore, "store"> & Partial<Pick<MemoryStore, "list" | "update" | "getById" | "get" | "vectorSearch">>;
 type ConflictStoreDeps = Pick<ConflictCandidateStore, "save" | "replace" | "getOpenByFingerprint" | "getLatestByFingerprint">;
 
-interface PersistMemoryDeps {
+export interface PersistMemoryDeps {
   store: StoreDeps;
   embedder: Pick<Embedder, "embedPassage">;
   conflictStore?: ConflictStoreDeps;

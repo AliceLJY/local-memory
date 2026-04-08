@@ -1899,6 +1899,51 @@ program
   });
 
 program
+  .command("import <path>")
+  .description("导入多格式对话文件到记忆索引")
+  .option("-f, --format <format>", "格式: auto|claude-code|chatgpt|slack|claude-ai|plaintext", "auto")
+  .option("-s, --scope <scope>", "目标 scope（必须）")
+  .action(async (filePath: string, options) => {
+    if (!options.scope) {
+      console.error("❌ --scope is required");
+      process.exitCode = 1;
+      return;
+    }
+    const resolvedPath = resolve(filePath);
+    if (!existsSync(resolvedPath)) {
+      console.error(`❌ File not found: ${resolvedPath}`);
+      process.exitCode = 1;
+      return;
+    }
+    const validFormats = ["auto", "claude-code", "chatgpt", "slack", "claude-ai", "plaintext"] as const;
+    if (!validFormats.includes(options.format)) {
+      console.error(`❌ Invalid format: ${options.format}. Must be one of: ${validFormats.join(", ")}`);
+      process.exitCode = 1;
+      return;
+    }
+
+    const config = loadConfig();
+    const { store, embedder, llm } = createComponents(config);
+
+    const { importConversation } = await import("./conversation-importer.js");
+    const result = await importConversation(
+      { store, embedder, llm },
+      resolvedPath,
+      options.scope,
+      options.format as "auto" | "claude-code" | "chatgpt" | "slack" | "claude-ai" | "plaintext",
+    );
+
+    console.log(`\n📥 Import complete`);
+    console.log(`  Total messages: ${result.total}`);
+    console.log(`  Stored: ${result.stored}`);
+    console.log(`  Rejected: ${result.rejected}`);
+    if (result.errors.length > 0) {
+      console.log(`  Errors: ${result.errors.length}`);
+      for (const e of result.errors) console.log(`    ${e}`);
+    }
+  });
+
+program
   .command("doctor")
   .description("检查安装状态和配置")
   .option("--ci", "跳过 API key 在线验证（CI 模式）")

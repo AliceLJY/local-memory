@@ -1,142 +1,324 @@
-import { describe, it, expect } from "bun:test";
+import { describe, expect, it } from "bun:test";
+
 import {
   microcompact,
   summarizeSession,
   extractAndPersist,
   distillSession,
   type ConversationMessage,
-  type SummaryDimensions,
-  type PersistDeps,
-  type DistillSessionDeps,
+  type SummaryResult,
 } from "../session-distiller.js";
 
 // ============================================================================
 // Helpers
 // ============================================================================
 
-function makeToolUseMsg(toolName: string, toolId: string): ConversationMessage {
-  return {
-    role: "assistant",
-    content: [
-      { type: "tool_use", name: toolName, id: toolId, input: {} },
-    ],
-  };
+function msg(role: ConversationMessage["role"], content: string, tool_name?: string): ConversationMessage {
+  return { role, content, tool_name };
 }
 
-function makeToolResultMsg(toolUseId: string, result: string): ConversationMessage {
-  return {
-    role: "user",
-    content: [
-      { type: "tool_result", tool_use_id: toolUseId, content: result },
-    ],
-  };
+function toolMsg(name: string, content: string): ConversationMessage {
+  return { role: "tool", content, tool_name: name };
 }
 
-function makeTextMsg(role: "user" | "assistant", text: string): ConversationMessage {
-  return { role, content: text };
+function createMockLLM(response: string | null = null) {
+  return {
+    chatLong: async (_system: string, _user: string, _maxTokens?: number) => response,
+    breaker: { canAttempt: () => true, recordSuccess: () => {}, recordFailure: () => {}, getState: () => "closed" as const, getFailureCount: () => 0 },
+  } as ReturnType<typeof createMockLLM> & { chatLong: (s: string, u: string, m?: number) => Promise<string | null> };
+}
+
+function createMockDeps() {
+  const stored: Array<Record<string, unknown>> = [];
+  let seq = 1;
+
+  return {
+    stored,
+    deps: {
+      store: {
+        async store(entry: Record<string, unknown>) {
+          const record = {
+            ...entry,
+            id: `distill-${String(seq).padStart(8, "0")}`,
+            timestamp: 1_700_000_000_000 + seq,
+          };
+          seq++;
+          stored.push(record);
+          return record;
+        },
+        async list() { return stored; },
+        async update(id: string, updates: Record<string, unknown>) {
+          const idx = stored.findIndex((e) => e.id === id);
+          if (idx < 0) return null;
+          stored[idx] = { ...stored[idx], ...updates };
+          return stored[idx];
+        },
+        async getById(id: string) {
+          return stored.find((e) => e.id === id) || null;
+        },
+        async get(id: string) {
+          return stored.find((e) => e.id === id) || null;
+        },
+        async vectorSearch() { return []; },
+      },
+      embedder: {
+        async embedPassage(_text: string) { return [0.1, 0.2, 0.3]; },
+      },
+      conflictStore: {
+        async save(record: Record<string, unknown>) { return record; },
+        async replace(record: Record<string, unknown>) { return record; },
+        async getOpenByFingerprint() { return null; },
+        async getLatestByFingerprint() { return null; },
+      },
+    },
+  };
 }
 
 // ============================================================================
-// Layer 1: Microcompact
+// Layer 1: microcompact
 // ============================================================================
 
 describe("microcompact", () => {
-  it("should clear old compactable tool results and keep recent N", () => {
-    const messages: ConversationMessage[] = [
-      makeTextMsg("user", "Read the file"),
-      makeToolUseMsg("Read", "tool_1"),
-      makeToolResultMsg("tool_1", "file content A ".repeat(100)),
-      makeToolUseMsg("Bash", "tool_2"),
-      makeToolResultMsg("tool_2", "bash output B ".repeat(100)),
-      makeToolUseMsg("Grep", "tool_3"),
-      makeToolResultMsg("tool_3", "grep result C ".repeat(100)),
-      makeToolUseMsg("Read", "tool_4"),
-      makeToolResultMsg("tool_4", "file content D ".repeat(100)),
-      makeToolUseMsg("Read", "tool_5"),
-      makeToolResultMsg("tool_5", "file content E ".repeat(100)),
-      makeToolUseMsg("Read", "tool_6"),
-      makeToolResultMsg("tool_6", "file content F ".repeat(100)),
+  it("returns empty for empty input", () => {
+    const { messages, result } = microcompact([]);
+    expect(messages).toEqual([]);
+    expect(result.tokens_freed).toBe(0);
+    expect(result.tools_cleared).toBe(0);
+  });
+
+  it("preserves all messages when count <= preserveRecent", () => {
+    const input = [
+      msg("user", "hello"),
+      msg("assistant", "hi there"),
+      msg("user", "bye"),
     ];
-
-    const result = microcompact(messages, 5);
-
-    // tool_1 is the oldest (6th from end), should be cleared
-    const clearedBlock = (result.messages[2].content as Array<{ content?: string }>)[0];
-    expect(clearedBlock.content).toBe("[Cleared]");
-
-    // tool_2 through tool_6 are the recent 5, should be preserved
-    const keptBlock = (result.messages[4].content as Array<{ content?: string }>)[0];
-    expect(keptBlock.content).toContain("bash output B");
-
-    expect(result.toolsCleared).toBe(1);
-    expect(result.tokensFred).toBeGreaterThan(0);
+    const { messages, result } = microcompact(input, { preserveRecent: 6 });
+    expect(messages).toHaveLength(3);
+    expect(result.tools_cleared).toBe(0);
+    expect(messages[0].content).toBe("hello");
   });
 
-  it("should not clear non-compactable tool results", () => {
-    const messages: ConversationMessage[] = [
-      makeToolUseMsg("search_memory", "tool_1"),
-      makeToolResultMsg("tool_1", "some memory result"),
-      makeToolUseMsg("Read", "tool_2"),
-      makeToolResultMsg("tool_2", "file content"),
+  it("clears old tool outputs beyond the preserve window", () => {
+    const longContent = "x".repeat(400);
+    const input = [
+      msg("user", "start"),
+      toolMsg("Read", longContent),
+      toolMsg("Bash", longContent),
+      toolMsg("Grep", longContent),
+      msg("assistant", "found it"),
+      msg("user", "ok"),
+      msg("assistant", "done"),
+      msg("user", "next"),
+      msg("assistant", "working"),
+      msg("user", "final"),
+      msg("assistant", "complete"),
     ];
+    // preserveRecent=4 means last 4 messages are safe (indices 7-10)
+    // keepRecentTools=1 means only 1 most recent tool result is kept
+    const { messages, result } = microcompact(input, {
+      preserveRecent: 4,
+      keepRecentTools: 1,
+    });
 
-    const result = microcompact(messages, 1);
-
-    // search_memory is not compactable, should be preserved
-    const memBlock = (result.messages[1].content as Array<{ content?: string }>)[0];
-    expect(memBlock.content).toBe("some memory result");
-
-    // Read tool_2 is the most recent 1, should also be preserved
-    const readBlock = (result.messages[3].content as Array<{ content?: string }>)[0];
-    expect(readBlock.content).toBe("file content");
-
-    expect(result.toolsCleared).toBe(0);
+    expect(messages).toHaveLength(11);
+    // First two tool messages should be cleared, third kept (most recent)
+    expect(messages[1].content).toContain("[Cleared: Read");
+    expect(messages[2].content).toContain("[Cleared: Bash");
+    expect(messages[3].content).toBe(longContent); // Grep kept as most recent tool
+    expect(result.tools_cleared).toBe(2);
+    expect(result.tokens_freed).toBeGreaterThan(0);
   });
 
-  it("should handle string content messages without error", () => {
-    const messages: ConversationMessage[] = [
-      makeTextMsg("user", "hello"),
-      makeTextMsg("assistant", "hi there"),
+  it("does not clear non-clearable tool names", () => {
+    const input = [
+      msg("user", "start"),
+      toolMsg("custom_tool", "result here"),
+      msg("assistant", "got it"),
+      msg("user", "a"),
+      msg("assistant", "b"),
+      msg("user", "c"),
+      msg("assistant", "d"),
+      msg("user", "e"),
+      msg("assistant", "f"),
     ];
-
-    const result = microcompact(messages, 5);
-    expect(result.messages).toHaveLength(2);
-    expect(result.toolsCleared).toBe(0);
-    expect(result.tokensFred).toBe(0);
+    const { messages, result } = microcompact(input, { preserveRecent: 2 });
+    expect(result.tools_cleared).toBe(0);
+    expect(messages[1].content).toBe("result here");
   });
 
-  it("should return deep copies (no mutation of input)", () => {
-    const original = "original content";
-    const messages: ConversationMessage[] = [
-      makeToolUseMsg("Read", "tool_1"),
-      makeToolResultMsg("tool_1", original),
-      makeToolUseMsg("Read", "tool_2"),
-      makeToolResultMsg("tool_2", "recent"),
+  it("estimates token count as content.length / 4", () => {
+    const content = "a".repeat(100); // 100 chars = 25 tokens
+    const input = [
+      toolMsg("Read", content),
+      msg("user", "a"),
+      msg("assistant", "b"),
+      msg("user", "c"),
+      msg("assistant", "d"),
+      msg("user", "e"),
+      msg("assistant", "f"),
     ];
-
-    microcompact(messages, 1);
-
-    // Original should not be mutated
-    const origBlock = (messages[1].content as Array<{ content?: string }>)[0];
-    expect(origBlock.content).toBe(original);
+    const { messages, result } = microcompact(input, { preserveRecent: 6, keepRecentTools: 0 });
+    expect(result.tokens_freed).toBe(25);
+    expect(result.tools_cleared).toBe(1);
+    expect(messages[0].content).toContain("~25 tokens");
   });
 
-  it("should handle empty messages array", () => {
-    const result = microcompact([], 5);
-    expect(result.messages).toHaveLength(0);
-    expect(result.toolsCleared).toBe(0);
+  it("keeps all clearable tools when keepRecentTools >= tool count", () => {
+    const input = [
+      toolMsg("Read", "file content"),
+      toolMsg("Bash", "command output"),
+      msg("user", "a"),
+      msg("assistant", "b"),
+      msg("user", "c"),
+      msg("assistant", "d"),
+      msg("user", "e"),
+      msg("assistant", "f"),
+      msg("user", "g"),
+    ];
+    const { result } = microcompact(input, { preserveRecent: 2, keepRecentTools: 5 });
+    expect(result.tools_cleared).toBe(0);
   });
 
-  it("should clear multiple old results when many tools used", () => {
-    const messages: ConversationMessage[] = [];
-    for (let i = 0; i < 10; i++) {
-      messages.push(makeToolUseMsg("Bash", `tool_${i}`));
-      messages.push(makeToolResultMsg(`tool_${i}`, `output ${i} `.repeat(50)));
+  it("preserves tool_name and other fields on cleared messages", () => {
+    const input = [
+      { role: "tool" as const, content: "long output", tool_name: "Read", timestamp: "2024-01-01" },
+      msg("user", "a"),
+      msg("assistant", "b"),
+      msg("user", "c"),
+      msg("assistant", "d"),
+      msg("user", "e"),
+      msg("assistant", "f"),
+    ];
+    const { messages } = microcompact(input, { preserveRecent: 6, keepRecentTools: 0 });
+    expect(messages[0].tool_name).toBe("Read");
+    expect(messages[0].timestamp).toBe("2024-01-01");
+    expect(messages[0].content).toContain("[Cleared: Read");
+  });
+
+  it("handles all clearable tool names", () => {
+    const clearableTools = [
+      "read_file", "bash", "grep", "glob", "web_search", "web_fetch",
+      "edit_file", "write_file", "Read", "Write", "Edit", "Bash",
+      "Grep", "Glob", "WebSearch", "WebFetch",
+    ];
+    const filler: ConversationMessage[] = [];
+    for (let i = 0; i < 20; i++) {
+      filler.push(msg("user", `msg ${i}`));
     }
+    const input = [
+      ...clearableTools.map((t) => toolMsg(t, "output")),
+      ...filler,
+    ];
+    const { result } = microcompact(input, { preserveRecent: 10, keepRecentTools: 0 });
+    expect(result.tools_cleared).toBe(clearableTools.length);
+  });
 
-    const result = microcompact(messages, 5);
-    // 10 tools total, keep recent 5, clear oldest 5
-    expect(result.toolsCleared).toBe(5);
+  it("uses default values when opts not provided", () => {
+    const input: ConversationMessage[] = [];
+    for (let i = 0; i < 10; i++) {
+      input.push(toolMsg("Read", "content"));
+      input.push(msg("user", `q${i}`));
+    }
+    // Default: preserveRecent=6, keepRecentTools=5
+    const { result } = microcompact(input);
+    // Last 6 messages are preserved, so tools in first 14 are candidates
+    // 7 tools are in the clearable zone, keepRecentTools=5 means 2 cleared
+    expect(result.tools_cleared).toBe(2);
+  });
+});
+
+// ============================================================================
+// Layer 2: summarizeSession
+// ============================================================================
+
+describe("summarizeSession", () => {
+  it("returns empty result when LLM returns null", async () => {
+    const mockLLM = createMockLLM(null);
+    const result = await summarizeSession(
+      [msg("user", "hello")],
+      mockLLM as unknown as import("../llm-client.js").LLMClient,
+    );
+    expect(result.text).toBe("");
+    expect(Object.keys(result.dimensions)).toHaveLength(0);
+  });
+
+  it("parses structured summary from LLM response", async () => {
+    const response = `<analysis>Thinking about the session...</analysis>
+<summary>
+## 1. User intent and requests
+Wanted to build a feature
+
+## 2. Key technical concepts
+TypeScript, MCP protocol
+
+## 3. Files and code segments involved
+src/main.ts, src/utils.ts
+
+## 4. Errors and fix records
+N/A
+
+## 5. Problem solving process
+Iterative approach with testing
+
+## 6. User original quotes preserved
+"Make it simple and clean"
+
+## 7. Unfinished tasks
+Unit tests pending
+
+## 8. Current work state
+Implementation 80% complete
+
+## 9. Suggested next steps
+Write tests, review code
+</summary>`;
+    const mockLLM = createMockLLM(response);
+    const result = await summarizeSession(
+      [msg("user", "build feature"), msg("assistant", "ok")],
+      mockLLM as unknown as import("../llm-client.js").LLMClient,
+    );
+
+    expect(result.text).toContain("User intent");
+    expect(result.dimensions.user_intent).toContain("build a feature");
+    expect(result.dimensions.technical_concepts).toContain("TypeScript");
+    expect(result.dimensions.files_and_code).toContain("src/main.ts");
+    expect(result.dimensions.errors_and_fixes).toBeUndefined(); // N/A is excluded
+    expect(result.dimensions.problem_solving).toContain("Iterative");
+    expect(result.dimensions.user_quotes).toContain("simple and clean");
+    expect(result.dimensions.unfinished_tasks).toContain("Unit tests");
+    expect(result.dimensions.current_state).toContain("80%");
+    expect(result.dimensions.next_steps).toContain("Write tests");
+  });
+
+  it("handles response without XML tags gracefully", async () => {
+    const response = `## 1. User intent and requests
+Debug a crash
+
+## 2. Key technical concepts
+Memory management`;
+    const mockLLM = createMockLLM(response);
+    const result = await summarizeSession(
+      [msg("user", "help")],
+      mockLLM as unknown as import("../llm-client.js").LLMClient,
+    );
+    expect(result.text).toContain("User intent");
+  });
+
+  it("truncates long messages to avoid token overflow", async () => {
+    let capturedUser = "";
+    const mockLLM = {
+      chatLong: async (_system: string, user: string) => {
+        capturedUser = user;
+        return "<analysis>ok</analysis><summary>short</summary>";
+      },
+    };
+    const longMsg = msg("user", "x".repeat(10000));
+    await summarizeSession(
+      [longMsg],
+      mockLLM as unknown as import("../llm-client.js").LLMClient,
+    );
+    // Each message content is capped at 500 chars, and total at 8000
+    expect(capturedUser.length).toBeLessThanOrEqual(8000);
   });
 });
 
@@ -145,197 +327,285 @@ describe("microcompact", () => {
 // ============================================================================
 
 describe("extractAndPersist", () => {
-  it("should persist non-empty dimensions to correct categories", async () => {
-    const stored: Array<{ text: string; category: string; source: string }> = [];
-    const mockPersist: PersistDeps["persistMemory"] = async (input) => {
-      const i = input as { text: string; category: string; source: string };
-      stored.push(i);
-      return { disposition: "stored", id: `id_${stored.length}` };
+  it("persists memories for relevant dimensions", async () => {
+    const { stored, deps } = createMockDeps();
+    const summary: SummaryResult = {
+      text: "full summary text",
+      dimensions: {
+        user_intent: "User wanted to implement a session distiller feature",
+        files_and_code: "src/session-distiller.ts, src/mcp-server.ts",
+        errors_and_fixes: "Fixed import error in llm-client.ts by adding chatLong method",
+        problem_solving: "Iterative approach: read code first, then implement layer by layer",
+        user_quotes: "User said: prefer clean code over clever code",
+      },
     };
 
-    const dims: SummaryDimensions = {
-      userIntent: "用户要求分析 OpenHarness 项目的架构设计",
-      keyConcepts: "Agent Harness, Tool Registry",
-      filesAndCode: "src/session-distiller.ts 实现了三层蒸馏逻辑",
-      errorsAndFixes: "修复了 microcompact 对 string content 的处理错误",
-      problemSolving: "先用规则清除旧工具结果，不够再调 LLM 摘要",
-      userQuotes: "用户说：实验性的都推到河马仓，实用性的就公开仓也一起推",
-      pendingTasks: "无",
-      currentWork: "无",
-      suggestedNext: "无",
-    };
-
-    const result = await extractAndPersist(dims, "project:recallnest", { persistMemory: mockPersist });
-
-    // 5 dimensions mapped, "无" and short content skipped
-    expect(result.memoriesStored).toBe(5);
+    const result = await extractAndPersist(summary, deps as Parameters<typeof extractAndPersist>[1], "project:test");
+    expect(result.memories_stored).toBe(5);
     expect(result.ids).toHaveLength(5);
 
-    // Check categories
-    expect(stored[0].category).toBe("events");       // userIntent
-    expect(stored[1].category).toBe("cases");         // errorsAndFixes
-    expect(stored[2].category).toBe("patterns");      // problemSolving
-    expect(stored[3].category).toBe("preferences");   // userQuotes
-    expect(stored[4].category).toBe("entities");      // filesAndCode
+    // Verify categories
+    const categories = stored.map((s) => s.category);
+    expect(categories).toContain("events");
+    expect(categories).toContain("entities");
+    expect(categories).toContain("cases");
+    expect(categories).toContain("patterns");
+    expect(categories).toContain("preferences");
 
-    // All should have session_distill source
-    for (const s of stored) {
-      expect(s.source).toBe("session_distill");
+    // Verify session_distill tag is in metadata
+    for (const entry of stored) {
+      const metadata = typeof entry.metadata === "string" ? entry.metadata : JSON.stringify(entry.metadata);
+      expect(metadata).toContain("session_distill");
     }
   });
 
-  it("should skip dimensions with content '无'", async () => {
-    const mockPersist: PersistDeps["persistMemory"] = async () => ({
-      disposition: "stored",
-      id: "id_1",
-    });
-
-    const dims: SummaryDimensions = {
-      userIntent: "无",
-      keyConcepts: "无",
-      filesAndCode: "无",
-      errorsAndFixes: "无",
-      problemSolving: "无",
-      userQuotes: "无",
-      pendingTasks: "无",
-      currentWork: "无",
-      suggestedNext: "无",
+  it("skips dimensions with too-short content", async () => {
+    const { deps } = createMockDeps();
+    const summary: SummaryResult = {
+      text: "summary",
+      dimensions: {
+        user_intent: "short",  // < 10 chars
+        errors_and_fixes: "Found and fixed a critical bug in the parser module",
+      },
     };
 
-    const result = await extractAndPersist(dims, "project:test", { persistMemory: mockPersist });
-    expect(result.memoriesStored).toBe(0);
+    const result = await extractAndPersist(summary, deps as Parameters<typeof extractAndPersist>[1], "project:test");
+    expect(result.memories_stored).toBe(1);
+    expect(result.ids).toHaveLength(1);
   });
 
-  it("should skip dimensions shorter than MIN_PERSIST_LENGTH", async () => {
-    const mockPersist: PersistDeps["persistMemory"] = async () => ({
-      disposition: "stored",
-      id: "id_1",
-    });
-
-    const dims: SummaryDimensions = {
-      userIntent: "短",  // too short
-      keyConcepts: "",
-      filesAndCode: "",
-      errorsAndFixes: "这是一个足够长的错误描述，应该被保存到记忆中去",
-      problemSolving: "",
-      userQuotes: "",
-      pendingTasks: "",
-      currentWork: "",
-      suggestedNext: "",
+  it("skips dimensions not in DIMENSION_TO_MEMORY mapping", async () => {
+    const { deps } = createMockDeps();
+    const summary: SummaryResult = {
+      text: "summary",
+      dimensions: {
+        technical_concepts: "TypeScript and Bun runtime details",
+        current_state: "Implementation complete, testing phase",
+        next_steps: "Deploy to production",
+      },
     };
 
-    const result = await extractAndPersist(dims, "project:test", { persistMemory: mockPersist });
-    expect(result.memoriesStored).toBe(1); // Only errorsAndFixes
+    const result = await extractAndPersist(summary, deps as Parameters<typeof extractAndPersist>[1], "project:test");
+    expect(result.memories_stored).toBe(0);
   });
 
-  it("should handle deduped and conflict dispositions", async () => {
-    let callCount = 0;
-    const mockPersist: PersistDeps["persistMemory"] = async () => {
-      callCount++;
-      if (callCount === 1) return { disposition: "deduped", id: "dup_1" };
-      if (callCount === 2) return { disposition: "conflict", id: "conflict_1" };
-      return { disposition: "stored", id: `id_${callCount}` };
-    };
+  it("returns empty result for empty dimensions", async () => {
+    const { deps } = createMockDeps();
+    const summary: SummaryResult = { text: "", dimensions: {} };
 
-    const dims: SummaryDimensions = {
-      userIntent: "用户要求实现 Session Distiller 功能模块",
-      keyConcepts: "",
-      filesAndCode: "",
-      errorsAndFixes: "修复了类型推断错误导致的编译失败问题，具体是 ContentBlock 类型没有正确处理 string 格式",
-      problemSolving: "采用三层蒸馏策略：先用规则微压缩清除旧工具结果，不够再调 LLM 做结构化摘要，最后提取知识持久化",
-      userQuotes: "",
-      pendingTasks: "",
-      currentWork: "",
-      suggestedNext: "",
-    };
-
-    const result = await extractAndPersist(dims, "project:test", { persistMemory: mockPersist });
-    expect(result.memoriesDeduped).toBe(1);
-    expect(result.memoriesConflicted).toBe(1);
-    expect(result.memoriesStored).toBe(1);
+    const result = await extractAndPersist(summary, deps as Parameters<typeof extractAndPersist>[1], "project:test");
+    expect(result.memories_stored).toBe(0);
+    expect(result.memories_deduped).toBe(0);
+    expect(result.memories_conflicted).toBe(0);
+    expect(result.ids).toHaveLength(0);
   });
 
-  it("should handle persistMemory errors gracefully", async () => {
-    const mockPersist: PersistDeps["persistMemory"] = async () => {
-      throw new Error("LanceDB write failure");
+  it("tracks disposition correctly for multiple dimensions", async () => {
+    const { deps } = createMockDeps();
+    const summary: SummaryResult = {
+      text: "summary",
+      dimensions: {
+        user_intent: "User wanted to build a distiller for sessions",
+        errors_and_fixes: "Fixed a critical error in the LLM client module",
+      },
     };
 
-    const dims: SummaryDimensions = {
-      userIntent: "这是一个会导致持久化失败的用户意图描述，用户要求实现 Session Distiller 三层蒸馏功能",
-      keyConcepts: "",
-      filesAndCode: "",
-      errorsAndFixes: "",
-      problemSolving: "",
-      userQuotes: "",
-      pendingTasks: "",
-      currentWork: "",
-      suggestedNext: "",
-    };
-
-    const result = await extractAndPersist(dims, "project:test", { persistMemory: mockPersist });
-    expect(result.memoriesRejected).toBe(1);
-    expect(result.memoriesStored).toBe(0);
+    const result = await extractAndPersist(summary, deps as Parameters<typeof extractAndPersist>[1], "project:test");
+    // Both should store successfully (no dedup in mock since vectorSearch returns [])
+    expect(result.memories_stored).toBe(2);
+    expect(result.ids).toHaveLength(2);
+    expect(result.memories_deduped).toBe(0);
+    expect(result.memories_conflicted).toBe(0);
   });
 });
 
 // ============================================================================
-// Orchestrator: distillSession
+// Full Pipeline: distillSession
 // ============================================================================
 
 describe("distillSession", () => {
-  it("should run Layer 1 even without LLM", async () => {
-    const messages: ConversationMessage[] = [
-      makeToolUseMsg("Bash", "tool_1"),
-      makeToolResultMsg("tool_1", "long output ".repeat(100)),
-      makeToolUseMsg("Bash", "tool_2"),
-      makeToolResultMsg("tool_2", "recent output"),
+  it("runs all three layers end-to-end", async () => {
+    const { deps } = createMockDeps();
+    const llmResponse = `<analysis>Processing</analysis>
+<summary>
+## 1. User intent and requests
+Implement session distiller
+
+## 2. Key technical concepts
+N/A
+
+## 3. Files and code segments involved
+src/session-distiller.ts
+
+## 4. Errors and fix records
+N/A
+
+## 5. Problem solving process
+Step by step implementation
+
+## 6. User original quotes preserved
+N/A
+
+## 7. Unfinished tasks
+N/A
+
+## 8. Current work state
+N/A
+
+## 9. Suggested next steps
+N/A
+</summary>`;
+
+    const mockLLM = createMockLLM(llmResponse);
+    const input: ConversationMessage[] = [
+      msg("user", "implement distiller"),
+      toolMsg("Read", "long file content ".repeat(100)),
+      toolMsg("Bash", "test output ".repeat(100)),
+      msg("assistant", "done reading"),
+      msg("user", "proceed"),
+      msg("assistant", "implementing"),
+      msg("user", "looks good"),
+      msg("assistant", "finished"),
+      msg("user", "test it"),
+      msg("assistant", "all pass"),
     ];
 
-    const deps: DistillSessionDeps = {
-      llm: null,
-      persistMemory: async () => ({ disposition: "stored", id: "id_1" }),
-    };
-
     const result = await distillSession(
-      { messages, scope: "project:test", keepRecentTools: 1 },
-      deps,
+      input,
+      { ...deps, llm: mockLLM } as Parameters<typeof distillSession>[1],
+      { scope: "project:test", preserveRecent: 4, keepRecentTools: 0 },
     );
 
-    expect(result.microcompact.toolsCleared).toBe(1);
-    expect(result.summary).toBeNull();
-    expect(result.persisted).toBeNull();
-    // compactedMessages should be the microcompacted version
-    expect(result.compactedMessages).toHaveLength(4);
+    // Layer 1
+    expect(result.microcompact.tools_cleared).toBe(2);
+    expect(result.microcompact.tokens_freed).toBeGreaterThan(0);
+
+    // Layer 2
+    expect(result.summary.dimensions.user_intent).toContain("session distiller");
+
+    // Layer 3
+    expect(result.persisted.memories_stored).toBeGreaterThan(0);
+
+    // Compacted messages
+    expect(result.compacted_messages).toHaveLength(10);
+    expect(result.compacted_messages[1].content).toContain("[Cleared:");
   });
 
-  it("should skip persist when persist=false", async () => {
-    const deps: DistillSessionDeps = {
-      llm: null,
-      persistMemory: async () => {
-        throw new Error("should not be called");
+  it("skips Layer 3 when persist=false", async () => {
+    const { deps } = createMockDeps();
+    const mockLLM = createMockLLM(
+      "<analysis>ok</analysis><summary>## 1. User intent and requests\nBuild something cool</summary>",
+    );
+
+    const input = [
+      msg("user", "hello"),
+      msg("assistant", "hi"),
+      msg("user", "build it"),
+      msg("assistant", "ok"),
+      msg("user", "done?"),
+      msg("assistant", "yes"),
+      msg("user", "great"),
+      msg("assistant", "cheers"),
+    ];
+
+    const result = await distillSession(
+      input,
+      { ...deps, llm: mockLLM } as Parameters<typeof distillSession>[1],
+      { persist: false, preserveRecent: 2 },
+    );
+
+    expect(result.persisted.memories_stored).toBe(0);
+    expect(result.persisted.ids).toHaveLength(0);
+  });
+
+  it("handles empty conversation gracefully", async () => {
+    const { deps } = createMockDeps();
+    const mockLLM = createMockLLM(null);
+
+    const result = await distillSession(
+      [],
+      { ...deps, llm: mockLLM } as Parameters<typeof distillSession>[1],
+    );
+
+    expect(result.microcompact.tools_cleared).toBe(0);
+    expect(result.summary.text).toBe("");
+    expect(result.persisted.memories_stored).toBe(0);
+    expect(result.compacted_messages).toHaveLength(0);
+  });
+
+  it("uses default scope when not provided", async () => {
+    const { deps, stored } = createMockDeps();
+    const mockLLM = createMockLLM(
+      "<analysis>ok</analysis><summary>## 1. User intent and requests\nBuild a feature for the application</summary>",
+    );
+
+    const input = [
+      msg("user", "hello"),
+      msg("assistant", "hi"),
+      msg("user", "a"),
+      msg("assistant", "b"),
+      msg("user", "c"),
+      msg("assistant", "d"),
+      msg("user", "e"),
+      msg("assistant", "f"),
+    ];
+
+    await distillSession(
+      input,
+      { ...deps, llm: mockLLM } as Parameters<typeof distillSession>[1],
+    );
+
+    // Should use "default" scope
+    if (stored.length > 0) {
+      expect(stored[0].scope).toBe("default");
+    }
+  });
+
+  it("only summarizes old messages (before preserve window)", async () => {
+    let capturedUser = "";
+    const mockLLM = {
+      chatLong: async (_system: string, user: string) => {
+        capturedUser = user;
+        return "<analysis>ok</analysis><summary>## 1. User intent and requests\nSomething from the old messages only</summary>";
       },
     };
 
-    const result = await distillSession(
-      { messages: [makeTextMsg("user", "hi")], scope: "project:test", persist: false },
-      deps,
+    const { deps } = createMockDeps();
+    const input = [
+      msg("user", "old message 1"),
+      msg("assistant", "old response 1"),
+      msg("user", "recent 1"),
+      msg("assistant", "recent 2"),
+      msg("user", "recent 3"),
+      msg("assistant", "recent 4"),
+    ];
+
+    await distillSession(
+      input,
+      { ...deps, llm: mockLLM } as Parameters<typeof distillSession>[1],
+      { preserveRecent: 4 },
     );
 
-    expect(result.persisted).toBeNull();
+    expect(capturedUser).toContain("old message 1");
+    expect(capturedUser).not.toContain("recent 1");
   });
 
-  it("should handle empty messages", async () => {
-    const deps: DistillSessionDeps = {
-      llm: null,
-      persistMemory: async () => ({ disposition: "stored", id: "id_1" }),
-    };
+  it("skips Layer 2/3 when all messages are in preserve window", async () => {
+    const { deps } = createMockDeps();
+    const mockLLM = createMockLLM("should not be called");
+
+    const input = [
+      msg("user", "hello"),
+      msg("assistant", "hi"),
+    ];
 
     const result = await distillSession(
-      { messages: [], scope: "project:test" },
-      deps,
+      input,
+      { ...deps, llm: mockLLM } as Parameters<typeof distillSession>[1],
+      { preserveRecent: 6 },
     );
 
-    expect(result.microcompact.toolsCleared).toBe(0);
-    expect(result.compactedMessages).toHaveLength(0);
+    expect(result.summary.text).toBe("");
+    expect(result.persisted.memories_stored).toBe(0);
   });
 });

@@ -24,7 +24,7 @@ export const ALL_MEMORY_CATEGORIES = [
   ...LEGACY_MEMORY_CATEGORIES,
 ] as const;
 
-export const STORE_MEMORY_SOURCES = ["manual", "agent", "api", "session_distill"] as const;
+export const STORE_MEMORY_SOURCES = ["manual", "agent", "api", "session_distill", "conversation_import"] as const;
 
 export const DurableMemoryCategorySchema = z.enum(DURABLE_MEMORY_CATEGORIES);
 export const MemoryCategorySchema = z.enum(ALL_MEMORY_CATEGORIES);
