@@ -12,7 +12,8 @@ A local-first memory system backed by LanceDB that turns scattered conversation 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Bun](https://img.shields.io/badge/Runtime-Bun-f9f1e1?logo=bun)](https://bun.sh)
 [![LanceDB](https://img.shields.io/badge/LanceDB-Vector+FTS-orange)](https://lancedb.com)
-[![MCP](https://img.shields.io/badge/MCP-29_tools-blue)](https://modelcontextprotocol.io)
+[![MCP](https://img.shields.io/badge/MCP-38_tools-blue)](https://modelcontextprotocol.io)
+[![Tests](https://img.shields.io/badge/Tests-1168_pass-brightgreen)](https://github.com/AliceLJY/recallnest)
 [![CC Plugin](https://img.shields.io/badge/Claude_Code-Plugin-blueviolet)](https://github.com/AliceLJY/recallnest)
 
 **English** | [简体中文](README_CN.md) | [Roadmap](ROADMAP.md)
@@ -62,13 +63,43 @@ That's the difference: **one memory shared across terminals**, with context that
 | **Dual Interface** | MCP (stdio) for CLI tools + HTTP API for custom agents |
 | **One-Click Setup** | Integration scripts install MCP access and continuity rules |
 | **Hybrid Retrieval** | Vector + BM25 + reranking + Weibull decay + tier promotion |
-| **Session Continuity** | `checkpoint_session` + `resume_context` for cross-window recovery |
+| **KG Graph Traversal** | Entity relation graph with PPR algorithm for multi-hop questions |
+| **Session Continuity** | `checkpoint_session` + `resume_context` (full/light/summary modes) |
+| **Session Distiller** | 3-layer conversation compression: microcompact → LLM summary → knowledge extraction |
+| **Conversation Import** | Import from Claude Code, Claude.ai, ChatGPT, Slack, and plaintext |
+| **Topic Tags** | Intra-scope topic partitioning — auto-detected, filterable in search |
+| **Memory Evolution** | Supersede chains, decay scoring, LLM importance, consolidation, archival |
+| **Skill Memory** | Store, retrieve, and promote executable skills from recurring patterns |
 | **Workflow Observation** | Dedicated append-only workflow health records, outside regular memory |
 | **Structured Assets** | Pins, briefs, and distilled summaries — not just raw logs |
 | **Smart Promotion** | Evidence → durable memory with conflict guards and merge resolution |
 | **6 Categories** | profile, preferences, entities, events, cases, patterns |
 | **4 Retrieval Profiles** | default, writing, debug, fact-check — tuned for different tasks |
-| **Multi-Source Ingest** | Import existing transcripts from all three terminals |
+| **Admission Control** | Write-time gating: noise filter, importance floor, rate limiting |
+
+---
+
+## Highlights (v2.0)
+
+RecallNest has evolved from a simple transcript search tool into a full **memory operating system**:
+
+| Metric | Value |
+|--------|-------|
+| Core code | 31,800+ lines across 108 source files |
+| MCP tools | 38 tools in 3 tiers (core / advanced / governance) |
+| HTTP endpoints | 20 REST endpoints |
+| Test coverage | 1,168 tests, 0 failures |
+| Retrieval | 6-channel hybrid: vector + BM25 + L0/L1/L2 multi-vector + KG graph (PPR) |
+| Memory evolution | Supersede chains, Weibull decay, LLM importance scoring, auto-archival |
+
+**New in this release:**
+
+- **Session Distiller** — 3-layer conversation compression (microcompact → LLM structured summary → knowledge extraction to durable memory)
+- **Conversation Import** — bring your history from Claude Code, Claude.ai, ChatGPT, Slack, or plaintext — auto-detected
+- **Topic Tags** — intra-scope topic partitioning with 15 auto-detected topics, filterable in `search_memory`
+- **Ultra-Light Wake-up** — `resume_context(mode='light')` returns <300 tokens for low-budget terminals
+- **Skill Memory** — store, retrieve, and auto-promote executable skills from recurring patterns
+- **Admission Control** — write-time gating with noise filter, importance floor, dedup, and rate limiting
 
 ---
 
@@ -280,7 +311,7 @@ Details: [`docs/memory-categories.md`](docs/memory-categories.md)
 ---
 
 <details>
-<summary><strong>MCP Tools (29 tools)</strong></summary>
+<summary><strong>MCP Tools (38 tools)</strong></summary>
 
 | Tool | Description |
 |------|-------------|
@@ -313,11 +344,20 @@ Details: [`docs/memory-categories.md`](docs/memory-categories.md)
 | `auto_capture` | Heuristically extract and store memory signals from text (zero LLM calls) |
 | `set_reminder` | Set a prospective memory reminder to surface in a future session |
 | `consolidate_memories` | Cluster near-duplicate memories and merge them (dry-run by default) |
+| `store_skill` | Store an executable skill with trigger conditions and verification |
+| `retrieve_skill` | Retrieve matching executable skills by semantic similarity |
+| `scan_skill_promotions` | Scan cases/patterns for promotion candidates to skills |
+| `list_tools` | Discover available tools by tier (core/advanced/full) |
+| `batch_store` | Store up to 20 memories in a single call with dedup |
+| `distill_session` | Distill a conversation into structured knowledge via 3-layer pipeline |
+| `import_conversations` | Import conversations from Claude Code, ChatGPT, Slack, and more |
+| `data_checkup` | Run data quality health checks on the memory store |
+| `dream` | Run offline memory consolidation (clustering, merging, pruning) |
 
 </details>
 
 <details>
-<summary><strong>HTTP API (19 endpoints)</strong></summary>
+<summary><strong>HTTP API (20 endpoints)</strong></summary>
 
 Base URL: `http://localhost:4318`
 
