@@ -103,6 +103,20 @@ RecallNest has evolved from a simple transcript search tool into a full **memory
 
 ---
 
+## Web UI
+
+<div align="center">
+<img src="assets/screenshots/ui-full.png" alt="RecallNest Web UI — search, skills, assets, exports" width="720" />
+<p><em>Debugging workbench: hybrid search with topic tag filtering, 4 retrieval profiles, Skills browser, and asset management.</em></p>
+</div>
+
+```bash
+cd ~/recallnest && bun run src/ui-server.ts
+# → http://localhost:4317
+```
+
+---
+
 ## Quick Start
 
 ### Option A: Claude Code Plugin (recommended)
