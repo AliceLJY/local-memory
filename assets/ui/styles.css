@@ -206,6 +206,11 @@ textarea { resize: vertical; min-height: 120px; }
   grid-template-columns: 1fr 1fr;
   gap: 12px;
 }
+.grid.three-up {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 12px;
+}
 
 .action-row {
   display: flex;
@@ -595,7 +600,7 @@ textarea { resize: vertical; min-height: 120px; }
     width: min(100vw - 18px, 100%);
     padding-top: 16px;
   }
-  .grid.two-up {
+  .grid.two-up, .grid.three-up {
     grid-template-columns: 1fr;
   }
   .card {

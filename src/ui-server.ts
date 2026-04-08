@@ -260,6 +260,28 @@ const server = Bun.serve({
         });
       }
 
+      if (request.method === "GET" && url.pathname === "/api/skills") {
+        const { store, embedder } = getComponents();
+        const { retrieveSkills } = await import("./skill-engine.js");
+        const scope = url.searchParams.get("scope") || undefined;
+        const skills = await retrieveSkills(store, embedder, "all skills", scope, 20);
+        return Response.json({
+          items: skills.map(({ skill, score }) => ({
+            shortId: skill.id.slice(0, 8),
+            name: skill.name,
+            description: skill.description,
+            trigger: skill.triggerPattern,
+            type: skill.implementationType,
+            implementation: skill.implementation,
+            verification: skill.verification,
+            scope: skill.scope,
+            tags: skill.tags,
+            score: Math.round(score * 100),
+            storedAt: skill.storedAt,
+          })),
+        });
+      }
+
       if (request.method === "GET" && url.pathname === "/api/stats") {
         const { store } = getComponents();
         const stats = await store.stats();

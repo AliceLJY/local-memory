@@ -11,24 +11,29 @@
       <header class="hero">
         <div>
           <p class="eyebrow">RecallNest</p>
-          <h1>AI transcript memory workbench.</h1>
-          <p class="subtitle">Search, explain, distill, pin.</p>
+          <h1>Shared memory layer workbench.</h1>
+          <p class="subtitle">Search, distill, pin, import, skills.</p>
         </div>
         <div class="hero-badge">
-          <span>MCP-native</span>
-          <span>Hybrid Retrieval</span>
-          <span>Asset Recall</span>
+          <span>38 MCP Tools</span>
+          <span>6-Channel Hybrid</span>
+          <span>KG + PPR</span>
+          <span>1168 Tests</span>
         </div>
       </header>
 
       <section class="brand-strip">
         <button class="brand-card quick-card" data-quick-action="search">
           <strong>Search</strong>
-          <span>run ranked recall</span>
+          <span>hybrid recall</span>
         </button>
         <button class="brand-card quick-card" data-quick-action="distill">
           <strong>Distill</strong>
           <span>build a briefing</span>
+        </button>
+        <button class="brand-card quick-card" data-quick-action="skills">
+          <strong>Skills</strong>
+          <span>executable patterns</span>
         </button>
         <button class="brand-card quick-card" data-quick-action="pin">
           <strong>Pin</strong>
@@ -45,6 +50,7 @@
 
           <div class="view-switch" id="viewSwitch">
             <button class="view-tab is-active" data-view="search">Search</button>
+            <button class="view-tab" data-view="skills">Skills</button>
             <button class="view-tab" data-view="pins">Assets</button>
             <button class="view-tab" data-view="exports">Exports</button>
           </div>
@@ -70,7 +76,28 @@
             </label>
           </div>
 
-          <div class="grid two-up">
+          <div class="grid three-up">
+            <label class="field">
+              <span>Topic Tag</span>
+              <select id="topicTagInput">
+                <option value="">all topics</option>
+                <option value="auth">auth</option>
+                <option value="deploy">deploy</option>
+                <option value="infra">infra</option>
+                <option value="testing">testing</option>
+                <option value="database">database</option>
+                <option value="api">api</option>
+                <option value="ui">ui</option>
+                <option value="perf">perf</option>
+                <option value="security">security</option>
+                <option value="memory">memory</option>
+                <option value="mcp">mcp</option>
+                <option value="llm">llm</option>
+                <option value="config">config</option>
+                <option value="data">data</option>
+                <option value="docs">docs</option>
+              </select>
+            </label>
             <label class="field">
               <span>Limit</span>
               <input id="limitInput" type="number" value="5" min="1" max="20" />

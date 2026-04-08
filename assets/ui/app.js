@@ -1,6 +1,7 @@
 const queryInput = document.getElementById('queryInput');
 const profileInput = document.getElementById('profileInput');
 const scopeInput = document.getElementById('scopeInput');
+const topicTagInput = document.getElementById('topicTagInput');
 const limitInput = document.getElementById('limitInput');
 const formatInput = document.getElementById('formatInput');
 const resultOutput = document.getElementById('resultOutput');
@@ -38,6 +39,7 @@ let lastExports = [];
 let currentViewFilter = '';
 let activeAssetTag = '';
 let lastDirtyBriefCount = 0;
+let lastSkills = [];
 
 async function api(path, payload) {
   const response = await fetch(path, {
@@ -57,6 +59,7 @@ function currentPayload() {
     query: queryInput.value.trim(),
     profile: profileInput.value,
     scope: scopeInput.value.trim() || undefined,
+    topicTag: topicTagInput.value || undefined,
     limit: Number(limitInput.value) || 5,
   };
 }
@@ -526,6 +529,13 @@ function renderMainSurface() {
     return;
   }
 
+  if (currentView === 'skills') {
+    resultTitle.textContent = 'Executable Skills';
+    resultMeta.textContent = `Skills: ${lastSkills.length}`;
+    renderSkillsView(lastSkills);
+    return;
+  }
+
   if (currentView === 'exports') {
     const filtered = filterExports(lastExports);
     resultTitle.textContent = 'Export Artifacts';
@@ -604,6 +614,97 @@ async function loadExports() {
   } catch (error) {
     statusLine.textContent = String(error.message || error);
   }
+}
+
+async function loadSkills() {
+  try {
+    const data = await api('/api/skills');
+    lastSkills = data.items || [];
+    if (currentView === 'skills') renderMainSurface();
+  } catch (error) {
+    statusLine.textContent = String(error.message || error);
+  }
+}
+
+function renderSkillsView(items) {
+  if (!items || items.length === 0) {
+    resultCards.textContent = '';
+    const emptyDiv = document.createElement('div');
+    emptyDiv.className = 'empty-state';
+    emptyDiv.textContent = 'No skills stored yet. Use store_skill via MCP to add executable skills.';
+    resultCards.appendChild(emptyDiv);
+    return;
+  }
+
+  resultCards.textContent = '';
+  for (const item of items) {
+    const article = document.createElement('article');
+    article.className = 'list-card result-card';
+    article.dataset.cardId = item.shortId;
+
+    const head = document.createElement('div');
+    head.className = 'list-card-head';
+    const nameEl = document.createElement('strong');
+    nameEl.textContent = item.name;
+    const typeChip = document.createElement('span');
+    typeChip.className = 'card-chip';
+    typeChip.textContent = item.type;
+    head.appendChild(nameEl);
+    head.appendChild(typeChip);
+
+    const desc = document.createElement('p');
+    desc.className = 'result-snippet';
+    desc.textContent = item.description;
+
+    const meta = document.createElement('div');
+    meta.className = 'result-card-meta';
+    const triggerSpan = document.createElement('span');
+    triggerSpan.textContent = 'Trigger: ' + item.trigger;
+    const scopeSpan = document.createElement('span');
+    scopeSpan.textContent = item.scope;
+    meta.appendChild(triggerSpan);
+    meta.appendChild(scopeSpan);
+
+    const actions = document.createElement('div');
+    actions.className = 'result-card-actions';
+    const detailBtn = document.createElement('button');
+    detailBtn.className = 'card-chip';
+    detailBtn.dataset.toggleId = item.shortId;
+    detailBtn.textContent = 'Details';
+    const copyBtn = document.createElement('button');
+    copyBtn.className = 'card-chip';
+    copyBtn.dataset.copyText = encodeURIComponent(item.implementation);
+    copyBtn.textContent = 'Copy Code';
+    actions.appendChild(detailBtn);
+    actions.appendChild(copyBtn);
+
+    const detail = document.createElement('div');
+    detail.className = 'result-card-detail';
+    const implBlock = document.createElement('div');
+    implBlock.className = 'detail-block';
+    const implLabel = document.createElement('strong');
+    implLabel.textContent = 'Implementation';
+    const implPre = document.createElement('pre');
+    implPre.textContent = item.implementation;
+    implBlock.appendChild(implLabel);
+    implBlock.appendChild(implPre);
+    const tagsBlock = document.createElement('div');
+    tagsBlock.className = 'detail-block';
+    const tagsLabel = document.createElement('strong');
+    tagsLabel.textContent = 'Tags: ' + ((item.tags || []).join(', ') || '-');
+    tagsBlock.appendChild(tagsLabel);
+    detail.appendChild(implBlock);
+    detail.appendChild(tagsBlock);
+
+    article.appendChild(head);
+    article.appendChild(desc);
+    article.appendChild(meta);
+    article.appendChild(actions);
+    article.appendChild(detail);
+    resultCards.appendChild(article);
+  }
+
+  bindResultCardActions();
 }
 
 async function loadStats() {
@@ -723,6 +824,12 @@ async function handleQuickAction(action) {
     await runMode('distill');
     return;
   }
+  if (action === 'skills') {
+    setActiveView('skills');
+    await loadSkills();
+    renderMainSurface();
+    return;
+  }
   if (action === 'pin') {
     pinMemoryId.focus();
     pinMemoryId.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -736,6 +843,9 @@ viewTabs.forEach((tab) => {
     setActiveView(view);
     if (view === 'pins') {
       await loadPins();
+    }
+    if (view === 'skills') {
+      await loadSkills();
     }
     if (view === 'exports') {
       await loadExports();
