@@ -122,6 +122,29 @@ RecallNest has evolved from a simple transcript search tool into a full **memory
 - **Memory Lint** — content quality checker with health score (contradictions, duplicates, stale, orphans)
 - **Knowledge Graph** — interactive D3.js force-directed visualization with cross-scope semantic bridges
 
+### Architecture Highlights
+
+RecallNest is not just a vector search wrapper. Key design decisions:
+
+- **Weibull Decay + Importance Modulation** — memories decay along a parametric Weibull curve; importance scores (LLM-assessed with anchored rubrics) modulate the half-life, so core identity facts persist while transient details fade naturally
+- **L0 / L1 / L2 Dynamic Folding** — every memory stores 3 granularity layers (one-liner / bullet summary / full content); retrieval dynamically selects which layer to return based on relevance score and token budget
+- **Vector Pre-filter + LLM Dedup** — 90% of dedup decisions use cheap cosine similarity (≥ 0.92); only borderline cases invoke LLM judgment, keeping costs low without sacrificing accuracy
+- **Category-Aware Merge Strategies** — `profile` and `preferences` use merge-on-conflict (latest wins); `events` and `cases` use append-only (history preserved). No one-size-fits-all
+- **Display Score vs Elimination Score** — retrieval uses a dual-track system: tier floor prevents core memories from ever dropping out, while decay boost lets fresh memories surface temporarily without permanently displacing stable ones
+
+### Benchmark: LongMemEval (ICLR 2025)
+
+Evaluated on 500 questions across 6 memory abilities ([full report](reports/longmemeval-comparison-report.md)):
+
+| | RecallNest | Vector-only baseline | Delta |
+|---|---|---|---|
+| Overall Accuracy | **29.6%** | 24.2% | **+5.4pp** |
+| User Facts | **64.3%** | 52.9% | +11.4pp |
+| Knowledge Update | **43.6%** | 42.3% | +1.3pp |
+| Abstention Rate | **55.6%** | 67.8% | **−12.2pp** |
+
+Wins or ties in **all 6 categories**, with no regression. The hybrid retrieval pipeline (BM25 + vector + recency + RIF dedup) surfaces 12.2% more relevant context than vector-only search. Both systems are bottlenecked by the gpt-4o-mini reader — retrieval quality headroom is larger than what accuracy numbers show.
+
 ---
 
 ## Web UI
