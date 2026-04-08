@@ -8,6 +8,7 @@
 
 import type { MemoryEntry, MemoryStore } from "./store.js";
 import { parseEvolution, isActiveMemory } from "./memory-evolution.js";
+import { cosineSimilarity } from "./multi-vector.js";
 import { writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 
@@ -28,7 +29,7 @@ export interface GraphNode {
 export interface GraphEdge {
   source: string;
   target: string;
-  type: "supersede" | "consolidation" | "cluster" | "scope";
+  type: "supersede" | "consolidation" | "cluster" | "scope" | "semantic";
 }
 
 export interface MemoryGraph {
@@ -134,7 +135,7 @@ function selectDiverseNodes(entries: MemoryEntry[], maxNodes: number): MemoryEnt
 // ---------------------------------------------------------------------------
 
 export async function buildMemoryGraph(
-  store: Pick<MemoryStore, "list">,
+  store: Pick<MemoryStore, "list"> & Partial<Pick<MemoryStore, "getVectors">>,
   options?: GraphExportOptions,
 ): Promise<MemoryGraph> {
   const maxNodes = options?.maxNodes ?? 200;
@@ -217,7 +218,42 @@ export async function buildMemoryGraph(
     }
   }
 
-  // 7. Deduplicate edges
+  // 7. Cross-scope semantic bridges — connect entries from DIFFERENT scopes
+  //    that are semantically similar (cosine ≥ 0.65). This reveals hidden
+  //    cross-domain knowledge connections that the user's interdisciplinary
+  //    thinking creates but explicit metadata doesn't capture.
+  //    Vectors must be fetched separately since list() omits them for perf.
+  const SEMANTIC_BRIDGE_THRESHOLD = 0.65;
+  const MAX_SEMANTIC_EDGES = 30;  // cap to avoid visual clutter
+
+  if (store.getVectors) {
+    const vectorMap = await store.getVectors(selected.map(e => e.id));
+    const semanticCandidates: { source: string; target: string; sim: number }[] = [];
+
+    for (let i = 0; i < selected.length; i++) {
+      for (let j = i + 1; j < selected.length; j++) {
+        const a = selected[i];
+        const b = selected[j];
+        // Only cross-scope — same-scope connections are handled by scope chains
+        if (a.scope === b.scope) continue;
+        const vecA = vectorMap.get(a.id);
+        const vecB = vectorMap.get(b.id);
+        if (!vecA || !vecB) continue;
+        const sim = cosineSimilarity(vecA, vecB);
+        if (sim >= SEMANTIC_BRIDGE_THRESHOLD) {
+          semanticCandidates.push({ source: a.id, target: b.id, sim });
+        }
+      }
+    }
+
+    // Keep top-N by similarity to avoid clutter
+    semanticCandidates.sort((a, b) => b.sim - a.sim);
+    for (const { source, target } of semanticCandidates.slice(0, MAX_SEMANTIC_EDGES)) {
+      edges.push({ source, target, type: "semantic" });
+    }
+  }
+
+  // 8. Deduplicate edges
   const edgeKey = (e: GraphEdge) => `${e.source}|${e.target}|${e.type}`;
   const seen = new Set<string>();
   const uniqueEdges: GraphEdge[] = [];
@@ -343,6 +379,7 @@ export function renderGraphHTML(graph: MemoryGraph): string {
   <div class="legend-item"><div class="legend-line"></div><span>supersede</span></div>
   <div class="legend-item"><div class="legend-line dashed"></div><span>cluster</span></div>
   <div class="legend-item"><div class="legend-line dotted"></div><span>scope</span></div>
+  <div class="legend-item"><div class="legend-line" style="border-top-color:#f472b6;border-top-style:dashed"></div><span>semantic bridge</span></div>
 </div>
 
 <div id="tooltip">
@@ -378,18 +415,21 @@ function edgeStroke(type) {
   if (type === "supersede") return "";
   if (type === "cluster") return "8,4";
   if (type === "consolidation") return "";
+  if (type === "semantic") return "6,3,2,3";  // dash-dot pattern
   return "3,3";
 }
 
 function edgeColor(type) {
   if (type === "supersede" || type === "consolidation") return "#fbbf24";
   if (type === "cluster") return "#60a5fa";
+  if (type === "semantic") return "#f472b6";
   return "#9ca3af";
 }
 
 function edgeOpacity(type) {
   if (type === "scope") return 0.4;
   if (type === "cluster") return 0.65;
+  if (type === "semantic") return 0.6;
   return 0.7;
 }
 
@@ -561,9 +601,19 @@ export function formatGraphExportResult(path: string, graph: MemoryGraph): strin
     .map(([cat, count]) => `${cat}(${count})`)
     .join(", ");
 
+  // Count edge types
+  const edgeTypeCounts = new Map<string, number>();
+  for (const edge of graph.edges) {
+    edgeTypeCounts.set(edge.type, (edgeTypeCounts.get(edge.type) ?? 0) + 1);
+  }
+  const semanticCount = edgeTypeCounts.get("semantic") ?? 0;
+  const edgeSummary = semanticCount > 0
+    ? ` (${semanticCount} semantic bridges)`
+    : "";
+
   return [
     `Knowledge Graph exported: ${path}`,
-    `Nodes: ${graph.nodes.length} | Edges: ${graph.edges.length}`,
+    `Nodes: ${graph.nodes.length} | Edges: ${graph.edges.length}${edgeSummary}`,
     `Categories: ${catSummary || "none"}`,
   ].join("\n");
 }

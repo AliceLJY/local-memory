@@ -716,6 +716,30 @@ export class MemoryStore {
     };
   }
 
+  /**
+   * Batch-fetch vectors for a list of entry IDs.
+   * Used by graph-export for cross-scope semantic bridge computation.
+   * Single LanceDB query — much faster than N individual getById calls.
+   */
+  async getVectors(ids: string[]): Promise<Map<string, number[]>> {
+    await this.ensureInitialized();
+    if (ids.length === 0) return new Map();
+
+    const conditions = ids.map(id => `id = '${escapeSqlLiteral(id)}'`).join(" OR ");
+    const rows = await this.table!.query()
+      .select(["id", "vector"])
+      .where(conditions)
+      .limit(ids.length)
+      .toArray();
+
+    const result = new Map<string, number[]>();
+    for (const row of rows) {
+      const vec = Array.from(row.vector as Iterable<number>);
+      if (vec.length > 0) result.set(row.id as string, vec);
+    }
+    return result;
+  }
+
   async stats(scopeFilter?: string[]): Promise<{
     totalCount: number;
     scopeCounts: Record<string, number>;

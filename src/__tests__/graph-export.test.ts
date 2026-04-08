@@ -35,10 +35,19 @@ function makeEntry(overrides: Partial<MemoryEntry> & { id: string }): MemoryEntr
   };
 }
 
-function createMockStore(entries: MemoryEntry[]): Pick<MemoryStore, "list"> {
+function createMockStore(entries: MemoryEntry[]): Pick<MemoryStore, "list"> & Partial<Pick<MemoryStore, "getVectors">> {
   return {
     async list() { return entries; },
-  } as Pick<MemoryStore, "list">;
+    async getVectors(ids: string[]) {
+      const map = new Map<string, number[]>();
+      for (const e of entries) {
+        if (ids.includes(e.id) && e.vector?.length > 0) {
+          map.set(e.id, e.vector);
+        }
+      }
+      return map;
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -366,5 +375,115 @@ describe("formatGraphExportResult", () => {
     expect(result).toContain("Nodes: 0");
     expect(result).toContain("Edges: 0");
     expect(result).toContain("none");
+  });
+
+  it("shows semantic bridge count when present", () => {
+    const graph: MemoryGraph = {
+      nodes: [],
+      edges: [
+        { source: "a", target: "b", type: "semantic" },
+        { source: "c", target: "d", type: "semantic" },
+        { source: "e", target: "f", type: "scope" },
+      ],
+    };
+    const result = formatGraphExportResult("/tmp/test.html", graph);
+    expect(result).toContain("2 semantic bridges");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Cross-Scope Semantic Bridges
+// ---------------------------------------------------------------------------
+
+describe("cross-scope semantic bridges", () => {
+  // Helper: create a normalized vector in a specific direction
+  function dirVector(index: number, dim = 8): number[] {
+    const v = new Array(dim).fill(0);
+    v[index] = 1;
+    return v;
+  }
+
+  // Helper: create a vector that's a blend (for high cosine similarity)
+  function blendVector(a: number[], b: number[], ratio = 0.5): number[] {
+    const v = a.map((_, i) => a[i] * ratio + b[i] * (1 - ratio));
+    const norm = Math.sqrt(v.reduce((s, x) => s + x * x, 0));
+    return v.map(x => x / (norm || 1));
+  }
+
+  it("creates semantic edges between similar entries in different scopes", async () => {
+    const sharedVec = dirVector(0);
+    const entries = [
+      makeEntry({ id: "s1-a", scope: "scope-writing", vector: sharedVec, text: "good titles need cognitive gap" }),
+      makeEntry({ id: "s2-a", scope: "scope-ai-tools", vector: sharedVec, text: "prompts need surprise element" }),
+    ];
+    const store = createMockStore(entries);
+    const graph = await buildMemoryGraph(store, { maxNodes: 100 });
+
+    const semanticEdges = graph.edges.filter(e => e.type === "semantic");
+    expect(semanticEdges.length).toBe(1);
+    expect(semanticEdges[0].source).toBe("s1-a");
+    expect(semanticEdges[0].target).toBe("s2-a");
+  });
+
+  it("does NOT create semantic edges within the same scope", async () => {
+    const sharedVec = dirVector(0);
+    const entries = [
+      makeEntry({ id: "same-1", scope: "project:alpha", vector: sharedVec }),
+      makeEntry({ id: "same-2", scope: "project:alpha", vector: sharedVec }),
+    ];
+    const store = createMockStore(entries);
+    const graph = await buildMemoryGraph(store, { maxNodes: 100 });
+
+    const semanticEdges = graph.edges.filter(e => e.type === "semantic");
+    expect(semanticEdges.length).toBe(0);
+  });
+
+  it("does NOT create edges below similarity threshold", async () => {
+    const entries = [
+      makeEntry({ id: "far-1", scope: "scope-a", vector: dirVector(0) }),
+      makeEntry({ id: "far-2", scope: "scope-b", vector: dirVector(3) }),  // orthogonal
+    ];
+    const store = createMockStore(entries);
+    const graph = await buildMemoryGraph(store, { maxNodes: 100 });
+
+    const semanticEdges = graph.edges.filter(e => e.type === "semantic");
+    expect(semanticEdges.length).toBe(0);
+  });
+
+  it("caps semantic edges at MAX_SEMANTIC_EDGES (top-N by similarity)", async () => {
+    // Create 40 entries across 2 scopes with identical vectors → would generate
+    // 20*20=400 cross-scope pairs, but should be capped at 30
+    const vec = dirVector(0);
+    const entries: MemoryEntry[] = [];
+    for (let i = 0; i < 20; i++) {
+      entries.push(makeEntry({ id: `a-${i}`, scope: "scope-alpha", vector: vec }));
+      entries.push(makeEntry({ id: `b-${i}`, scope: "scope-beta", vector: vec }));
+    }
+    const store = createMockStore(entries);
+    const graph = await buildMemoryGraph(store, { maxNodes: 100 });
+
+    const semanticEdges = graph.edges.filter(e => e.type === "semantic");
+    expect(semanticEdges.length).toBeLessThanOrEqual(30);
+    expect(semanticEdges.length).toBeGreaterThan(0);
+  });
+
+  it("handles entries with empty vectors gracefully", async () => {
+    const entries = [
+      makeEntry({ id: "no-vec-1", scope: "scope-a", vector: [] }),
+      makeEntry({ id: "no-vec-2", scope: "scope-b", vector: [] }),
+      makeEntry({ id: "has-vec", scope: "scope-c", vector: dirVector(0) }),
+    ];
+    const store = createMockStore(entries);
+    const graph = await buildMemoryGraph(store, { maxNodes: 100 });
+
+    const semanticEdges = graph.edges.filter(e => e.type === "semantic");
+    expect(semanticEdges.length).toBe(0);  // no valid pairs
+  });
+
+  it("includes semantic bridge in HTML legend", () => {
+    const graph: MemoryGraph = { nodes: [], edges: [] };
+    const html = renderGraphHTML(graph);
+    expect(html).toContain("semantic bridge");
+    expect(html).toContain("#f472b6");
   });
 });
