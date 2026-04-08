@@ -126,19 +126,9 @@ RecallNest has evolved from a simple transcript search tool into a full **memory
 
 ## Web UI
 
-<p align="center">
-<img src="assets/dashboard.png" alt="RecallNest Dashboard — stats, health score, category distribution" width="720" />
-</p>
-<p align="center"><em>Dashboard: 55K+ memories, 100/100 health score, category distribution at a glance.</em></p>
-
-<p align="center">
-<img src="assets/knowledge-graph.png" alt="RecallNest Knowledge Graph — D3.js force-directed visualization" width="720" />
-</p>
-<p align="center"><em>Knowledge Graph: 80 nodes, 6 categories, evolution edges + semantic bridges across scopes.</em></p>
-
 <div align="center">
 <img src="assets/screenshots/ui-full.png" alt="RecallNest Web UI — search, skills, assets, exports" width="720" />
-<p><em>Workbench: hybrid search with topic tag filtering, 4 retrieval profiles, Skills browser, and asset management.</em></p>
+<p><em>Search Workbench: hybrid search with topic tag filtering, 4 retrieval profiles, Skills browser, and asset management.</em></p>
 </div>
 
 ```bash
