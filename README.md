@@ -64,7 +64,7 @@ See your memories grow — total count, category distribution, health score, and
 
 ### Knowledge Graph
 
-Visualize your memory network as an interactive force-directed graph. Each node is a memory, colored by category.
+Visualize your memory network as an interactive force-directed graph. Each node is a memory, colored by category. **Semantic bridges** (pink lines) reveal hidden cross-domain connections — knowledge that lives in different scopes but shares the same underlying insight.
 
 <p align="center">
   <img src="assets/knowledge-graph.png" alt="RecallNest Knowledge Graph" width="800" />
@@ -120,7 +120,7 @@ RecallNest has evolved from a simple transcript search tool into a full **memory
 - **Skill Memory** — store, retrieve, and auto-promote executable skills from recurring patterns
 - **Admission Control** — write-time gating with noise filter, importance floor, dedup, and rate limiting
 - **Memory Lint** — content quality checker with health score (contradictions, duplicates, stale, orphans)
-- **Knowledge Graph** — interactive D3.js force-directed visualization of your memory network
+- **Knowledge Graph** — interactive D3.js force-directed visualization with cross-scope semantic bridges
 
 ---
 
@@ -134,7 +134,7 @@ RecallNest has evolved from a simple transcript search tool into a full **memory
 <p align="center">
 <img src="assets/knowledge-graph.png" alt="RecallNest Knowledge Graph — D3.js force-directed visualization" width="720" />
 </p>
-<p align="center"><em>Knowledge Graph: 80 nodes across 6 categories with evolution edges.</em></p>
+<p align="center"><em>Knowledge Graph: 80 nodes, 6 categories, evolution edges + semantic bridges across scopes.</em></p>
 
 <div align="center">
 <img src="assets/screenshots/ui-full.png" alt="RecallNest Web UI — search, skills, assets, exports" width="720" />
