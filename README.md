@@ -460,7 +460,7 @@ RecallNest started as a fork of [memory-lancedb-pro](https://github.com/CortexRe
 
 | Source | Contribution |
 |--------|-------------|
-| [claude-memory-pro](https://github.com/CortexReach/claude-memory-pro) by [@win4r](https://github.com/win4r) | Retrieval core ideas and implementation base |
+| [memory-lancedb-pro](https://github.com/CortexReach/memory-lancedb-pro) by [@win4r](https://github.com/win4r) | Fork base — hybrid retrieval, decay modeling, and memory architecture |
 | Claude Code | Foundation and early project scaffolding |
 | OpenAI Codex | Productization and MCP expansion |
 
