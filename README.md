@@ -134,7 +134,7 @@ RecallNest is not just a vector search wrapper. Key design decisions:
 
 ### Benchmark: LongMemEval (ICLR 2025)
 
-Evaluated on 500 questions across 6 memory abilities ([full report](reports/longmemeval-comparison-report.md)):
+Evaluated on 500 questions across 6 memory abilities ([methodology: LongMemEval, ICLR 2025](https://arxiv.org/abs/2407.15168)):
 
 | | RecallNest | Vector-only baseline | Delta |
 |---|---|---|---|

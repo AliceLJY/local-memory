@@ -130,7 +130,7 @@ RecallNest 不是简单的向量搜索包装器。关键设计决策：
 
 ### 基准测试：LongMemEval (ICLR 2025)
 
-在 6 项记忆能力、500 个问题上评估（[完整报告](reports/longmemeval-comparison-report.md)）：
+在 6 项记忆能力、500 个问题上评估（[评测方法：LongMemEval, ICLR 2025](https://arxiv.org/abs/2407.15168)）：
 
 | | RecallNest | 纯向量基线 | 差值 |
 |---|---|---|---|
