@@ -185,6 +185,31 @@ bun run src/cli.ts doctor
 
 ---
 
+## 多语言支持
+
+RecallNest 开箱即用支持英文。如需多语言记忆（中文、日文、泰文及 20+ 种语言），安装 [babel-memory](https://github.com/AliceLJY/babel-memory) 及所需语言包：
+
+```bash
+# 中文
+npm install babel-memory jieba-wasm
+
+# 日文
+npm install babel-memory @sglkc/kuromoji
+
+# 泰文
+npm install babel-memory wordcut
+
+# 欧洲语言（德语、法语、西班牙语、俄语等）
+npm install babel-memory snowball-stemmers
+
+# 同时安装多种语言
+npm install babel-memory jieba-wasm @sglkc/kuromoji snowball-stemmers
+```
+
+RecallNest 启动时自动检测 babel-memory，无需额外配置。未安装 babel-memory 时，RecallNest 仍正常工作，使用标准 BM25 文本搜索。
+
+---
+
 ## 架构
 
 ```

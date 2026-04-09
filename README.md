@@ -203,6 +203,31 @@ bun run src/cli.ts doctor
 
 ---
 
+## Multilingual Support
+
+RecallNest works out of the box with English. For multilingual memory (Chinese, Japanese, Thai, and 20+ more), install [babel-memory](https://github.com/AliceLJY/babel-memory) with the language packs you need:
+
+```bash
+# Chinese
+npm install babel-memory jieba-wasm
+
+# Japanese
+npm install babel-memory @sglkc/kuromoji
+
+# Thai
+npm install babel-memory wordcut
+
+# European languages (German, French, Spanish, Russian, etc.)
+npm install babel-memory snowball-stemmers
+
+# Multiple languages at once
+npm install babel-memory jieba-wasm @sglkc/kuromoji snowball-stemmers
+```
+
+RecallNest auto-detects babel-memory at startup — no configuration needed. Without babel-memory, RecallNest still works perfectly with standard BM25 text search.
+
+---
+
 ## Architecture
 
 ```
