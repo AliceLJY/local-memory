@@ -1,4 +1,4 @@
-import { describe, expect, test, beforeAll } from "bun:test";
+import { describe, expect, test, beforeAll, afterAll } from "bun:test";
 import {
   detectLanguage,
   tokenizeForFts,
@@ -6,6 +6,10 @@ import {
   getKgPrompt,
   getSessionPrompt,
 } from "babel-memory";
+import { MemoryStore } from "../store.js";
+import { rmSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 beforeAll(async () => {
   await initTokenizer();
@@ -69,5 +73,67 @@ describe("babel-memory integration", () => {
     const fts = tokenizeForFts(entry.text, lang);
     expect(lang).toBe("en");
     expect(fts).toBe(entry.text);
+  });
+});
+
+describe("store.update() preserves language + fts_text", () => {
+  const dbPath = join(tmpdir(), `recallnest-update-lang-test-${Date.now()}`);
+  let store: MemoryStore;
+
+  beforeAll(async () => {
+    mkdirSync(dbPath, { recursive: true });
+    store = new MemoryStore({ dbPath, vectorDim: 3 });
+    await (store as any).ensureInitialized();
+  });
+
+  afterAll(() => {
+    try { rmSync(dbPath, { recursive: true, force: true }); } catch {}
+  });
+
+  test("update preserves language and fts_text when not in updates", async () => {
+    const entry = await store.store({
+      text: "这是一条中文记忆",
+      vector: [0.1, 0.2, 0.3],
+      category: "events",
+      scope: "test:lang",
+      importance: 0.7,
+      metadata: "{}",
+      language: "zh",
+      fts_text: "这是 一条 中文 记忆",
+    });
+
+    // Update only text — language and fts_text should be preserved from old row
+    const updated = await store.update(entry.id, {
+      importance: 0.9,
+    });
+
+    expect(updated).not.toBeNull();
+    expect(updated!.language).toBe("zh");
+    expect(updated!.fts_text).toBe("这是 一条 中文 记忆");
+    expect(updated!.importance).toBe(0.9);
+  });
+
+  test("update overwrites language and fts_text when provided", async () => {
+    const entry = await store.store({
+      text: "old english text",
+      vector: [0.4, 0.5, 0.6],
+      category: "events",
+      scope: "test:lang",
+      importance: 0.6,
+      metadata: "{}",
+      language: "en",
+      fts_text: "old english text",
+    });
+
+    const updated = await store.update(entry.id, {
+      text: "新的中文文本",
+      language: "zh",
+      fts_text: "新的 中文 文本",
+    });
+
+    expect(updated).not.toBeNull();
+    expect(updated!.language).toBe("zh");
+    expect(updated!.fts_text).toBe("新的 中文 文本");
+    expect(updated!.text).toBe("新的中文文本");
   });
 });

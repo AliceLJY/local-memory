@@ -832,7 +832,7 @@ export class MemoryStore {
 
   async update(
     id: string,
-    updates: { text?: string; vector?: number[]; importance?: number; category?: MemoryEntry["category"]; metadata?: string; timestamp?: number },
+    updates: { text?: string; vector?: number[]; importance?: number; category?: MemoryEntry["category"]; metadata?: string; timestamp?: number; language?: string; fts_text?: string },
     scopeFilter?: string[]
   ): Promise<MemoryEntry | null> {
     await this.ensureInitialized();
@@ -853,7 +853,7 @@ export class MemoryStore {
       rows = await this.table!.query().where(`id = '${safeId}'`).limit(1).toArray();
     } else {
       // Prefix match
-      const all = await this.table!.query().select(["id", "text", "vector", "category", "scope", "importance", "timestamp", "metadata"]).toArray();
+      const all = await this.table!.query().select(["id", "text", "vector", "category", "scope", "importance", "timestamp", "metadata", "language", "fts_text"]).toArray();
       rows = all.filter((r: any) => (r.id as string).startsWith(id));
       if (rows.length > 1) {
         throw new Error(`Ambiguous prefix "${id}" matches ${rows.length} memories. Use a longer prefix or full ID.`);
@@ -870,7 +870,7 @@ export class MemoryStore {
       throw new Error(`Memory ${id} is outside accessible scopes`);
     }
 
-    // Build updated entry, preserving original timestamp
+    // Build updated entry, preserving original timestamp and language fields
     const updated: MemoryEntry = {
       id: row.id as string,
       text: updates.text ?? (row.text as string),
@@ -880,6 +880,8 @@ export class MemoryStore {
       importance: updates.importance ?? Number(row.importance),
       timestamp: updates.timestamp ?? Number(row.timestamp),
       metadata: updates.metadata ?? ((row.metadata as string) || "{}"),
+      language: updates.language ?? ((row.language as string) || "en"),
+      fts_text: updates.fts_text ?? ((row.fts_text as string) || (updates.text ?? (row.text as string))),
     };
 
     // LanceDB doesn't support in-place update; delete + re-add
