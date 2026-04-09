@@ -8,6 +8,7 @@ import type { Embedder } from "./embedder.js";
 import { filterNoise } from "./noise-filter.js";
 import { shouldSkipRetrieval } from "./adaptive-retrieval.js";
 import { expandQuery } from "./query-expander.js";
+import { detectLanguage, tokenizeForFts } from "babel-memory";
 import { type AccessTracker, computeHotnessScore, parseAccessMetadata } from "./access-tracker.js";
 import { weibullDecay, resolveTier, isDecayExempt } from "./decay-engine.js";
 import { logWarn } from "./stderr-log.js";
@@ -893,10 +894,14 @@ export class MemoryRetriever {
       ? this.runPPRSearch(query, scopeFilter?.[0], trace)
       : Promise.resolve([] as RetrievalResult[]);
 
+    // Pre-tokenize expanded query for BM25 so CJK text produces meaningful FTS matches
+    const expandedQuery = expandQuery(searchQuery);
+    const ftsQuery = tokenizeForFts(expandedQuery, detectLanguage(expandedQuery));
+
     trace?.startStage("vector_search", 0);
     const [vectorResults, bm25Results, pprResults] = await Promise.all([
       this.runVectorSearch(queryVector, candidatePoolSize, scopeFilter, category, includeArchived),
-      this.runBM25Search(expandQuery(searchQuery), candidatePoolSize, scopeFilter, category, includeArchived),
+      this.runBM25Search(ftsQuery, candidatePoolSize, scopeFilter, category, includeArchived),
       pprPromise,
     ]);
     trace?.endStage(vectorResults.length, vectorResults.map(r => r.score));

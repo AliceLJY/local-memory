@@ -42,6 +42,8 @@ export interface MemoryEntry {
   importance: number;
   timestamp: number;
   metadata?: string; // JSON string for extensible metadata — includes l0_abstract/l1_overview/l2_content/tier
+  language?: string;   // ISO 639-1: "zh"|"ja"|"ko"|"en"
+  fts_text?: string;   // Pre-tokenized text for FTS indexing
 }
 
 export interface MemorySearchResult {
@@ -278,6 +280,8 @@ export class MemoryStore {
         importance: 0,
         timestamp: 0,
         metadata: "{}",
+        language: "en",
+        fts_text: "__schema__",
       };
 
       try {
@@ -325,13 +329,13 @@ export class MemoryStore {
       // Check if FTS index already exists
       const indices = await table.listIndices();
       const hasFtsIndex = indices?.some((idx: any) =>
-        idx.indexType === "FTS" || idx.columns?.includes("text")
+        idx.indexType === "FTS" || idx.columns?.includes("fts_text")
       );
 
       if (!hasFtsIndex) {
         // LanceDB @lancedb/lancedb >=0.26: use Index.fts() config
         const lancedb = await loadLanceDB();
-        await table.createIndex("text", {
+        await table.createIndex("fts_text", {
           config: (lancedb as any).Index.fts(),
         });
       }
@@ -348,6 +352,8 @@ export class MemoryStore {
       id: entry.id || deterministicId(entry.scope, entry.text),
       timestamp: Date.now(),
       metadata: entry.metadata || "{}",
+      language: entry.language || "en",
+      fts_text: entry.fts_text || entry.text,
     };
 
     try {
@@ -375,6 +381,8 @@ export class MemoryStore {
       id: deterministicId(entry.scope, entry.text),
       timestamp: Date.now(),
       metadata: entry.metadata || "{}",
+      language: entry.language || "en",
+      fts_text: entry.fts_text || entry.text,
     }));
 
     try {

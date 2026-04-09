@@ -1,4 +1,5 @@
 import type { Embedder } from "./embedder.js";
+import { detectLanguage, tokenizeForFts } from "babel-memory";
 import { generateAnchor } from "./anchor-generator.js";
 import { incrementWriteCount } from "./activity-counter.js";
 import { verifyWrite } from "./write-verifier.js";
@@ -88,6 +89,8 @@ interface DurableWriteInput {
   source: "manual" | "agent" | "api";
   sourceCategory?: string;
   sourceBoundary?: ReturnType<typeof extractBoundaryMetadata>;
+  language?: string;
+  fts_text?: string;
 }
 
 const CANONICAL_SCAN_LIMIT = 1000;
@@ -551,6 +554,8 @@ async function writeDurableEntry(
       category: params.category,
       metadata: params.metadata,
       timestamp: Date.now(),
+      ...(params.language ? { language: params.language } : {}),
+      ...(params.fts_text ? { fts_text: params.fts_text } : {}),
     });
     if (!updated) {
       throw new Error(`Failed to update canonical memory ${latest.id}`);
@@ -571,6 +576,8 @@ async function writeDurableEntry(
     scope: params.scope,
     importance: params.importance,
     metadata: params.metadata,
+    ...(params.language ? { language: params.language } : {}),
+    ...(params.fts_text ? { fts_text: params.fts_text } : {}),
   });
 
   return {
@@ -780,6 +787,8 @@ export async function persistMemory(
   }
 
   const vector = await deps.embedder.embedPassage(input.text);
+  const language = detectLanguage(input.text);
+  const fts_text = tokenizeForFts(input.text, language);
   const resolvedScope = resolveScope(input);
   const canonicalKey = resolveCanonicalKey({
     category: input.category,
@@ -911,6 +920,8 @@ export async function persistMemory(
     metadata,
     canonicalKey,
     source: input.source,
+    language,
+    fts_text,
   });
 
   // Tier 4.1: Async KG triple extraction (non-blocking)
@@ -984,6 +995,8 @@ export async function persistMemory(
       metadata: prefMetadata,
       canonicalKey: prefCanonicalKey,
       source: input.source,
+      language,
+      fts_text,
     }).catch(() => {}); // Dual-write must never block the primary write
   }
 
@@ -999,6 +1012,8 @@ export async function persistWorkflowPattern(
   const tags = mergeTags(input.tags, ["workflow", "pattern"]);
   const text = buildWorkflowPatternText(input);
   const vector = await deps.embedder.embedPassage(text);
+  const language = detectLanguage(text);
+  const fts_text = tokenizeForFts(text, language);
   const canonicalKey = resolveCanonicalKey({
     category: "patterns",
     title: input.title,
@@ -1014,6 +1029,8 @@ export async function persistWorkflowPattern(
     metadata: buildWorkflowPatternMetadata(input, tags, canonicalKey),
     canonicalKey,
     source: input.source,
+    language,
+    fts_text,
   });
 
   return {
@@ -1039,6 +1056,8 @@ export async function persistCaseMemory(
   const tags = mergeTags(input.tags, ["case", "solution"]);
   const text = buildCaseMemoryText(input);
   const vector = await deps.embedder.embedPassage(text);
+  const language = detectLanguage(text);
+  const fts_text = tokenizeForFts(text, language);
   const canonicalKey = resolveCanonicalKey({
     category: "cases",
     title: input.title,
@@ -1054,6 +1073,8 @@ export async function persistCaseMemory(
     metadata: buildCaseMemoryMetadata(input, tags, canonicalKey),
     canonicalKey,
     source: input.source,
+    language,
+    fts_text,
   });
 
   return {
@@ -1100,6 +1121,8 @@ export async function promoteMemory(
     canonicalKey: input.canonicalKey,
   });
   const vector = await deps.embedder.embedPassage(text);
+  const language = detectLanguage(text);
+  const fts_text = tokenizeForFts(text, language);
   const resolvedScope = resolveScope(input);
   const { entry, disposition, conflictId } = await writeDurableEntry(deps, {
     text,
@@ -1113,6 +1136,8 @@ export async function promoteMemory(
     source: input.source,
     sourceCategory: sourceEntry.category,
     sourceBoundary: boundary,
+    language,
+    fts_text,
   });
 
   return {

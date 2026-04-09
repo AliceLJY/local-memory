@@ -11,6 +11,7 @@
 import { readFileSync, readdirSync, existsSync, statSync, writeFileSync } from "node:fs";
 import { join, basename, resolve, dirname } from "node:path";
 import { homedir } from "node:os";
+import { detectLanguage, tokenizeForFts } from "babel-memory";
 import type { MemoryStore, MemoryEntry } from "./store.js";
 import type { Embedder } from "./embedder.js";
 import { chunkDocument, type ChunkerConfig } from "./chunker.js";
@@ -623,13 +624,18 @@ export async function drainPendingQueue(
 
     for (const j of keepIndices) {
       try {
+        const entryText = extractions[j].l1 || extractions[j].l0;
+        const language = detectLanguage(entryText);
+        const fts_text = tokenizeForFts(entryText, language);
         await store.store({
-          text: extractions[j].l1 || extractions[j].l0,
+          text: entryText,
           vector: vectors[j],
           category: extractions[j].category as any,
           scope: batch[j].scope,
           importance: extractions[j].importance,
           metadata: JSON.stringify({ source: batch[j].scope.split(":")[0], l0_abstract: extractions[j].l0, l1_overview: extractions[j].l1, l2_content: extractions[j].l1 || extractions[j].l0 }),
+          language,
+          fts_text,
         });
         processed++;
       } catch { errors++; }
