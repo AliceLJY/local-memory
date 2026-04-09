@@ -534,6 +534,7 @@ Part of the **小试AI** open-source AI workflow:
 
 | Project | Description |
 |---------|-------------|
+| [babel-memory](https://github.com/AliceLJY/babel-memory) | Multilingual preprocessing for BM25 — 27+ languages, zero deps |
 | [content-alchemy](https://github.com/AliceLJY/content-alchemy) | 5-stage AI writing pipeline |
 | [content-publisher](https://github.com/AliceLJY/content-publisher) | Image generation + layout + WeChat publishing |
 | [wechat-ai-bridge](https://github.com/AliceLJY/wechat-ai-bridge) | Run Claude Code / Codex / Gemini in WeChat with session management |
