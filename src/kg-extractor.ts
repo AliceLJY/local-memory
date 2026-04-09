@@ -7,6 +7,7 @@
 import type { LLMClient } from "./llm-client.js";
 import type { KGStore } from "./kg-store.js";
 import { logInfo, logWarn } from "./stderr-log.js";
+import { detectLanguage, getKgPrompt } from "babel-memory";
 
 // ============================================================================
 // Types
@@ -89,30 +90,7 @@ export function normalizePredicate(raw: string): string {
 // Extraction Prompt
 // ============================================================================
 
-const KG_EXTRACT_SYSTEM = `You are a knowledge graph extraction assistant. Extract (subject, predicate, object) triples from text. Respond with valid JSON only.`;
-
-function buildKGExtractionPrompt(text: string): string {
-  return `Extract knowledge graph triples from the text below.
-
-Rules:
-- Extract relationships between named entities, concepts, tools, people, projects
-- Use simple predicates: uses, created_by, works_with, friend_of, depends_on, located_in, member_of, prefers, knows, discussed, mentioned_in, related_to, is_a, has, manages, built, wrote, lives_in
-- Assign confidence (0-1) based on how explicit the relationship is
-- Skip vague or speculative relationships (confidence < 0.5)
-- 3-8 triples per text typically
-
-Examples:
-
-Text: "Alice uses Python for her data science projects at Google"
-{"triples":[{"subject":"Alice","predicate":"uses","object":"Python","confidence":0.95},{"subject":"Alice","predicate":"works_at","object":"Google","confidence":0.90}]}
-
-Text: "RecallNest depends on LanceDB for vector storage and uses OpenAI for embeddings"
-{"triples":[{"subject":"RecallNest","predicate":"depends_on","object":"LanceDB","confidence":0.95},{"subject":"RecallNest","predicate":"uses","object":"OpenAI","confidence":0.90}]}
-
-Now extract triples from:
-
-${text}`;
-}
+// KG extraction prompts are now provided by babel-memory (bilingual)
 
 // ============================================================================
 // Extractor
@@ -163,12 +141,14 @@ export class KGExtractor {
   async extract(text: string): Promise<RawTriple[]> {
     if (!text || text.length < 10) return [];
 
-    const prompt = buildKGExtractionPrompt(text);
+    const lang = detectLanguage(text);
+    const { system, userTemplate } = getKgPrompt(lang);
+    const prompt = userTemplate.replace("{text}", text);
 
     let response: LlmExtractionResponse | null = null;
     try {
       response = await this.llm.chatJson<LlmExtractionResponse>(
-        KG_EXTRACT_SYSTEM,
+        system,
         prompt,
       );
     } catch (err) {

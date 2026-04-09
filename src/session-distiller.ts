@@ -6,6 +6,7 @@ import type { KGExtractor } from "./kg-extractor.js";
 import type { AuditLogger } from "./audit-log.js";
 import type { StoredMemoryRecord, DurableMemoryCategory } from "./memory-schema.js";
 import { persistMemory } from "./capture-engine.js";
+import { detectLanguage, getSessionPrompt } from "babel-memory";
 
 // ============================================================================
 // Types
@@ -61,53 +62,7 @@ const CLEARABLE_TOOLS = new Set([
   "Grep", "Glob", "WebSearch", "WebFetch",
 ]);
 
-const DIMENSION_LABELS: Record<string, string> = {
-  user_intent: "User intent and requests",
-  technical_concepts: "Key technical concepts",
-  files_and_code: "Files and code segments involved",
-  errors_and_fixes: "Errors and fix records",
-  problem_solving: "Problem solving process",
-  user_quotes: "User original quotes preserved",
-  unfinished_tasks: "Unfinished tasks",
-  current_state: "Current work state",
-  next_steps: "Suggested next steps",
-};
-
-const DIMENSION_KEYS = Object.keys(DIMENSION_LABELS);
-
-const SUMMARY_SYSTEM_PROMPT =
-  `You are a session summarizer. Analyze the conversation and produce a structured summary.
-
-Output format (MUST follow exactly):
-<analysis>
-Your reasoning process (will be discarded)
-</analysis>
-<summary>
-## 1. User intent and requests
-...
-## 2. Key technical concepts
-...
-## 3. Files and code segments involved
-...
-## 4. Errors and fix records
-...
-## 5. Problem solving process
-...
-## 6. User original quotes preserved
-...
-## 7. Unfinished tasks
-...
-## 8. Current work state
-...
-## 9. Suggested next steps
-...
-</summary>
-
-Rules:
-- Write concisely, preserve specific names/paths/numbers
-- If a dimension has nothing relevant, write "N/A"
-- Do NOT call any tools
-- Do NOT include content outside the XML tags`;
+// Session summary prompts and dimension labels are now provided by babel-memory (bilingual)
 
 interface DimensionMapping {
   category: DurableMemoryCategory;
@@ -190,7 +145,12 @@ export async function summarizeSession(
     .join("\n")
     .slice(0, 8000);
 
-  const raw = await llm.chatLong(SUMMARY_SYSTEM_PROMPT, conversationText, 2000);
+  // Use babel-memory bilingual prompt based on conversation language
+  const lang = detectLanguage(conversationText);
+  const { system: sessionSystemPrompt, dimensionLabels } = getSessionPrompt(lang);
+  const dimensionKeys = Object.keys(dimensionLabels);
+
+  const raw = await llm.chatLong(sessionSystemPrompt, conversationText, 2000);
 
   if (!raw) {
     return { text: "", dimensions: {} };
@@ -206,8 +166,8 @@ export async function summarizeSession(
 
   for (const section of sections) {
     const firstLine = section.split("\n")[0].trim().toLowerCase();
-    for (const key of DIMENSION_KEYS) {
-      const label = DIMENSION_LABELS[key].toLowerCase();
+    for (const key of dimensionKeys) {
+      const label = dimensionLabels[key].toLowerCase();
       if (firstLine.includes(label) || label.includes(firstLine.replace(/\s+/g, " ").trim())) {
         const body = section.split("\n").slice(1).join("\n").trim();
         if (body && body !== "N/A") {
