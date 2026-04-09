@@ -1,5 +1,5 @@
 import type { Embedder } from "./embedder.js";
-import { detectLanguage, tokenizeForFts } from "babel-memory";
+import { detectLang, tokenizeFts } from "./language-hook.js";
 import { generateAnchor } from "./anchor-generator.js";
 import { incrementWriteCount } from "./activity-counter.js";
 import { verifyWrite } from "./write-verifier.js";
@@ -787,8 +787,8 @@ export async function persistMemory(
   }
 
   const vector = await deps.embedder.embedPassage(input.text);
-  const language = detectLanguage(input.text);
-  const fts_text = tokenizeForFts(input.text, language);
+  const language = detectLang(input.text);
+  const fts_text = tokenizeFts(input.text, language);
   const resolvedScope = resolveScope(input);
   const canonicalKey = resolveCanonicalKey({
     category: input.category,
@@ -1012,8 +1012,8 @@ export async function persistWorkflowPattern(
   const tags = mergeTags(input.tags, ["workflow", "pattern"]);
   const text = buildWorkflowPatternText(input);
   const vector = await deps.embedder.embedPassage(text);
-  const language = detectLanguage(text);
-  const fts_text = tokenizeForFts(text, language);
+  const language = detectLang(text);
+  const fts_text = tokenizeFts(text, language);
   const canonicalKey = resolveCanonicalKey({
     category: "patterns",
     title: input.title,
@@ -1056,8 +1056,8 @@ export async function persistCaseMemory(
   const tags = mergeTags(input.tags, ["case", "solution"]);
   const text = buildCaseMemoryText(input);
   const vector = await deps.embedder.embedPassage(text);
-  const language = detectLanguage(text);
-  const fts_text = tokenizeForFts(text, language);
+  const language = detectLang(text);
+  const fts_text = tokenizeFts(text, language);
   const canonicalKey = resolveCanonicalKey({
     category: "cases",
     title: input.title,
@@ -1121,8 +1121,8 @@ export async function promoteMemory(
     canonicalKey: input.canonicalKey,
   });
   const vector = await deps.embedder.embedPassage(text);
-  const language = detectLanguage(text);
-  const fts_text = tokenizeForFts(text, language);
+  const language = detectLang(text);
+  const fts_text = tokenizeFts(text, language);
   const resolvedScope = resolveScope(input);
   const { entry, disposition, conflictId } = await writeDurableEntry(deps, {
     text,

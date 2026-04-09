@@ -11,7 +11,7 @@
 import { readFileSync, readdirSync, existsSync, statSync, writeFileSync } from "node:fs";
 import { join, basename, resolve, dirname } from "node:path";
 import { homedir } from "node:os";
-import { detectLanguage, tokenizeForFts } from "babel-memory";
+import { detectLang, tokenizeFts } from "./language-hook.js";
 import type { MemoryStore, MemoryEntry } from "./store.js";
 import type { Embedder } from "./embedder.js";
 import { chunkDocument, type ChunkerConfig } from "./chunker.js";
@@ -625,8 +625,8 @@ export async function drainPendingQueue(
     for (const j of keepIndices) {
       try {
         const entryText = extractions[j].l1 || extractions[j].l0;
-        const language = detectLanguage(entryText);
-        const fts_text = tokenizeForFts(entryText, language);
+        const language = detectLang(entryText);
+        const fts_text = tokenizeFts(entryText, language);
         await store.store({
           text: entryText,
           vector: vectors[j],

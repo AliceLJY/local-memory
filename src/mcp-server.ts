@@ -82,7 +82,7 @@ function shouldRegisterTool(toolName: string): boolean {
   return true;
 }
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { initTokenizer } from "babel-memory";
+import { autoRegisterBabelMemory } from "./language-hook.js";
 import { z } from "zod";
 import type { RetrievalResult } from "./retriever.js";
 import type { MemoryStore } from "./store.js";
@@ -1802,8 +1802,10 @@ registerTool(
 // Start
 // ============================================================================
 
-// Pre-warm jieba-wasm for CJK tokenization (non-blocking; falls back to char-level split)
-initTokenizer().catch(() => { /* fallback to char-level split */ });
+// Auto-register babel-memory language processor if installed (non-blocking)
+autoRegisterBabelMemory().then((ok) => {
+  if (ok) console.error("[recallnest] babel-memory registered");
+});
 
 const transport = new StdioServerTransport();
 await server.connect(transport);

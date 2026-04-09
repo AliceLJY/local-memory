@@ -6,7 +6,7 @@ import type { KGExtractor } from "./kg-extractor.js";
 import type { AuditLogger } from "./audit-log.js";
 import type { StoredMemoryRecord, DurableMemoryCategory } from "./memory-schema.js";
 import { persistMemory } from "./capture-engine.js";
-import { detectLanguage, getSessionPrompt } from "babel-memory";
+import { detectLang, getSessionPromptHook } from "./language-hook.js";
 
 // ============================================================================
 // Types
@@ -62,7 +62,25 @@ const CLEARABLE_TOOLS = new Set([
   "Grep", "Glob", "WebSearch", "WebFetch",
 ]);
 
-// Session summary prompts and dimension labels are now provided by babel-memory (bilingual)
+// Session summary fallback prompts (used when babel-memory is not installed)
+
+const DEFAULT_DIMENSION_LABELS: Record<string, string> = {
+  user_intent: "User intent and requests",
+  technical_concepts: "Key technical concepts",
+  files_and_code: "Files and code segments involved",
+  errors_and_fixes: "Errors and fix records",
+  problem_solving: "Problem solving process",
+  user_quotes: "User original quotes preserved",
+  unfinished_tasks: "Unfinished tasks",
+  current_state: "Current work state",
+  next_steps: "Suggested next steps",
+};
+
+const DEFAULT_SESSION_SYSTEM = `You are a session summarizer. Analyze the conversation and produce a structured summary.
+Wrap the summary in <summary></summary> tags.
+Use numbered ## headings for each dimension:
+${Object.entries(DEFAULT_DIMENSION_LABELS).map(([, label], i) => `## ${i + 1}. ${label}`).join("\n")}
+If a dimension has no relevant content, write "N/A".`;
 
 interface DimensionMapping {
   category: DurableMemoryCategory;
@@ -145,9 +163,11 @@ export async function summarizeSession(
     .join("\n")
     .slice(0, 8000);
 
-  // Use babel-memory bilingual prompt based on conversation language
-  const lang = detectLanguage(conversationText);
-  const { system: sessionSystemPrompt, dimensionLabels } = getSessionPrompt(lang);
+  // Use babel-memory bilingual prompt if available, otherwise fallback to defaults
+  const lang = detectLang(conversationText);
+  const babelPrompt = getSessionPromptHook(lang);
+  const sessionSystemPrompt = babelPrompt?.system ?? DEFAULT_SESSION_SYSTEM;
+  const dimensionLabels = babelPrompt?.dimensionLabels ?? DEFAULT_DIMENSION_LABELS;
   const dimensionKeys = Object.keys(dimensionLabels);
 
   const raw = await llm.chatLong(sessionSystemPrompt, conversationText, 2000);

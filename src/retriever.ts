@@ -8,7 +8,7 @@ import type { Embedder } from "./embedder.js";
 import { filterNoise } from "./noise-filter.js";
 import { shouldSkipRetrieval } from "./adaptive-retrieval.js";
 import { expandQuery } from "./query-expander.js";
-import { detectLanguage, tokenizeForFts } from "babel-memory";
+import { detectLang, tokenizeFts } from "./language-hook.js";
 import { type AccessTracker, computeHotnessScore, parseAccessMetadata } from "./access-tracker.js";
 import { weibullDecay, resolveTier, isDecayExempt } from "./decay-engine.js";
 import { logWarn } from "./stderr-log.js";
@@ -896,7 +896,7 @@ export class MemoryRetriever {
 
     // Pre-tokenize expanded query for BM25 so CJK text produces meaningful FTS matches
     const expandedQuery = expandQuery(searchQuery);
-    const ftsQuery = tokenizeForFts(expandedQuery, detectLanguage(expandedQuery));
+    const ftsQuery = tokenizeFts(expandedQuery, detectLang(expandedQuery));
 
     trace?.startStage("vector_search", 0);
     const [vectorResults, bm25Results, pprResults] = await Promise.all([
