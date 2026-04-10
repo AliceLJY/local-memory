@@ -10,6 +10,8 @@
  * No LLM required — pure math + access statistics.
  */
 
+import type { EmotionMetadata } from "./memory-schema.js";
+
 // ============================================================================
 // Tier Definitions
 // ============================================================================
@@ -84,6 +86,36 @@ export function weibullDecay(
   const decay = Math.exp(-lambda * Math.pow(ageDays, beta));
 
   return floor + (1 - floor) * decay;
+}
+
+// ============================================================================
+// Emotion-Adjusted Decay
+// ============================================================================
+
+/**
+ * Adjust half-life based on emotional intensity.
+ * Strong emotion extends half-life by up to 30%.
+ */
+export function adjustHalfLifeForEmotion(
+  baseHalfLife: number,
+  emotion: EmotionMetadata | null | undefined,
+): number {
+  if (!emotion) return baseHalfLife;
+  const raw = Math.abs(emotion.valence);
+  // Dead-zone: ignore negligible emotional signal below threshold
+  const intensity = raw < 0.1 ? 0 : raw;
+  return baseHalfLife * (1 + 0.3 * intensity);
+}
+
+/**
+ * Compute initial strength boost from arousal (flashbulb memory effect).
+ * Returns multiplier in [1.0, 1.1].
+ */
+export function computeArousalBoost(
+  emotion: EmotionMetadata | null | undefined,
+): number {
+  if (!emotion) return 1.0;
+  return 1 + 0.1 * emotion.arousal;
 }
 
 // ============================================================================
