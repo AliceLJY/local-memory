@@ -260,14 +260,24 @@ export class MemoryStore {
     try {
       table = await db.openTable(TABLE_NAME);
 
-      // Check if we need to add scope column for backward compatibility
+      // Backward compatibility: add missing columns to existing tables
       try {
         const sample = await table.query().limit(1).toArray();
-        if (sample.length > 0 && !("scope" in sample[0])) {
-          logWarn("Adding scope column for backward compatibility with existing data");
+        if (sample.length > 0) {
+          if (!("scope" in sample[0])) {
+            logWarn("Adding scope column for backward compatibility with existing data");
+          }
+          if (!("language" in sample[0])) {
+            logWarn("Adding language column for backward compatibility");
+            await table.addColumns([{ name: "language", valueSql: "'en'" }]);
+          }
+          if (!("fts_text" in sample[0])) {
+            logWarn("Adding fts_text column for backward compatibility");
+            await table.addColumns([{ name: "fts_text", valueSql: "text" }]);
+          }
         }
       } catch (err) {
-        logWarn("Could not check table schema:", err);
+        logWarn("Could not check/migrate table schema:", err);
       }
     } catch (_openErr) {
       // Table doesn't exist yet — create it
@@ -422,6 +432,8 @@ export class MemoryStore {
       importance: Number.isFinite(entry.importance) ? entry.importance : 0.5,
       timestamp: Number.isFinite(entry.timestamp) ? entry.timestamp : Date.now(),
       metadata: entry.metadata || "{}",
+      language: entry.language || "en",
+      fts_text: entry.fts_text || entry.text,
     };
 
     await this.table!.add([full]);
