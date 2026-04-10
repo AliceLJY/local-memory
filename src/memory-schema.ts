@@ -36,6 +36,37 @@ export type MemoryCategoryValue = z.infer<typeof MemoryCategorySchema>;
 export type StoreMemorySource = z.infer<typeof StoreMemorySourceSchema>;
 export type WriteDisposition = z.infer<typeof WriteDispositionSchema>;
 
+// --- Emotional Valence (Philosophy of Memory: Affective Memory) ---
+export interface EmotionMetadata {
+  /** Negative (-1) to Positive (+1) */
+  valence: number;
+  /** Calm (0) to Excited (1) */
+  arousal: number;
+  /** Human-readable label */
+  label?: string;
+}
+
+export const EmotionMetadataSchema = z.object({
+  valence: z.number().min(-1).max(1),
+  arousal: z.number().min(0).max(1),
+  label: z.string().max(30).optional(),
+});
+
+/** Parse emotion from metadata JSON string, returns null if absent */
+export function parseEmotion(metadata: string | undefined): EmotionMetadata | null {
+  if (!metadata) return null;
+  try {
+    const parsed = JSON.parse(metadata);
+    if (parsed.emotion && typeof parsed.emotion.valence === "number") {
+      return EmotionMetadataSchema.parse(parsed.emotion);
+    }
+  } catch { /* malformed metadata - safe to ignore */ }
+  return null;
+}
+
+/** Default neutral emotion for memories without emotion data */
+export const NEUTRAL_EMOTION: EmotionMetadata = { valence: 0, arousal: 0, label: "neutral" };
+
 export const MemoryTextSchema = boundedStringSchema("text", 4000);
 export const MemoryScopeSchema = optionalBoundedStringSchema(160);
 export const RequiredMemoryScopeSchema = boundedStringSchema("scope", 160);
@@ -183,3 +214,7 @@ export type CaseMemoryInput = z.infer<typeof CaseMemoryInputSchema>;
 export type StoredCaseMemoryRecord = z.infer<typeof StoredCaseMemoryRecordSchema>;
 export type PromoteMemoryInput = z.infer<typeof PromoteMemoryInputSchema>;
 export type StoredPromotedMemoryRecord = z.infer<typeof StoredPromotedMemoryRecordSchema>;
+
+export function isEmotionScoringEnabled(): boolean {
+  return process.env.RECALLNEST_EMOTION_SCORING === "true";
+}
