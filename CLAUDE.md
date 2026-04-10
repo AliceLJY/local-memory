@@ -34,6 +34,8 @@
 
 - `RECALLNEST_MULTI_VECTOR=true` — 多向量 L0/L1/L2 检索
 - `RECALLNEST_KG_MODE=true` — KG 三元组提取 + 图遍历
+- `RECALLNEST_EMOTION_SCORING=true` — Emotion detection + adjusted decay + retrieval scoring
+- `RECALLNEST_CONSTRUCTIVE_RETRIEVAL=true` — LLM context reconstruction with grounding (resume default, search opt-in)
 
 ## 6. 测试基线
 
