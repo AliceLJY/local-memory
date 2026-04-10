@@ -619,23 +619,23 @@ export class MemoryRetriever {
       results = await this.multiHopExpand(results, context);
     }
 
-    // Record access for returned results (async, non-blocking).
-    // Only reinforce on manual retrieval — auto-recall must not strengthen noise.
-    // Tier 3.2: pass similarity scores for novelty gating — only novel retrievals
-    // (high query-result distance) trigger access reinforcement.
-    if (this.accessTracker && results.length > 0 && context.source !== "auto-recall") {
-      this.accessTracker.recordAccess(
-        results.map(r => r.entry.id),
-        results.map(r => r.score),
-      );
+    // MP-1: Topic Tag post-filter — only keep results matching the requested topicTag
+    if (context.topicTag && results.length > 0) {
+      const tag = context.topicTag.toLowerCase();
+      results = results.filter(r => {
+        const entryTag = extractTopicTag(r.entry.metadata);
+        return entryTag?.toLowerCase() === tag;
+      });
     }
 
     // P0.2: Record frequency hits for returned results (manual queries only)
+    // Moved after topicTag filter so filtered-out entries are not reinforced.
     if (this.frequencyTracker && results.length > 0 && context.source !== "auto-recall") {
       this.frequencyTracker.recordHits(results.map(r => r.entry.id));
     }
 
     // A-3: Record evolution access counts (async, non-blocking)
+    // Moved after topicTag filter so filtered-out entries are not reinforced.
     if (results.length > 0 && context.source !== "auto-recall" && this.store.update) {
       Promise.resolve().then(async () => {
         for (const r of results) {
@@ -647,13 +647,15 @@ export class MemoryRetriever {
       });
     }
 
-    // MP-1: Topic Tag post-filter — only keep results matching the requested topicTag
-    if (context.topicTag && results.length > 0) {
-      const tag = context.topicTag.toLowerCase();
-      results = results.filter(r => {
-        const entryTag = extractTopicTag(r.entry.metadata);
-        return entryTag?.toLowerCase() === tag;
-      });
+    // Record access for returned results (async, non-blocking).
+    // Only reinforce on manual retrieval — auto-recall must not strengthen noise.
+    // Tier 3.2: pass raw vector similarity scores for novelty gating — only novel
+    // retrievals (high query-result distance) trigger access reinforcement.
+    if (this.accessTracker && results.length > 0 && context.source !== "auto-recall") {
+      this.accessTracker.recordAccess(
+        results.map(r => r.entry.id),
+        results.map(r => r.sources.vector?.score),
+      );
     }
 
     // F-1: Audit log — record retrieve operation (non-blocking, silent on failure)
@@ -819,9 +821,10 @@ export class MemoryRetriever {
 
     // Session suppression: temporarily penalize "do not disturb" memories
     const afterSuppression = this.applySessionSuppression(frequencyBoosted);
+    const rescored = [...afterSuppression].sort((a, b) => b.score - a.score);
 
-    trace?.startStage("hard_min_score", afterSuppression.length);
-    const hardFiltered = afterSuppression.filter(r => r.score >= this.minScoreFor(r.entry.category, shortQ));
+    trace?.startStage("hard_min_score", rescored.length);
+    const hardFiltered = rescored.filter(r => r.score >= this.minScoreFor(r.entry.category, shortQ));
     trace?.endStage(hardFiltered.length, hardFiltered.map(r => r.score));
 
     // Evolution status filter: exclude superseded/archived/consolidated memories
@@ -1001,8 +1004,10 @@ export class MemoryRetriever {
 
     // Hard minimum score cutoff (post all scoring stages)
     // P0.1: lower thresholds for short queries (shortQ declared earlier for fuseResults)
-    trace?.startStage("hard_min_score", frequencyBoosted.length);
-    const hardFiltered = frequencyBoosted.filter(r => r.score >= this.minScoreFor(r.entry.category, shortQ));
+    const rescored = [...frequencyBoosted].sort((a, b) => b.score - a.score);
+
+    trace?.startStage("hard_min_score", rescored.length);
+    const hardFiltered = rescored.filter(r => r.score >= this.minScoreFor(r.entry.category, shortQ));
     trace?.endStage(hardFiltered.length, hardFiltered.map(r => r.score));
 
     // Evolution status filter: exclude superseded/archived/consolidated memories

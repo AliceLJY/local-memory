@@ -95,10 +95,11 @@ export class AccessTracker {
    * Accumulates deltas in memory; flushed to store after debounce.
    *
    * @param ids  Memory entry IDs to record access for
-   * @param scores  Optional parallel array of similarity scores for novelty gating.
+   * @param scores  Optional parallel array of raw similarity scores for novelty gating.
+   *                Entries with an undefined score skip novelty gating.
    *                When provided, only entries passing shouldReinforce() are recorded.
    */
-  recordAccess(ids: string[], scores?: number[]): void {
+  recordAccess(ids: string[], scores?: Array<number | undefined>): void {
     if (ids.length === 0) return;
 
     const now = Date.now();
