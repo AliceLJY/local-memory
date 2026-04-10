@@ -36,6 +36,9 @@ import { detectEntities } from "./query-entity-detector.js";
 import { buildGraph, pprTraverse } from "./ppr-traversal.js";
 import { logInfo } from "./stderr-log.js";
 import type { AuditLogger } from "./audit-log.js";
+import { parseEmotion, isEmotionScoringEnabled } from "./memory-schema.js";
+import type { EmotionMetadata } from "./memory-schema.js";
+import { detectEmotion } from "./emotion-detector.js";
 
 // ============================================================================
 // Types & Configuration
@@ -243,6 +246,26 @@ function applyAnchorBoost(results: RetrievalResult[], query: string): RetrievalR
     if (overlap <= 0) return r;
     // Boost proportional to overlap quality, capped at ANCHOR_BOOST_MAX
     const boost = 1 + overlap * ANCHOR_BOOST_MAX;
+    return { ...r, score: r.score * boost };
+  });
+}
+
+/**
+ * Emotion scoring stage: boost memories matching query emotional tone.
+ * No-op when query is neutral or memory lacks emotion data.
+ */
+export function applyEmotionWeight(
+  results: Array<{ score: number; metadata: string; [k: string]: unknown }>,
+  queryEmotion: EmotionMetadata | null,
+): typeof results {
+  if (!queryEmotion || Math.abs(queryEmotion.valence) < 0.2) {
+    return results;
+  }
+  return results.map(r => {
+    const memEmotion = parseEmotion(r.metadata);
+    if (!memEmotion) return r;
+    const alignment = 1 - Math.abs(queryEmotion.valence - memEmotion.valence) / 2;
+    const boost = 1.0 + 0.15 * alignment;
     return { ...r, score: r.score * boost };
   });
 }
@@ -787,8 +810,16 @@ export class MemoryRetriever {
     const confidenceWeighted = this.applyConfidence(weighted);
     trace?.endStage(confidenceWeighted.length, confidenceWeighted.map(r => r.score));
 
-    trace?.startStage("boundary_weight", confidenceWeighted.length);
-    const boundaryWeighted = this.applyBoundaryWeight(confidenceWeighted);
+    let afterEmotionVector = confidenceWeighted;
+    if (isEmotionScoringEnabled()) {
+      const queryEmotion = detectEmotion(query);
+      const adapted = confidenceWeighted.map(r => ({ ...r, metadata: r.entry.metadata ?? "{}" }));
+      const emotioned = applyEmotionWeight(adapted, queryEmotion);
+      afterEmotionVector = confidenceWeighted.map((r, i) => ({ ...r, score: emotioned[i]?.score ?? r.score }));
+    }
+
+    trace?.startStage("boundary_weight", afterEmotionVector.length);
+    const boundaryWeighted = this.applyBoundaryWeight(afterEmotionVector);
     trace?.endStage(boundaryWeighted.length, boundaryWeighted.map(r => r.score));
 
     trace?.startStage("asset_type_weight", boundaryWeighted.length);
@@ -966,9 +997,18 @@ export class MemoryRetriever {
     const confidenceWeighted = this.applyConfidence(importanceWeighted);
     trace?.endStage(confidenceWeighted.length, confidenceWeighted.map(r => r.score));
 
+    // Emotion scoring: boost memories matching query emotional tone
+    let afterEmotion = confidenceWeighted;
+    if (isEmotionScoringEnabled()) {
+      const queryEmotion = detectEmotion(query);
+      const adapted = confidenceWeighted.map(r => ({ ...r, metadata: r.entry.metadata ?? "{}" }));
+      const emotioned = applyEmotionWeight(adapted, queryEmotion);
+      afterEmotion = confidenceWeighted.map((r, i) => ({ ...r, score: emotioned[i]?.score ?? r.score }));
+    }
+
     // Prefer higher-authority durable memories over raw evidence when scores are close.
-    trace?.startStage("boundary_weight", confidenceWeighted.length);
-    const boundaryWeighted = this.applyBoundaryWeight(confidenceWeighted);
+    trace?.startStage("boundary_weight", afterEmotion.length);
+    const boundaryWeighted = this.applyBoundaryWeight(afterEmotion);
     trace?.endStage(boundaryWeighted.length, boundaryWeighted.map(r => r.score));
 
     // Separate pinned assets from synthesized briefs.
