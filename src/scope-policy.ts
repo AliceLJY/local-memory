@@ -138,6 +138,7 @@ export function buildRetrievalContext(
     trace: base.trace,
     graph: base.graph,
     topicTag: base.topicTag,
+    reconstruct: base.reconstruct,
     scopeFilter: selection.scopeFilter,
   };
 }

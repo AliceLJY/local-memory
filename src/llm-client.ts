@@ -730,6 +730,20 @@ export class LLMClient {
   }
 
   // --------------------------------------------------------------------------
+  // Constructive Retrieval — public wrappers for reconstruction pipeline
+  // --------------------------------------------------------------------------
+
+  /** Public wrapper for reconstruction pipeline */
+  async generateReconstruction(system: string, user: string): Promise<string | null> {
+    return this.chat(system, user);
+  }
+
+  /** Check if LLM circuit breaker allows requests */
+  isAvailable(): boolean {
+    return this.breaker.canAttempt();
+  }
+
+  // --------------------------------------------------------------------------
   // Internals
   // --------------------------------------------------------------------------
 

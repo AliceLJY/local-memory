@@ -26,6 +26,7 @@ import { synthesizeSection } from "./result-synthesizer.js";
 import type { LLMClient } from "./llm-client.js";
 import { collapseResults, estimateTokens, type CollapseInput } from "./context-collapse-renderer.js";
 import { filterByRelevance } from "./post-retrieval-filter.js";
+import { reconstruct as runReconstruction } from "./context-reconstructor.js";
 type ResumeCategory = "profile" | "preferences" | "entities" | "patterns" | "cases";
 
 interface ResumeRetriever {
@@ -442,6 +443,27 @@ export async function composeResumeContext(
     latestCheckpoint,
   });
 
+  // Constructive retrieval reconstruction for resume context
+  let reconstructedContext: string | undefined;
+  let reconstructionConfidence: number | undefined;
+  const constructiveFlag = process.env.RECALLNEST_CONSTRUCTIVE_RETRIEVAL === "true";
+  if (constructiveFlag && deps.llm?.isAvailable?.()) {
+    const allReconResults = [...profileResults, ...preferenceResults, ...entityResults, ...filteredPatterns, ...filteredCases];
+    if (allReconResults.length >= 3) {
+      try {
+        const taskQuery = latestCheckpoint?.summary ?? taskSeed ?? "general context";
+        const recon = await runReconstruction(
+          { query: taskQuery, results: allReconResults, mode: "resume", maxTokens: 600 },
+          deps.llm,
+        );
+        if (recon.reconstructed) {
+          reconstructedContext = recon.reconstructed;
+          reconstructionConfidence = recon.confidence;
+        }
+      } catch { /* silent fallback */ }
+    }
+  }
+
   const response = {
     summary: buildSummary({
       stableContext: synthStable,
@@ -473,6 +495,8 @@ export async function composeResumeContext(
             : "Recall-only mode: answer only from the recalled stable context items. Keep the reply brief and do not expand into extra rules, examples, or local writing docs unless the user explicitly asks."
         )
       : undefined,
+    reconstructedContext,
+    reconstructionConfidence,
     generatedAt: new Date().toISOString(),
   };
 

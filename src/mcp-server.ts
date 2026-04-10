@@ -904,11 +904,16 @@ registerTool(
       .describe("Result detail level: brief (ID+score+one-liner), normal (default, current behavior), full (include metadata)"),
     topicTag: z.string().min(1).max(60).optional()
       .describe("Filter by topic tag (e.g. 'auth', 'deploy', 'testing'). Only returns memories tagged with this topic."),
+    reconstruct: z.boolean().default(false).describe(
+      "Return LLM-synthesized reconstruction alongside raw results. Requires RECALLNEST_CONSTRUCTIVE_RETRIEVAL=true."
+    ),
   },
-  async ({ query, limit, scope, sessionId, allScopes, category, profile: profileName, render, after, before, graph, includeArchived, detail_level, topicTag }) => {
+  async ({ query, limit, scope, sessionId, allScopes, category, profile: profileName, render, after, before, graph, includeArchived, detail_level, topicTag, reconstruct }) => {
     const { retriever, profile } = getComponents(profileName);
     // Ensure KG store is attached to non-default profile retrievers for PPR
     if (graph && kgStoreInstance) retriever.setKGStore(kgStoreInstance);
+    // Attach LLM client for constructive retrieval if available
+    if (reconstruct && llm) retriever.setLLMClient(llm);
     let results = await retriever.retrieve(buildRetrievalContext({
       query,
       limit: (after || before || topicTag) ? limit * 3 : limit,
@@ -919,6 +924,7 @@ registerTool(
       graph,
       includeArchived,
       topicTag,
+      reconstruct,
     }, {
       operation: "search_memory",
     }));
@@ -968,6 +974,17 @@ registerTool(
     }
 
     const level = detail_level ?? "normal";
+    const sections: string[] = [];
+
+    // Prepend reconstruction if present
+    const firstMeta = results[0] ? JSON.parse(results[0].entry?.metadata || "{}") : {};
+    if (firstMeta._reconstruction?.text) {
+      const r = firstMeta._reconstruction;
+      sections.push(
+        `## Reconstructed Context (confidence: ${Number(r.confidence).toFixed(2)})\n${r.text}\n\nSources: ${(r.sources as string[]).join(", ")}`
+      );
+    }
+
     let body: string;
     if (level === "brief") {
       body = formatBriefResults(results, { query });
@@ -976,11 +993,12 @@ registerTool(
     } else {
       body = formatSearchResults(results, { query, profile: profile.name });
     }
+    sections.push(body);
 
     return {
       content: [{
         type: "text" as const,
-        text: body + reminderText,
+        text: sections.join("\n\n") + reminderText,
       }],
     };
   }

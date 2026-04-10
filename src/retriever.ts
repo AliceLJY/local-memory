@@ -39,6 +39,8 @@ import type { AuditLogger } from "./audit-log.js";
 import { parseEmotion, isEmotionScoringEnabled } from "./memory-schema.js";
 import type { EmotionMetadata } from "./memory-schema.js";
 import { detectEmotion } from "./emotion-detector.js";
+import { shouldReconstruct, reconstruct as runReconstruction } from "./context-reconstructor.js";
+import type { ReconstructionLLMClient } from "./context-reconstructor.js";
 
 // ============================================================================
 // Types & Configuration
@@ -156,6 +158,8 @@ export interface RetrievalContext {
   multiHop?: boolean;
   /** MP-1: Filter results by topicTag stored in metadata. */
   topicTag?: string;
+  /** Request constructive retrieval reconstruction */
+  reconstruct?: boolean;
 }
 
 export interface RetrievalResult extends MemorySearchResult {
@@ -565,6 +569,7 @@ export class MemoryRetriever {
   private kgStore?: KGStore;
   private frequencyTracker?: FrequencyTracker;
   private auditLogger?: AuditLogger;
+  private llmClient?: ReconstructionLLMClient;
   /**
    * Session-scoped suppression list (dopamine-inspired "do not disturb").
    * IDs in this set get a score penalty during retrieval but are NOT deleted.
@@ -596,6 +601,11 @@ export class MemoryRetriever {
   /** F-1: Attach an AuditLogger for recording retrieve operations. */
   setAuditLogger(logger: AuditLogger): void {
     this.auditLogger = logger;
+  }
+
+  /** Attach an LLM client for constructive retrieval reconstruction. */
+  setLLMClient(client: ReconstructionLLMClient): void {
+    this.llmClient = client;
   }
 
   /** Suppress a memory ID for the current session (score × 0.3). */
@@ -691,6 +701,40 @@ export class MemoryRetriever {
       });
     } catch {
       // Audit must never block retrieval
+    }
+
+    // Constructive retrieval reconstruction — synthesize results via LLM
+    const constructiveFlag = process.env.RECALLNEST_CONSTRUCTIVE_RETRIEVAL === "true";
+    if (shouldReconstruct({
+      flagEnabled: constructiveFlag,
+      callerOptIn: context.reconstruct === true,
+      resultCount: results.length,
+      llmAvailable: this.llmClient
+        ? ("isAvailable" in this.llmClient ? (this.llmClient as { isAvailable(): boolean }).isAvailable() : true)
+        : false,
+    })) {
+      try {
+        const reconstruction = await runReconstruction(
+          { query: context.query, results, mode: "search" },
+          this.llmClient!,
+        );
+        // Attach reconstruction to results as metadata on first result
+        if (results.length > 0 && reconstruction.reconstructed) {
+          const meta = JSON.parse(results[0].entry.metadata || "{}");
+          meta._reconstruction = {
+            text: reconstruction.reconstructed,
+            sources: reconstruction.sources,
+            confidence: reconstruction.confidence,
+            fallbackReason: reconstruction.fallbackReason,
+          };
+          results[0] = {
+            ...results[0],
+            entry: { ...results[0].entry, metadata: JSON.stringify(meta) },
+          };
+        }
+      } catch {
+        // Silent degradation — return raw results
+      }
     }
 
     return results;

@@ -71,6 +71,10 @@ export const ResumeContextResponseSchema = z.object({
   ephemeral: z.boolean().default(true).optional(),
   responseMode: ResumeResponseModeSchema.default("default"),
   responseGuidance: optionalBoundedStringSchema(400),
+  /** Constructive retrieval: LLM-synthesized reconstruction of context. */
+  reconstructedContext: z.string().max(2000).optional(),
+  /** Confidence score (0-1) for the reconstructed context. */
+  reconstructionConfidence: z.number().min(0).max(1).optional(),
   generatedAt: z.string().datetime(),
 });
 
