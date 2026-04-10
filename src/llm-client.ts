@@ -15,6 +15,7 @@
 
 import OpenAI from "openai";
 import { logInfo } from "./stderr-log.js";
+import { isEmotionScoringEnabled } from "./memory-schema.js";
 
 // ============================================================================
 // LME-9: Circuit Breaker — LLM 降级策略
@@ -135,6 +136,12 @@ export interface SmartExtraction {
   l1: string;
   /** Importance score 0-1 (LLM's estimate) */
   importance: number;
+  /** Optional emotional tone (only populated when feature flag is on) */
+  emotion?: {
+    valence: number;
+    arousal: number;
+    label?: string;
+  };
 }
 
 /** Category-specific merge strategies */
@@ -231,7 +238,7 @@ export class LLMClient {
       const validCategories: SmartCategory[] = ["profile", "preferences", "entities", "events", "cases", "patterns"];
       if (!validCategories.includes(parsed.category)) return null;
 
-      return {
+      const result: SmartExtraction = {
         category: parsed.category,
         l0: (parsed.l0 || "").slice(0, 150),
         l1: (parsed.l1 || "").slice(0, 500),
@@ -239,6 +246,16 @@ export class LLMClient {
           ? Math.max(0, Math.min(1, parsed.importance))
           : CATEGORY_DEFAULT_IMPORTANCE[parsed.category],
       };
+
+      if (isEmotionScoringEnabled() && parsed.emotion) {
+        result.emotion = {
+          valence: Math.max(-1, Math.min(1, parsed.emotion.valence ?? 0)),
+          arousal: Math.max(0, Math.min(1, parsed.emotion.arousal ?? 0)),
+          label: parsed.emotion.label,
+        };
+      }
+
+      return result;
     } catch {
       return null;
     }
@@ -789,7 +806,12 @@ const SMART_EXTRACT_SYSTEM_PROMPT = `你是 AI 记忆分类助手。把对话片
 只输出一个 JSON 对象：
 {"category":"类别","l0":"一句话摘要(≤80字)","l1":"结构化概述(2-5行markdown)","importance":0.7}
 
-importance 评分标准：身份/模式 0.8+、偏好/案例 0.7、实体 0.65、普通事件 0.5`;
+importance 评分标准：身份/模式 0.8+、偏好/案例 0.7、实体 0.65、普通事件 0.5
+
+Also rate emotional tone:
+- emotion.valence: [-1, 1] (negative to positive)
+- emotion.arousal: [0, 1] (calm to excited)
+- emotion.label: one word (e.g., "frustration", "neutral")`;
 
 const SMART_EXTRACT_BATCH_PROMPT = `你是 AI 记忆分类助手。把每段对话分类到 6 种记忆类型之一。
 

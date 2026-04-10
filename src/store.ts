@@ -9,6 +9,7 @@ import { dirname } from "node:path";
 import { logWarn } from "./stderr-log.js";
 import type { DurableMemoryCategory } from "./memory-schema.js";
 import { matchesScopeFilter } from "./scope-policy.js";
+import { detectEmotionIfEnabled } from "./emotion-detector.js";
 
 // ============================================================================
 // Types
@@ -366,6 +367,13 @@ export class MemoryStore {
       fts_text: entry.fts_text || entry.text,
     };
 
+    const emotionResult = detectEmotionIfEnabled(fullEntry.text);
+    if (emotionResult) {
+      const existingMeta = JSON.parse(fullEntry.metadata || "{}");
+      existingMeta.emotion = emotionResult;
+      fullEntry.metadata = JSON.stringify(existingMeta);
+    }
+
     try {
       await this.table!.add([fullEntry]);
     } catch (err: any) {
@@ -395,8 +403,18 @@ export class MemoryStore {
       fts_text: entry.fts_text || entry.text,
     }));
 
+    const enrichedEntries = fullEntries.map(e => {
+      const emotionResult = detectEmotionIfEnabled(e.text);
+      if (emotionResult) {
+        const meta = JSON.parse(e.metadata || "{}");
+        meta.emotion = emotionResult;
+        return { ...e, metadata: JSON.stringify(meta) };
+      }
+      return e;
+    });
+
     try {
-      await this.table!.add(fullEntries);
+      await this.table!.add(enrichedEntries);
     } catch (err: any) {
       const code = err.code || "";
       const message = err.message || String(err);
