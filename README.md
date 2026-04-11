@@ -12,8 +12,8 @@ A local-first memory system backed by LanceDB that turns scattered conversation 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Bun](https://img.shields.io/badge/Runtime-Bun-f9f1e1?logo=bun)](https://bun.sh)
 [![LanceDB](https://img.shields.io/badge/LanceDB-Vector+FTS-orange)](https://lancedb.com)
-[![MCP](https://img.shields.io/badge/MCP-40_tools-blue)](https://modelcontextprotocol.io)
-[![Tests](https://img.shields.io/badge/Tests-1168_pass-brightgreen)](https://github.com/AliceLJY/recallnest)
+[![MCP](https://img.shields.io/badge/MCP-41_tools-blue)](https://modelcontextprotocol.io)
+[![Tests](https://img.shields.io/badge/Tests-1391_pass-brightgreen)](https://github.com/AliceLJY/recallnest)
 [![CC Plugin](https://img.shields.io/badge/Claude_Code-Plugin-blueviolet)](https://github.com/AliceLJY/recallnest)
 
 **English** | [简体中文](README_CN.md) | [Roadmap](ROADMAP.md)
@@ -65,7 +65,7 @@ Visualize your memory network as an interactive force-directed graph. Each node 
 | **Shared Index** | One LanceDB store for Claude Code, Codex, and Gemini CLI |
 | **Dual Interface** | MCP (stdio) for CLI tools + HTTP API for custom agents |
 | **One-Click Setup** | Integration scripts install MCP access and continuity rules |
-| **Hybrid Retrieval** | Vector + BM25 + reranking + Weibull decay + tier promotion |
+| **Hybrid Retrieval** | Vector + BM25 + reranking + emotion-aware Weibull decay + tier promotion |
 | **KG Graph Traversal** | Entity relation graph with PPR algorithm for multi-hop questions |
 | **Session Continuity** | `checkpoint_session` + `resume_context` (full/light/summary modes) |
 | **Session Distiller** | 3-layer conversation compression: microcompact → LLM summary → knowledge extraction |
@@ -76,6 +76,11 @@ Visualize your memory network as an interactive force-directed graph. Each node 
 | **Workflow Observation** | Dedicated append-only workflow health records, outside regular memory |
 | **Structured Assets** | Pins, briefs, and distilled summaries — not just raw logs |
 | **Smart Promotion** | Evidence → durable memory with conflict guards and merge resolution |
+| **Emotion-Aware Decay** | Emotional memories decay 20-30% slower via salience-weighted Weibull formula |
+| **Privacy Tiers** | ephemeral / private / durable / shared — with cascade forgetting + audit trail |
+| **Narrative Architecture** | 3-layer autobiographical metadata (life-period → event → specific) |
+| **Constructive Retrieval** | Multi-source candidate expansion + grounded context reconstruction |
+| **Predictive Reminders** | Behavioral-signal prediction engine surfaces "you might need this" suggestions |
 | **6 Categories** | profile, preferences, entities, events, cases, patterns |
 | **4 Retrieval Profiles** | default, writing, debug, fact-check — tuned for different tasks |
 | **Admission Control** | Write-time gating: noise filter, importance floor, rate limiting |
@@ -85,20 +90,34 @@ Visualize your memory network as an interactive force-directed graph. Each node 
 
 ---
 
-## Highlights (v2.0)
+## Highlights (v2.1 — Philosophy of Memory)
 
-RecallNest has evolved from a simple transcript search tool into a full **memory operating system**:
+RecallNest has evolved from a simple transcript search tool into a full **memory operating system** — now grounded in philosophy of memory research from Plato to Michaelian.
 
 | Metric | Value |
 |--------|-------|
-| Core code | 31,800+ lines across 108 source files |
-| MCP tools | 40 tools in 3 tiers (core / advanced / governance) |
+| Core code | 35,500+ lines across 115+ source files |
+| MCP tools | 41 tools in 3 tiers (core / advanced / governance) |
 | HTTP endpoints | 21 REST endpoints |
-| Test coverage | 1,168 tests, 0 failures |
+| Test coverage | 1,391 tests, 0 failures |
 | Retrieval | 6-channel hybrid: vector + BM25 + L0/L1/L2 multi-vector + KG graph (PPR) |
 | Memory evolution | Supersede chains, Weibull decay, LLM importance scoring, auto-archival |
 
-**New in this release:**
+### New: Philosophy-Informed Memory Architecture
+
+Five upgrades derived from 9 research dimensions in philosophy of memory, each mapped to concrete engineering:
+
+- **Emotion-Aware Decay** *(Affective Memory Theory)* — Memories with strong emotional content decay 20-30% slower. Keyword-based emotion detection computes `salience` (mnemonic significance), which feeds into the Weibull half-life formula and a rebalanced 4-factor evolution score. Zero LLM cost.
+
+- **Memory Ethics Layer** *(Right to Be Forgotten / GDPR Art. 17)* — Four privacy tiers (`ephemeral` / `private` / `durable` / `shared`). Cascade forgetting engine that propagates deletion through KG triples, evolution chains, pin assets, and briefs. Full audit trail. `forget_memory` MCP tool for agent-driven deletion.
+
+- **Autobiographical Narrative** *(Narrative Identity Theory / Conway's 3-layer model)* — Memories are tagged with `lifePeriod → generalEvent → specificEvent` hierarchy, orthogonal to existing 6 categories. Retrieval pulls narrative siblings. Context rendering groups by life period. Rule-based tagger with EN+CN support.
+
+- **Constructive Retrieval** *(Simulation Theory / Michaelian)* — Instead of returning raw stored text, RecallNest now reconstructs context from an expanded candidate set: KG neighbors + evolution chains + cluster members + narrative siblings. Source-map grounded coverage replaces lexical overlap. Contradictions are detected and flagged.
+
+- **Predictive Prospective Memory** *(Mental Time Travel / Tulving)* — Heuristic prediction engine that surfaces "you might need this" reminders from behavioral signals: stale checkpoint open loops, corrected workflow observations, high-frequency dormant memories, and uncovered query topics. Zero LLM cost. Auto-expire in 7 days if unaccepted.
+
+### Previous highlights (v2.0)
 
 - **Session Distiller** — 3-layer conversation compression (microcompact → LLM structured summary → knowledge extraction to durable memory)
 - **Conversation Import** — bring your history from Claude Code, Claude.ai, ChatGPT, Slack, or plaintext — auto-detected
@@ -113,11 +132,15 @@ RecallNest has evolved from a simple transcript search tool into a full **memory
 
 RecallNest is not just a vector search wrapper. Key design decisions:
 
-- **Weibull Decay + Importance Modulation** — memories decay along a parametric Weibull curve; importance scores (LLM-assessed with anchored rubrics) modulate the half-life, so core identity facts persist while transient details fade naturally
+- **Weibull Decay + Emotion Modulation** — memories decay along a parametric Weibull curve; importance scores modulate the half-life, and emotional salience extends it further (up to 30%). A frustrating 3-day debugging session decays slower than a routine config update — just like human memory
+- **Constructive Retrieval** — inspired by Simulation Theory (Michaelian): retrieval doesn't just look up stored text, it *reconstructs* context by expanding candidates across KG neighbors, evolution chains, and narrative siblings, then synthesizes with source-map grounding and contradiction detection
+- **4-Tier Privacy + Cascade Forgetting** — `ephemeral` memories leave no trace (no KG, auto-expire); `private` memories persist but don't leak into the knowledge graph; `durable` is default; `shared` enables cross-scope access. Deletion cascades through all derivatives with full audit trail
+- **Autobiographical Narrative Layer** — memories carry orthogonal narrative metadata (life-period / general-event / specific-event), enabling "tell me about that week" style retrieval without disrupting the 6-category system
 - **L0 / L1 / L2 Dynamic Folding** — every memory stores 3 granularity layers (one-liner / bullet summary / full content); retrieval dynamically selects which layer to return based on relevance score and token budget
 - **Vector Pre-filter + LLM Dedup** — 90% of dedup decisions use cheap cosine similarity (≥ 0.92); only borderline cases invoke LLM judgment, keeping costs low without sacrificing accuracy
 - **Category-Aware Merge Strategies** — `profile` and `preferences` use merge-on-conflict (latest wins); `events` and `cases` use append-only (history preserved). No one-size-fits-all
 - **Display Score vs Elimination Score** — retrieval uses a dual-track system: tier floor prevents core memories from ever dropping out, while decay boost lets fresh memories surface temporarily without permanently displacing stable ones
+- **Predictive Prospective Memory** — the system doesn't just recall the past; it predicts what you'll need next, surfacing suggestions from stale open loops, workflow patterns, and behavioral signals — zero LLM cost
 
 ---
 
@@ -312,7 +335,7 @@ Query → BM25 FTS ──┘
 - **BM25 full-text search** — exact keyword matching via LanceDB FTS
 - **Hybrid fusion** — vector + BM25 combined scoring
 - **Reranking** — Jina cross-encoder reranking
-- **Decay + tiering** — Weibull freshness model with Core / Working / Peripheral tiers
+- **Decay + tiering** — Emotion-aware Weibull freshness model with Core / Working / Peripheral tiers; emotional memories get extended half-life
 
 ### Session Continuity
 
@@ -411,6 +434,7 @@ Details: [`docs/memory-categories.md`](docs/memory-categories.md)
 | `data_checkup` | Run data quality health checks on the memory store |
 | `dream` | Run offline memory consolidation (clustering, merging, pruning) |
 | `memory_lint` | Run memory quality checks: contradictions, duplicates, stale entries, orphans |
+| `forget_memory` | Cascade-delete a memory with KG cleanup, pin archival, and audit trail |
 | `export_graph` | Export memories as an interactive HTML knowledge graph |
 
 </details>

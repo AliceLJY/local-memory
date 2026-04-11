@@ -34,12 +34,13 @@
 
 - `RECALLNEST_MULTI_VECTOR=true` — 多向量 L0/L1/L2 检索
 - `RECALLNEST_KG_MODE=true` — KG 三元组提取 + 图遍历
-- `RECALLNEST_EMOTION_SCORING=true` — Emotion detection + adjusted decay + retrieval scoring
-- `RECALLNEST_CONSTRUCTIVE_RETRIEVAL=true` — LLM context reconstruction with grounding (resume default, search opt-in)
+- `RECALLNEST_EMOTION_SCORING=true` — Emotion detection + salience-weighted Weibull decay + arousal boost + retrieval scoring
+- `RECALLNEST_CONSTRUCTIVE_RETRIEVAL=true` — Multi-source candidate expansion + source-map grounded reconstruction (resume default, search opt-in)
+- `RECALLNEST_NARRATIVE_MODE=true` — Autobiographical narrative metadata layer (life-period / general-event / specific-event)
 - `RECALLNEST_PREDICTIVE_MEMORY=true` — Heuristic-predicted prospective reminders (zero LLM, behavioral signals)
 
 ## 6. 测试基线
 
 - 改完代码必须跑 `bun test`，全量通过才能 commit
-- 当前基线：1000 tests / 0 fail
+- 当前基线：1391 tests / 0 fail
 - 新增功能必须配套测试，基线只能涨不能降
