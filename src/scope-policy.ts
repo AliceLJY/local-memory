@@ -139,6 +139,8 @@ export function buildRetrievalContext(
     graph: base.graph,
     topicTag: base.topicTag,
     reconstruct: base.reconstruct,
+    validAt: base.validAt,
+    includeExpired: base.includeExpired,
     scopeFilter: selection.scopeFilter,
   };
 }

@@ -297,8 +297,10 @@ registerTool(
     canonicalKey: z.string().min(1).max(120).optional().describe("Optional stable key for merge/update semantics"),
     topicTag: z.string().min(1).max(60).optional().describe("Optional topic tag for intra-scope partitioning (e.g. 'auth', 'deploy', 'testing'). Auto-detected if omitted."),
     privacyTier: PrivacyTierSchema.default("durable").describe("Privacy tier: ephemeral (auto-expire, no KG), private (persist, no KG), durable (default), shared (cross-scope)"),
+    validUntil: z.union([z.string(), z.number()]).optional().describe("Optional expiration: ISO date string or ms timestamp. Memory will be deprioritized after this time."),
+    eventTime: z.union([z.string(), z.number()]).optional().describe("Optional event time: when the event actually happened (ISO date or ms), distinct from storage time."),
   },
-  async ({ text, category, importance, scope, source, tags, canonicalKey, topicTag, privacyTier }) => {
+  async ({ text, category, importance, scope, source, tags, canonicalKey, topicTag, privacyTier, validUntil, eventTime }) => {
     const { store, embedder } = getComponents();
     const stored = await persistMemory({
       store,
@@ -315,6 +317,9 @@ registerTool(
       canonicalKey,
       topicTag,
       privacyTier,
+      // F3: Pass temporal validity params (extracted by persistMemory before Zod parse)
+      validUntil,
+      eventTime,
     });
 
     return {
@@ -913,8 +918,10 @@ registerTool(
     reconstruct: z.boolean().default(false).describe(
       "Return LLM-synthesized reconstruction alongside raw results. Requires RECALLNEST_CONSTRUCTIVE_RETRIEVAL=true."
     ),
+    validAt: z.string().optional().describe("Query memories valid at a specific point in time (ISO date, e.g. '2025-06-15'). Returns only memories whose validity window covers this date."),
+    includeExpired: z.boolean().default(false).optional().describe("When true, include expired memories in results (demoted 80%). Default: only active/non-expired."),
   },
-  async ({ query, limit, scope, sessionId, allScopes, category, profile: profileName, render, after, before, graph, includeArchived, detail_level, topicTag, reconstruct }) => {
+  async ({ query, limit, scope, sessionId, allScopes, category, profile: profileName, render, after, before, graph, includeArchived, detail_level, topicTag, reconstruct, validAt, includeExpired }) => {
     const { retriever, profile } = getComponents(profileName);
     // Ensure KG store is attached to non-default profile retrievers for PPR
     if (graph && kgStoreInstance) retriever.setKGStore(kgStoreInstance);
@@ -931,6 +938,9 @@ registerTool(
       includeArchived,
       topicTag,
       reconstruct,
+      // F3: Temporal validity filtering
+      validAt: validAt ? new Date(validAt).getTime() : undefined,
+      includeExpired: includeExpired ?? undefined,
     }, {
       operation: "search_memory",
     }));

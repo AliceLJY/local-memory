@@ -36,6 +36,8 @@ export interface EvolutionMetadata {
   sourceMemories: string[];
   validFrom: number;
   validUntil: number | null;
+  /** F3: Event actual time (ms) — distinct from memory creation time (validFrom). */
+  eventTime: number | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -57,6 +59,7 @@ export function defaultEvolution(now?: number): EvolutionMetadata {
     sourceMemories: [],
     validFrom: ts,
     validUntil: null,
+    eventTime: null,
   };
 }
 
@@ -87,6 +90,7 @@ export function parseEvolution(metadata: string | undefined, fallbackTimestamp?:
       sourceMemories: Array.isArray(evo.sourceMemories) ? evo.sourceMemories : [],
       validFrom: evo.validFrom ?? fallbackTimestamp ?? Date.now(),
       validUntil: evo.validUntil ?? null,
+      eventTime: evo.eventTime ?? null,
     };
   } catch {
     return defaultEvolution(fallbackTimestamp);

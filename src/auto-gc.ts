@@ -139,7 +139,11 @@ export async function maybeRunGc(
     let shouldArchive = false;
     if (ageDays >= config.minAgeDays) {
       const evo = parseEvolution(entry.metadata, entry.timestamp);
-      const decayScore = computeDecayScore(evo, importance, now, entry.metadata);
+      let decayScore = computeDecayScore(evo, importance, now, entry.metadata);
+      // F3: Expired memories (validUntil < now) get 2x decay acceleration
+      if (evo.validUntil != null && evo.validUntil < now) {
+        decayScore *= 0.5; // Halve the score → archives faster
+      }
       if (decayScore < config.decayScoreThreshold) {
         shouldArchive = true;
       }

@@ -165,6 +165,10 @@ export interface RetrievalContext {
   topicTag?: string;
   /** Request constructive retrieval reconstruction */
   reconstruct?: boolean;
+  /** F3: Query memories valid at a specific point in time (ms timestamp). */
+  validAt?: number;
+  /** F3: When true, include expired memories (demoted 80%). Default: false. */
+  includeExpired?: boolean;
 }
 
 export interface RetrievalResult extends MemorySearchResult {
@@ -235,6 +239,47 @@ function clampInt(value: number, min: number, max: number): number {
 function clamp01(value: number, fallback: number): number {
   if (!Number.isFinite(value)) return Number.isFinite(fallback) ? fallback : 0;
   return Math.min(1, Math.max(0, value));
+}
+
+/**
+ * F3: Filter results by temporal validity window.
+ * - Expired memories (validUntil < now) are demoted by 80% or excluded.
+ * - validAt: only return memories valid at a specific point in time.
+ */
+function filterByValidity(
+  results: RetrievalResult[],
+  now: number,
+  options: { validAt?: number; includeExpired?: boolean },
+): RetrievalResult[] {
+  const { validAt, includeExpired } = options;
+  const checkTime = validAt ?? now;
+
+  return results.reduce<RetrievalResult[]>((acc, r) => {
+    const evo = parseEvolution(r.entry.metadata, r.entry.timestamp);
+
+    // Point-in-time query: skip memories not yet valid or already expired at checkTime
+    if (validAt != null) {
+      if (evo.validFrom > checkTime) return acc; // not yet valid
+      if (evo.validUntil != null && evo.validUntil < checkTime) {
+        if (!includeExpired) return acc;
+        // Include but demote 80%
+        acc.push({ ...r, score: r.score * 0.2 });
+        return acc;
+      }
+      acc.push(r);
+      return acc;
+    }
+
+    // Default: check if expired relative to now
+    if (evo.validUntil != null && evo.validUntil < now) {
+      if (!includeExpired) return acc;
+      acc.push({ ...r, score: r.score * 0.2 });
+      return acc;
+    }
+
+    acc.push(r);
+    return acc;
+  }, []);
 }
 
 /** P0.1: Short query detection — ≤ 4 tokens (CJK chars count as 1 token each). */
@@ -673,6 +718,14 @@ export class MemoryRetriever {
       results = results.filter(r => {
         const entryTag = extractTopicTag(r.entry.metadata);
         return entryTag?.toLowerCase() === tag;
+      });
+    }
+
+    // F3: Temporal validity filter — expired memories excluded by default
+    if (results.length > 0) {
+      results = filterByValidity(results, Date.now(), {
+        validAt: context.validAt,
+        includeExpired: context.includeExpired,
       });
     }
 

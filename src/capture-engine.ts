@@ -5,7 +5,7 @@ import { incrementWriteCount } from "./activity-counter.js";
 import { verifyWrite } from "./write-verifier.js";
 // batchInternalDedup is available in ingest.ts for large-batch scenarios;
 // persistMemoryBatch relies on per-item conflict detection (A-2) instead.
-import { defaultEvolution, buildSupersedeMetadata, buildSupersedeMetadataForNew, buildPendingReviewMetadata, isActiveMemory } from "./memory-evolution.js";
+import { defaultEvolution, buildSupersedeMetadata, buildSupersedeMetadataForNew, buildPendingReviewMetadata, isActiveMemory, patchEvolution } from "./memory-evolution.js";
 import { detectTopicTag, injectTopicTag } from "./topic-tag.js";
 import {
   type CaseMemoryInput,
@@ -747,6 +747,11 @@ export async function persistMemory(
 ): Promise<StoredMemoryRecord> {
   const input = StoreMemoryInputSchema.parse(rawInput);
 
+  // F3: Extract temporal validity params before Zod strips them
+  const rawObj = rawInput as Record<string, unknown> | null;
+  const validUntilRaw = rawObj?.validUntil;
+  const eventTimeRaw = rawObj?.eventTime;
+
   // LC-P5: Large text gate — texts > 8000 chars get truncated to L0 summary.
   // Prevents oversized entries from bloating the index and degrading embedding quality.
   const LARGE_TEXT_THRESHOLD = 8000;
@@ -932,6 +937,22 @@ export async function persistMemory(
   // HP-6: Low-confidence entries → pending_review (distill prioritizes these)
   if (pendingReview) {
     metadata = buildPendingReviewMetadata(metadata);
+  }
+
+  // F3: Temporal validity — inject validUntil and eventTime into evolution metadata
+  if (validUntilRaw != null || eventTimeRaw != null) {
+    const temporalPatch: Record<string, number> = {};
+    if (validUntilRaw != null) {
+      temporalPatch.validUntil = typeof validUntilRaw === "number"
+        ? validUntilRaw
+        : new Date(String(validUntilRaw)).getTime();
+    }
+    if (eventTimeRaw != null) {
+      temporalPatch.eventTime = typeof eventTimeRaw === "number"
+        ? eventTimeRaw
+        : new Date(String(eventTimeRaw)).getTime();
+    }
+    metadata = patchEvolution(metadata, temporalPatch);
   }
 
   const { entry, disposition, conflictId } = await writeDurableEntry(deps, {
