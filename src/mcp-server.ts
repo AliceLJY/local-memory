@@ -981,13 +981,21 @@ registerTool(
     const level = detail_level ?? "normal";
     const sections: string[] = [];
 
-    // Prepend reconstruction if present
-    const firstMeta = results[0] ? JSON.parse(results[0].entry?.metadata || "{}") : {};
-    if (firstMeta._reconstruction?.text) {
-      const r = firstMeta._reconstruction;
+    // Phase 4: Read reconstruction from first-class field (no metadata hack)
+    const reconstruction = (results as import("./retriever.js").RetrievalResultSet).reconstruction;
+    if (reconstruction?.reconstructed) {
+      const sourceIds = reconstruction.sources.map(s => s.id).join(", ");
+      const sourceTypes = [...new Set(reconstruction.sources.map(s => s.source.type))].join(", ");
       sections.push(
-        `## Reconstructed Context (confidence: ${Number(r.confidence).toFixed(2)})\n${r.text}\n\nSources: ${(r.sources as string[]).join(", ")}`
+        `## Reconstructed Context (confidence: ${reconstruction.confidence.toFixed(2)}, coverage: ${reconstruction.coverage.toFixed(2)})\n${reconstruction.reconstructed}\n\nSources (${sourceTypes}): ${sourceIds}`
       );
+      // Render contradictions if detected
+      if (reconstruction.contradictions.length > 0) {
+        const conflictLines = reconstruction.contradictions.map(c =>
+          `- \u26a0\ufe0f ${c.description} [${c.memoryIds.join(" vs ")}]`
+        );
+        sections.push(`### Contradictions Detected\n${conflictLines.join("\n")}`);
+      }
     }
 
     let body: string;

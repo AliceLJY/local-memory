@@ -462,22 +462,32 @@ export async function composeResumeContext(
     latestCheckpoint,
   });
 
-  // Constructive retrieval reconstruction for resume context
+  // Phase 4: Constructive retrieval reconstruction for resume context
+  // Pass checkpoint openLoops/nextActions/scope into reconstruction prompt
   let reconstructedContext: string | undefined;
   let reconstructionConfidence: number | undefined;
+  let reconstructionContradictions: Array<{ memoryIds: [string, string]; description: string }> | undefined;
   const constructiveFlag = process.env.RECALLNEST_CONSTRUCTIVE_RETRIEVAL === "true";
   if (constructiveFlag && deps.llm?.isAvailable?.()) {
     const allReconResults = [...profileResults, ...preferenceResults, ...entityResults, ...filteredPatterns, ...filteredCases];
     if (allReconResults.length >= 3) {
       try {
         const taskQuery = latestCheckpoint?.summary ?? taskSeed ?? "general context";
+        const checkpointContext = latestCheckpoint ? {
+          openLoops: latestCheckpoint.openLoops,
+          nextActions: latestCheckpoint.nextActions,
+          scope: resolvedScope,
+        } : resolvedScope ? { scope: resolvedScope } : undefined;
         const recon = await runReconstruction(
-          { query: taskQuery, results: allReconResults, mode: "resume", maxTokens: 600 },
+          { query: taskQuery, results: allReconResults, mode: "resume", maxTokens: 600, checkpointContext },
           deps.llm,
         );
         if (recon.reconstructed) {
           reconstructedContext = recon.reconstructed;
           reconstructionConfidence = recon.confidence;
+        }
+        if (recon.contradictions.length > 0) {
+          reconstructionContradictions = recon.contradictions;
         }
       } catch { /* silent fallback */ }
     }
@@ -516,6 +526,7 @@ export async function composeResumeContext(
       : undefined,
     reconstructedContext,
     reconstructionConfidence,
+    reconstructionContradictions,
     narrativeGroups,
     generatedAt: new Date().toISOString(),
   };

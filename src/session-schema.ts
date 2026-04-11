@@ -75,6 +75,11 @@ export const ResumeContextResponseSchema = z.object({
   reconstructedContext: z.string().max(2000).optional(),
   /** Confidence score (0-1) for the reconstructed context. */
   reconstructionConfidence: z.number().min(0).max(1).optional(),
+  /** Phase 4: Contradictions detected during reconstruction. */
+  reconstructionContradictions: z.array(z.object({
+    memoryIds: z.tuple([z.string(), z.string()]),
+    description: z.string().max(300),
+  })).max(5).optional(),
   /** HP-narrative: Memories grouped by autobiographical life period. */
   narrativeGroups: z.array(z.object({
     period: z.string().max(120),

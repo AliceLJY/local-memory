@@ -41,7 +41,11 @@ import { parseNarrative, isNarrativeModeEnabled } from "./narrative-schema.js";
 import type { EmotionMetadata } from "./memory-schema.js";
 import { detectEmotion } from "./emotion-detector.js";
 import { shouldReconstruct, reconstruct as runReconstruction } from "./context-reconstructor.js";
-import type { ReconstructionLLMClient } from "./context-reconstructor.js";
+import type {
+  ReconstructionLLMClient,
+  ReconstructionOutput,
+  CandidateExpansionDeps,
+} from "./context-reconstructor.js";
 
 // ============================================================================
 // Types & Configuration
@@ -174,6 +178,14 @@ export interface RetrievalResult extends MemorySearchResult {
     narrativeSibling?: boolean;
   };
 }
+
+/**
+ * Phase 4: Extended retrieval result set with optional first-class reconstruction.
+ * Backward-compatible — callers treating this as RetrievalResult[] still work.
+ */
+export type RetrievalResultSet = RetrievalResult[] & {
+  reconstruction?: ReconstructionOutput;
+};
 
 // ============================================================================
 // Default Configuration
@@ -629,7 +641,7 @@ export class MemoryRetriever {
     return shortQuery ? base * SHORT_QUERY_MIN_SCORE_FACTOR : base;
   }
 
-  async retrieve(context: RetrievalContext): Promise<RetrievalResult[]> {
+  async retrieve(context: RetrievalContext): Promise<RetrievalResultSet> {
     const { query, limit, scopeFilter, category, includeArchived, trace, graph } = context;
     const safeLimit = clampInt(limit, 1, 20);
 
@@ -706,7 +718,8 @@ export class MemoryRetriever {
       // Audit must never block retrieval
     }
 
-    // Constructive retrieval reconstruction — synthesize results via LLM
+    // Phase 4: Constructive retrieval — first-class reconstruction (no metadata hack)
+    const resultSet = results as RetrievalResultSet;
     const constructiveFlag = process.env.RECALLNEST_CONSTRUCTIVE_RETRIEVAL === "true";
     if (shouldReconstruct({
       flagEnabled: constructiveFlag,
@@ -717,30 +730,19 @@ export class MemoryRetriever {
         : false,
     })) {
       try {
+        const expansionDeps = this.buildExpansionDeps(context);
         const reconstruction = await runReconstruction(
           { query: context.query, results, mode: "search" },
           this.llmClient!,
+          expansionDeps,
         );
-        // Attach reconstruction to results as metadata on first result
-        if (results.length > 0 && reconstruction.reconstructed) {
-          const meta = JSON.parse(results[0].entry.metadata || "{}");
-          meta._reconstruction = {
-            text: reconstruction.reconstructed,
-            sources: reconstruction.sources,
-            confidence: reconstruction.confidence,
-            fallbackReason: reconstruction.fallbackReason,
-          };
-          results[0] = {
-            ...results[0],
-            entry: { ...results[0].entry, metadata: JSON.stringify(meta) },
-          };
-        }
+        resultSet.reconstruction = reconstruction;
       } catch {
         // Silent degradation — return raw results
       }
     }
 
-    return results;
+    return resultSet;
   }
 
   /**
@@ -1744,6 +1746,112 @@ export class MemoryRetriever {
         score: clamp01(r.score * (1 + boost), 0),
       };
     });
+  }
+
+  /**
+   * Phase 4: Build candidate expansion deps from internal stores.
+   * Each dep is only provided if the corresponding store/feature is available.
+   */
+  private buildExpansionDeps(context: RetrievalContext): CandidateExpansionDeps {
+    const deps: CandidateExpansionDeps = {};
+    const scope = context.scopeFilter?.[0];
+
+    // KG neighbor expansion — requires KG mode + attached KG store
+    if (isKGModeEnabled() && this.kgStore) {
+      const kgStore = this.kgStore;
+      const store = this.store;
+      deps.expandViaKG = async (results) => {
+        // Extract unique source_memory_ids from KG triples linked to result entities
+        const entityNames: string[] = [];
+        for (const r of results.slice(0, 5)) {
+          try {
+            const meta = JSON.parse(r.entry.metadata || "{}");
+            if (meta.kg_entities && Array.isArray(meta.kg_entities)) {
+              entityNames.push(...meta.kg_entities);
+            }
+          } catch { /* skip */ }
+        }
+        if (entityNames.length === 0) return [];
+        const unique = [...new Set(entityNames)].slice(0, 5);
+        const neighborhood = await kgStore.getNeighborhood(unique, 1, scope);
+        const sourceIds = new Set<string>();
+        const existingIds = new Set(results.map(r => r.entry.id));
+        for (const n of neighborhood) {
+          for (const t of n.triples) {
+            if (t.source_memory_id && !existingIds.has(t.source_memory_id)) {
+              sourceIds.add(t.source_memory_id);
+            }
+          }
+        }
+        // Fetch entries by ID
+        const expanded: RetrievalResult[] = [];
+        for (const id of [...sourceIds].slice(0, 5)) {
+          const entry = await store.getById(id);
+          if (entry) {
+            expanded.push({ entry, score: 0.5, sources: {} });
+          }
+        }
+        return expanded;
+      };
+    }
+
+    // Evolution chain expansion — walk supersedes/supersededBy links
+    if (this.store.getById) {
+      const store = this.store;
+      deps.expandViaEvolution = async (results) => {
+        const expanded: RetrievalResult[] = [];
+        const existingIds = new Set(results.map(r => r.entry.id));
+        for (const r of results.slice(0, 5)) {
+          const evo = parseEvolution(r.entry.metadata, r.entry.timestamp);
+          for (const linkedId of [evo.supersedes, evo.supersededBy].filter(Boolean) as string[]) {
+            if (existingIds.has(linkedId)) continue;
+            const entry = await store.getById(linkedId);
+            if (entry) {
+              existingIds.add(linkedId);
+              expanded.push({ entry, score: r.score * 0.6, sources: {} });
+            }
+          }
+        }
+        return expanded;
+      };
+    }
+
+    // Cluster member expansion — get sourceMemories from cluster insights
+    if (this.store.getById) {
+      const store = this.store;
+      deps.expandViaClusters = async (results) => {
+        const expanded: RetrievalResult[] = [];
+        const existingIds = new Set(results.map(r => r.entry.id));
+        for (const r of results.slice(0, 5)) {
+          try {
+            const meta = JSON.parse(r.entry.metadata || "{}");
+            if ((meta.cluster_insight || meta.cross_memory_pattern) && meta.evolution?.sourceMemories) {
+              for (const memberId of (meta.evolution.sourceMemories as string[]).slice(0, 3)) {
+                if (existingIds.has(memberId)) continue;
+                const entry = await store.getById(memberId);
+                if (entry) {
+                  existingIds.add(memberId);
+                  expanded.push({ entry, score: r.score * 0.5, sources: {} });
+                }
+              }
+            }
+          } catch { /* skip */ }
+        }
+        return expanded;
+      };
+    }
+
+    // Narrative sibling expansion — reuse existing expandNarrativeSiblings logic
+    if (isNarrativeModeEnabled()) {
+      deps.expandViaNarrative = async (results) => {
+        const expanded = await this.expandNarrativeSiblings(results);
+        // Return only the new siblings (not in original results)
+        const existingIds = new Set(results.map(r => r.entry.id));
+        return expanded.filter(r => !existingIds.has(r.entry.id));
+      };
+    }
+
+    return deps;
   }
 
   /**

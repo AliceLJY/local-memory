@@ -78,7 +78,7 @@ function canonicalScore(entry: MemoryEntry): number {
 }
 
 /** Simple heuristic contradiction: negation pattern check between two texts. */
-function detectHeuristicContradiction(textA: string, textB: string): boolean {
+export function detectHeuristicContradiction(textA: string, textB: string): boolean {
   const a = textA.toLowerCase();
   const b = textB.toLowerCase();
 
