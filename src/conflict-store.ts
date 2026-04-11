@@ -34,7 +34,11 @@ export class ConflictCandidateStore {
     const parsed = ConflictCandidateRecordSchema.parse(record);
     const timestampToken = parsed.createdAt.replace(/[:.]/g, "-");
     const path = join(this.dataDir, `${timestampToken}-${parsed.conflictId}.json`);
-    writeFileSync(path, JSON.stringify(parsed, null, 2) + "\n");
+    try {
+      writeFileSync(path, JSON.stringify(parsed, null, 2) + "\n");
+    } catch (err) {
+      console.error("[recallnest] Failed to save conflict record:", err instanceof Error ? err.message : String(err));
+    }
     return parsed;
   }
 
@@ -43,7 +47,11 @@ export class ConflictCandidateStore {
     const existingPath = this.findPathById(parsed.conflictId);
     const timestampToken = parsed.createdAt.replace(/[:.]/g, "-");
     const path = existingPath || join(this.dataDir, `${timestampToken}-${parsed.conflictId}.json`);
-    writeFileSync(path, JSON.stringify(parsed, null, 2) + "\n");
+    try {
+      writeFileSync(path, JSON.stringify(parsed, null, 2) + "\n");
+    } catch (err) {
+      console.error("[recallnest] Failed to replace conflict record:", err instanceof Error ? err.message : String(err));
+    }
     return parsed;
   }
 

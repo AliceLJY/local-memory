@@ -124,8 +124,8 @@ export async function forgetMemory(
     try {
       await kgStore.deleteBySource(entry.id);
       kgTriplesRemoved = true;
-    } catch {
-      // KG cleanup failure should not block forget
+    } catch (err) {
+      console.error("[recallnest] KG cleanup failed during forget:", err instanceof Error ? err.message : String(err));
     }
   }
 
@@ -137,8 +137,8 @@ export async function forgetMemory(
       { id: entry.id, vector: entry.vector, scope: entry.scope },
       cascadeConfig ?? DEFAULT_CASCADE_FORGET_CONFIG,
     );
-  } catch {
-    // Cascade failure should not block primary delete
+  } catch (err) {
+    console.error("[recallnest] Cascade demote failed during forget:", err instanceof Error ? err.message : String(err));
   }
 
   // 6. Mark evolution status as "forgotten" before delete (audit breadcrumb)
@@ -148,8 +148,8 @@ export async function forgetMemory(
       evolutionNote: `forgotten: ${reason || "user request"}`,
     });
     await store.update(entry.id, { metadata: patchedMetadata }, scopeFilter);
-  } catch {
-    // Evolution patch failure should not block delete
+  } catch (err) {
+    console.error("[recallnest] Evolution patch failed during forget:", err instanceof Error ? err.message : String(err));
   }
 
   // 7. Primary delete
@@ -184,8 +184,8 @@ export async function forgetMemory(
         details: `demoted ${cascadeResult.demotedCount} related memories: ${cascadeResult.demotedIds.map(id => id.slice(0, 8)).join(",")}`,
       });
     }
-  } catch {
-    // Audit failure should never block operations
+  } catch (err) {
+    console.error("[recallnest] Audit log failed during forget:", err instanceof Error ? err.message : String(err));
   }
 
   return {
@@ -248,7 +248,9 @@ export async function forgetByScope(
     try {
       await kgStore.deleteByScope(scope);
       kgScopeCleared = true;
-    } catch { /* non-blocking */ }
+    } catch (err) {
+      console.error("[recallnest] KG scope cleanup failed:", err instanceof Error ? err.message : String(err));
+    }
   }
 
   // Audit the bulk operation
@@ -259,7 +261,9 @@ export async function forgetByScope(
       actor: "system",
       details: `scope-forget: ${forgottenCount} deleted, ${failedCount} failed, ${totalCascadeDemoted} cascade-demoted`,
     });
-  } catch { /* non-blocking */ }
+  } catch (err) {
+    console.error("[recallnest] Audit log failed during scope forget:", err instanceof Error ? err.message : String(err));
+  }
 
   return { forgottenCount, failedCount, kgScopeCleared, totalCascadeDemoted };
 }

@@ -125,8 +125,9 @@ export class KGStore {
         const lance = await loadLanceDB();
         await table.createIndex("subject", { config: (lance as any).Index.fts() });
       }
-    } catch {
+    } catch (err) {
       // FTS on subject is optional — BFS still works without it
+      console.error("[recallnest] KG FTS index creation skipped:", err instanceof Error ? err.message : String(err));
     }
 
     this.db = db;

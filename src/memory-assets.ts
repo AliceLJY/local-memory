@@ -165,7 +165,11 @@ export function buildPinAsset(result: RetrievalResult, options: {
 export function savePinAsset(asset: PinAsset): string {
   const dir = getPinsDir();
   const path = join(dir, `${asset.id}.json`);
-  writeFileSync(path, JSON.stringify(asset, null, 2) + "\n");
+  try {
+    writeFileSync(path, JSON.stringify(asset, null, 2) + "\n");
+  } catch (err) {
+    console.error("[recallnest] Failed to save pin asset:", err instanceof Error ? err.message : String(err));
+  }
   return path;
 }
 
@@ -198,7 +202,11 @@ export function buildBriefAsset(
 export function saveBriefAsset(asset: BriefAsset): string {
   const dir = getAssetsDir();
   const path = join(dir, `${asset.id}.json`);
-  writeFileSync(path, JSON.stringify(asset, null, 2) + "\n");
+  try {
+    writeFileSync(path, JSON.stringify(asset, null, 2) + "\n");
+  } catch (err) {
+    console.error("[recallnest] Failed to save brief asset:", err instanceof Error ? err.message : String(err));
+  }
   return path;
 }
 
@@ -332,7 +340,11 @@ export function writeExportArtifact(params: {
   };
 
   if (params.format === "json") {
-    writeFileSync(outputPath, JSON.stringify(payload, null, 2) + "\n");
+    try {
+      writeFileSync(outputPath, JSON.stringify(payload, null, 2) + "\n");
+    } catch (err) {
+      console.error("[recallnest] Failed to write JSON export:", err instanceof Error ? err.message : String(err));
+    }
   } else {
     const lines = [
       `# Memory Export`,
@@ -365,7 +377,11 @@ export function writeExportArtifact(params: {
       lines.push("");
     });
 
-    writeFileSync(outputPath, lines.join("\n"));
+    try {
+      writeFileSync(outputPath, lines.join("\n"));
+    } catch (err) {
+      console.error("[recallnest] Failed to write markdown export:", err instanceof Error ? err.message : String(err));
+    }
   }
 
   return {

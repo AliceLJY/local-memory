@@ -152,11 +152,17 @@ export function createStoreOnly(config: LocalMemoryConfig): MemoryStore {
 
 export function createComponentResolver(config: LocalMemoryConfig) {
   const cache = new Map<string, ReturnType<typeof createComponents>>();
+  const MAX_COMPONENT_CACHE_SIZE = 32;
 
   return function getComponents(profileName?: string) {
     const key = profileName || "default";
     const cached = cache.get(key);
     if (cached) return cached;
+    // Evict oldest entry if cache is full
+    if (cache.size >= MAX_COMPONENT_CACHE_SIZE) {
+      const firstKey = cache.keys().next().value;
+      if (firstKey !== undefined) cache.delete(firstKey);
+    }
     const created = createComponents(config, profileName);
     cache.set(key, created);
     return created;

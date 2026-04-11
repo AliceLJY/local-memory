@@ -588,13 +588,18 @@ const PENDING_EXTRACTION_FILE = resolve(
 function queueForLaterExtraction(chunks: Array<{ text: string; scope: string }>): void {
   let pending: Array<{ text: string; scope: string; queuedAt: string }> = [];
   try {
-    pending = JSON.parse(readFileSync(PENDING_EXTRACTION_FILE, "utf-8"));
+    const raw = JSON.parse(readFileSync(PENDING_EXTRACTION_FILE, "utf-8"));
+    if (Array.isArray(raw)) pending = raw;
   } catch { /* empty or missing */ }
   const now = new Date().toISOString();
   for (const chunk of chunks) {
     pending.push({ ...chunk, queuedAt: now });
   }
-  writeFileSync(PENDING_EXTRACTION_FILE, JSON.stringify(pending, null, 2));
+  try {
+    writeFileSync(PENDING_EXTRACTION_FILE, JSON.stringify(pending, null, 2));
+  } catch (err) {
+    console.error("[recallnest] Failed to write pending extraction queue:", err instanceof Error ? err.message : String(err));
+  }
 }
 
 export async function drainPendingQueue(
@@ -604,7 +609,12 @@ export async function drainPendingQueue(
 ): Promise<{ processed: number; errors: number }> {
   let pending: Array<{ text: string; scope: string; queuedAt: string }> = [];
   try {
-    pending = JSON.parse(readFileSync(PENDING_EXTRACTION_FILE, "utf-8"));
+    const raw = JSON.parse(readFileSync(PENDING_EXTRACTION_FILE, "utf-8"));
+    if (!Array.isArray(raw)) {
+      console.error("[recallnest] Pending extraction queue is malformed (not an array), resetting");
+      return { processed: 0, errors: 0 };
+    }
+    pending = raw;
   } catch { return { processed: 0, errors: 0 }; }
 
   if (pending.length === 0) return { processed: 0, errors: 0 };
@@ -644,7 +654,11 @@ export async function drainPendingQueue(
   }
 
   // Clear the queue
-  writeFileSync(PENDING_EXTRACTION_FILE, "[]");
+  try {
+    writeFileSync(PENDING_EXTRACTION_FILE, "[]");
+  } catch (err) {
+    console.error("[recallnest] Failed to clear pending extraction queue:", err instanceof Error ? err.message : String(err));
+  }
   return { processed, errors };
 }
 

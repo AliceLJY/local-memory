@@ -1310,9 +1310,17 @@ registerTool(
     let archived = 0;
     let deleted = 0;
     for (const row of rows) {
-      archiveDirtyBriefAsset(row);
-      archived += 1;
-      deleted += await store.bulkDelete([row.scope]);
+      try {
+        archiveDirtyBriefAsset(row);
+        archived += 1;
+      } catch (err) {
+        console.error("[recallnest] Failed to archive dirty brief:", err instanceof Error ? err.message : String(err));
+      }
+      try {
+        deleted += await store.bulkDelete([row.scope]);
+      } catch (err) {
+        console.error("[recallnest] Failed to delete dirty brief index rows:", err instanceof Error ? err.message : String(err));
+      }
     }
 
     return {
@@ -1917,13 +1925,40 @@ registerTool(
 );
 
 // ============================================================================
+// Global error handlers — prevent silent crashes from unhandled async errors
+// ============================================================================
+
+process.on("unhandledRejection", (reason) => {
+  console.error("[recallnest] Unhandled promise rejection:", reason instanceof Error ? reason.stack || reason.message : String(reason));
+});
+
+process.on("uncaughtException", (err) => {
+  console.error("[recallnest] Uncaught exception:", err.stack || err.message);
+  // Give stderr a chance to flush before exiting
+  setTimeout(() => process.exit(1), 100);
+});
+
+// ============================================================================
 // Start
 // ============================================================================
 
 // Auto-register babel-memory language processor if installed (non-blocking)
 autoRegisterBabelMemory().then((ok) => {
   if (ok) console.error("[recallnest] babel-memory registered");
+}).catch((err) => {
+  console.error("[recallnest] babel-memory registration failed:", err instanceof Error ? err.message : String(err));
 });
 
 const transport = new StdioServerTransport();
-await server.connect(transport);
+const CONNECT_TIMEOUT_MS = 30_000;
+try {
+  await Promise.race([
+    server.connect(transport),
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error("MCP server.connect() timed out after 30s")), CONNECT_TIMEOUT_MS)
+    ),
+  ]);
+} catch (err) {
+  console.error("[recallnest] Fatal: MCP connection failed:", err instanceof Error ? err.message : String(err));
+  process.exit(1);
+}

@@ -743,7 +743,7 @@ export class MemoryRetriever {
           try {
             const updated = recordEvolutionAccess(r.entry.metadata);
             await this.store.update!(r.entry.id, { metadata: updated });
-          } catch { /* evolution tracking must never block retrieval */ }
+          } catch (err) { console.error("[recallnest] Evolution access tracking failed:", err instanceof Error ? err.message : String(err)); }
         }
       });
     }
@@ -1822,7 +1822,7 @@ export class MemoryRetriever {
             if (meta.kg_entities && Array.isArray(meta.kg_entities)) {
               entityNames.push(...meta.kg_entities);
             }
-          } catch { /* skip */ }
+          } catch (err) { console.error("[recallnest] KG entity extraction failed:", err instanceof Error ? err.message : String(err)); }
         }
         if (entityNames.length === 0) return [];
         const unique = [...new Set(entityNames)].slice(0, 5);
@@ -1888,7 +1888,7 @@ export class MemoryRetriever {
                 }
               }
             }
-          } catch { /* skip */ }
+          } catch (err) { console.error("[recallnest] Cluster member expansion failed:", err instanceof Error ? err.message : String(err)); }
         }
         return expanded;
       };
