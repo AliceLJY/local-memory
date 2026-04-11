@@ -91,7 +91,7 @@ import { distillResults, formatExplainResults, formatSearchResults, formatBriefR
 import { archiveDirtyBriefAsset, assetSummaryLine, buildBriefAsset, buildPinAsset, listDirtyBriefAssets, listMemoryAssets, listPinAssets, saveBriefAsset, savePinAsset, writeExportArtifact } from "./memory-assets.js";
 import { indexAsset, indexPinnedAsset } from "./asset-sync.js";
 import { createComponentResolver, loadConfig, loadDotEnv, resolveRecallMode } from "./runtime-config.js";
-import { DurableMemoryCategorySchema, StoreMemorySourceSchema, PrivacyTierSchema } from "./memory-schema.js";
+import { DurableMemoryCategorySchema, StoreMemorySourceSchema, PrivacyTierSchema, isPredictiveMemoryEnabled } from "./memory-schema.js";
 import { persistCaseMemory, persistMemory, persistMemoryBatch, persistWorkflowPattern, promoteMemory } from "./capture-engine.js";
 import { persistSkill, retrieveSkills } from "./skill-engine.js";
 import { SkillImplementationTypeSchema } from "./skill-schema.js";
@@ -123,7 +123,8 @@ import { WorkflowObservationStore } from "./workflow-observation-store.js";
 import { buildManagedCheckpointObservation, buildManagedResumeObservation } from "./workflow-observation-managed.js";
 import { buildRetrievalContext, resolveScopeSelection } from "./scope-policy.js";
 import { matchesTemporalConstraint, type TemporalConstraint } from "./temporal-parser.js";
-import { setReminder, checkTriggers, fireReminder, formatReminders } from "./prospective-memory.js";
+import { setReminder, checkTriggers, fireReminder, formatReminders, suggestPredictedReminders, formatSuggestedReminders, acceptPredictedReminder, demotePredictedReminder } from "./prospective-memory.js";
+import type { PredictionContext } from "./prediction-engine.js";
 import { forgetMemory, forgetByScope } from "./forget-engine.js";
 import { createAuditLogger } from "./audit-log.js";
 // distill_session uses dynamic import("./session-distiller.js") at call time
@@ -978,6 +979,25 @@ registerTool(
       }
     }
 
+    // HP-predictive: Surface predicted reminders alongside search results
+    let suggestedText = "";
+    if (isPredictiveMemoryEnabled()) {
+      try {
+        const recentCheckpoints = await checkpointStore.listRecent({ scope, limit: 5 });
+        const recentObservations = await workflowObservationStore.listRecent({ scope, limit: 20 });
+        const predictionCtx: PredictionContext = {
+          checkpoints: recentCheckpoints,
+          workflowObservations: recentObservations,
+          frequentMemories: [], // Populated by access tracker in future iteration
+          uncoveredTopics: results.length === 0 && query ? [query] : [],
+        };
+        const suggestions = await suggestPredictedReminders(store, embedder, predictionCtx, scope ?? "global");
+        suggestedText = formatSuggestedReminders(suggestions);
+      } catch {
+        // Prediction failure is non-critical — silently skip
+      }
+    }
+
     const level = detail_level ?? "normal";
     const sections: string[] = [];
 
@@ -1011,7 +1031,7 @@ registerTool(
     return {
       content: [{
         type: "text" as const,
-        text: sections.join("\n\n") + reminderText,
+        text: sections.join("\n\n") + reminderText + suggestedText,
       }],
     };
   }

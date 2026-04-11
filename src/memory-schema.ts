@@ -250,3 +250,7 @@ export type StoredPromotedMemoryRecord = z.infer<typeof StoredPromotedMemoryReco
 export function isEmotionScoringEnabled(): boolean {
   return process.env.RECALLNEST_EMOTION_SCORING === "true";
 }
+
+export function isPredictiveMemoryEnabled(): boolean {
+  return process.env.RECALLNEST_PREDICTIVE_MEMORY === "true";
+}

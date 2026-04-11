@@ -36,6 +36,7 @@
 - `RECALLNEST_KG_MODE=true` — KG 三元组提取 + 图遍历
 - `RECALLNEST_EMOTION_SCORING=true` — Emotion detection + adjusted decay + retrieval scoring
 - `RECALLNEST_CONSTRUCTIVE_RETRIEVAL=true` — LLM context reconstruction with grounding (resume default, search opt-in)
+- `RECALLNEST_PREDICTIVE_MEMORY=true` — Heuristic-predicted prospective reminders (zero LLM, behavioral signals)
 
 ## 6. 测试基线
 
