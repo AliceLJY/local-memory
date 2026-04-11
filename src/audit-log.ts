@@ -15,7 +15,9 @@ export type AuditOperation =
   | "retrieve"
   | "archive"
   | "supersede"
-  | "consolidate";
+  | "consolidate"
+  | "forget"
+  | "cascade_forget";
 
 export interface AuditEntry {
   timestamp: string; // ISO 8601

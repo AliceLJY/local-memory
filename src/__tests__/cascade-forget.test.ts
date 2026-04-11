@@ -110,7 +110,7 @@ describe("cascade-forget", () => {
   it("skips already-archived entries", async () => {
     const archived = makeEntry("arch-1", "archived", {
       importance: 0.6,
-      metadata: JSON.stringify({ state: "archived" }),
+      metadata: JSON.stringify({ evolution: { status: "archived" } }),
     });
     const searchResults: MemorySearchResult[] = [
       { entry: archived, score: 0.9 },

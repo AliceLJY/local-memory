@@ -59,6 +59,7 @@ const TOOL_TIERS: Record<string, ToolTier> = {
   import_conversations: "advanced",
   distill_session: "advanced",
   scan_skill_promotions: "governance",
+  forget_memory: "advanced",
 
   // Governance (CLI-only, not in MCP by default)
   workflow_observe: "governance",
@@ -90,7 +91,7 @@ import { distillResults, formatExplainResults, formatSearchResults, formatBriefR
 import { archiveDirtyBriefAsset, assetSummaryLine, buildBriefAsset, buildPinAsset, listDirtyBriefAssets, listMemoryAssets, listPinAssets, saveBriefAsset, savePinAsset, writeExportArtifact } from "./memory-assets.js";
 import { indexAsset, indexPinnedAsset } from "./asset-sync.js";
 import { createComponentResolver, loadConfig, loadDotEnv, resolveRecallMode } from "./runtime-config.js";
-import { DurableMemoryCategorySchema, StoreMemorySourceSchema } from "./memory-schema.js";
+import { DurableMemoryCategorySchema, StoreMemorySourceSchema, PrivacyTierSchema } from "./memory-schema.js";
 import { persistCaseMemory, persistMemory, persistMemoryBatch, persistWorkflowPattern, promoteMemory } from "./capture-engine.js";
 import { persistSkill, retrieveSkills } from "./skill-engine.js";
 import { SkillImplementationTypeSchema } from "./skill-schema.js";
@@ -123,6 +124,8 @@ import { buildManagedCheckpointObservation, buildManagedResumeObservation } from
 import { buildRetrievalContext, resolveScopeSelection } from "./scope-policy.js";
 import { matchesTemporalConstraint, type TemporalConstraint } from "./temporal-parser.js";
 import { setReminder, checkTriggers, fireReminder, formatReminders } from "./prospective-memory.js";
+import { forgetMemory, forgetByScope } from "./forget-engine.js";
+import { createAuditLogger } from "./audit-log.js";
 // distill_session uses dynamic import("./session-distiller.js") at call time
 
 function entryToRetrievalResult(entry: Awaited<ReturnType<MemoryStore["get"]>>): RetrievalResult {
@@ -292,8 +295,9 @@ registerTool(
     tags: z.array(z.string().min(1).max(40)).max(8).default([]).describe("Optional tags"),
     canonicalKey: z.string().min(1).max(120).optional().describe("Optional stable key for merge/update semantics"),
     topicTag: z.string().min(1).max(60).optional().describe("Optional topic tag for intra-scope partitioning (e.g. 'auth', 'deploy', 'testing'). Auto-detected if omitted."),
+    privacyTier: PrivacyTierSchema.default("durable").describe("Privacy tier: ephemeral (auto-expire, no KG), private (persist, no KG), durable (default), shared (cross-scope)"),
   },
-  async ({ text, category, importance, scope, source, tags, canonicalKey, topicTag }) => {
+  async ({ text, category, importance, scope, source, tags, canonicalKey, topicTag, privacyTier }) => {
     const { store, embedder } = getComponents();
     const stored = await persistMemory({
       store,
@@ -309,6 +313,7 @@ registerTool(
       tags,
       canonicalKey,
       topicTag,
+      privacyTier,
     });
 
     return {
@@ -1312,6 +1317,54 @@ registerTool(
       }],
     };
   }
+);
+
+// --- forget_memory tool (Ethics Layer) ---
+registerTool(
+  "forget_memory",
+  "Permanently forget a memory with full cascade: delete primary entry, remove KG triples, demote related memories, and log an audit trail. Requires confirm=true for durable-tier memories. Use when the user explicitly requests a memory be forgotten, or to clean up sensitive/incorrect data.",
+  {
+    memoryId: z.string().min(1).max(128).describe("Memory ID to forget (full UUID or 8+ hex prefix)"),
+    confirm: z.boolean().default(false).describe("Required confirmation — must be true for durable-tier memories"),
+    reason: z.string().min(1).max(200).optional().describe("Reason for forgetting (recorded in audit trail)"),
+    scope: z.string().min(1).max(160).optional().describe("Optional scope filter for permission check"),
+  },
+  async ({ memoryId, confirm, reason, scope }) => {
+    const { store } = getComponents();
+    const auditLogger = createAuditLogger();
+    const scopeFilter = scope ? [scope] : undefined;
+
+    const result = await forgetMemory(
+      { store, kgStore: kgStoreInstance, auditLogger },
+      { memoryId, confirm, reason, scopeFilter },
+    );
+
+    if (!result.success) {
+      return {
+        content: [{
+          type: "text" as const,
+          text: `❌ Forget failed: ${result.error}`,
+        }],
+      };
+    }
+
+    const lines = [
+      `✅ Memory ${result.memoryId.slice(0, 8)} forgotten.`,
+      `Privacy tier: ${result.evidence?.privacyTier || "unknown"}`,
+      `KG triples removed: ${result.kgTriplesRemoved ? "yes" : "no/N/A"}`,
+      `Cascade demoted: ${result.cascadeResult.demotedCount} related memories`,
+    ];
+    if (result.evidence?.reason) {
+      lines.push(`Reason: ${result.evidence.reason}`);
+    }
+
+    return {
+      content: [{
+        type: "text" as const,
+        text: lines.join("\n"),
+      }],
+    };
+  },
 );
 
 registerTool(

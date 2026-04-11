@@ -19,6 +19,7 @@
  */
 
 import type { MemoryStore, MemoryEntry } from "./store.js";
+import { isActiveMemory } from "./memory-evolution.js";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -85,10 +86,10 @@ export async function cascadeForget(
     // Skip the forgotten entry itself (may still be in index)
     if (entry.id === forgottenEntry.id) continue;
 
-    // Skip already-archived entries
+    // Skip already-archived/superseded entries (unified via evolution.status)
+    if (!isActiveMemory(entry.metadata)) continue;
     let meta: Record<string, any> = {};
     try { meta = JSON.parse(entry.metadata || "{}"); } catch { /* skip */ }
-    if (meta.state === "archived" || meta.state === "superseded") continue;
 
     // Proportional demotion: higher similarity → bigger cut
     // At sim=1.0 → full maxDemotion, at threshold → near-zero

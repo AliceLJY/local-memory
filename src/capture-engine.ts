@@ -25,6 +25,7 @@ import {
   type DurableMemoryCategory,
   DURABLE_MEMORY_CATEGORIES,
   type WriteDisposition,
+  parsePrivacyTier,
 } from "./memory-schema.js";
 import { deterministicId, type MemoryEntry, type MemoryStore } from "./store.js";
 import {
@@ -626,13 +627,17 @@ function inferPromotedCategory(
 function buildStoreMemoryMetadata(input: StoreMemoryInput, canonicalKey: string): string {
   const anchor = generateAnchor(input.text);
   const anchorExtra = anchor ? { anchor } : undefined;
+  // HP-ethics: Include privacyTier in metadata if non-default
+  const privacyExtra = input.privacyTier && input.privacyTier !== "durable"
+    ? { privacyTier: input.privacyTier }
+    : undefined;
   return buildStructuredMetadata({
     source: input.source,
     tags: input.tags,
     capture: "store_memory_schema_v1",
     category: input.category,
     canonicalKey,
-    extra: mergeExtra(buildPreferenceSlotExtra(input.category, input.text), anchorExtra),
+    extra: mergeExtra(buildPreferenceSlotExtra(input.category, input.text), anchorExtra, privacyExtra),
   });
 }
 
@@ -925,7 +930,10 @@ export async function persistMemory(
   });
 
   // Tier 4.1: Async KG triple extraction (non-blocking)
-  if (deps.kgExtractor && disposition !== "deduped") {
+  // HP-ethics: Skip KG extraction for ephemeral/private memories — they must not leave graph traces
+  const entryPrivacyTier = parsePrivacyTier(metadata);
+  const kgAllowed = entryPrivacyTier !== "ephemeral" && entryPrivacyTier !== "private";
+  if (deps.kgExtractor && disposition !== "deduped" && kgAllowed) {
     deps.kgExtractor
       .extractAndStore(input.text, entry.id, resolvedScope)
       .catch(() => {}); // Silently ignore — KG extraction must never block memory writes

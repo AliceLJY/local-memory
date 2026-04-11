@@ -73,6 +73,31 @@ export function parseEmotion(metadata: string | undefined): EmotionMetadata | nu
 /** Default neutral emotion for memories without emotion data */
 export const NEUTRAL_EMOTION: EmotionMetadata = { valence: 0, arousal: 0, label: "neutral" };
 
+// --- Privacy Tier (Philosophy of Memory: Ethics Layer) ---
+/**
+ * Privacy tiers control how aggressively a memory is persisted, extracted, and shared.
+ *
+ * - ephemeral: auto-expire, no KG extraction, no sharing — session scratch
+ * - private:   persist but no KG extraction, no sharing — personal notes
+ * - durable:   full lifecycle, KG extraction, standard decay — default
+ * - shared:    marked safe for cross-scope retrieval — collaborative knowledge
+ */
+export const PRIVACY_TIERS = ["ephemeral", "private", "durable", "shared"] as const;
+export type PrivacyTier = (typeof PRIVACY_TIERS)[number];
+export const PrivacyTierSchema = z.enum(PRIVACY_TIERS);
+
+/** Parse privacyTier from metadata JSON string, returns "durable" (default) if absent */
+export function parsePrivacyTier(metadata: string | undefined): PrivacyTier {
+  if (!metadata) return "durable";
+  try {
+    const parsed = JSON.parse(metadata);
+    if (parsed.privacyTier && PRIVACY_TIERS.includes(parsed.privacyTier)) {
+      return parsed.privacyTier;
+    }
+  } catch { /* malformed metadata - safe default */ }
+  return "durable";
+}
+
 export const MemoryTextSchema = boundedStringSchema("text", 4000);
 export const MemoryScopeSchema = optionalBoundedStringSchema(160);
 export const RequiredMemoryScopeSchema = boundedStringSchema("scope", 160);
@@ -102,6 +127,7 @@ export const StoreMemoryInputSchema = z.object({
   tags: MemoryTagsSchema,
   canonicalKey: CanonicalKeySchema,
   topicTag: z.string().min(1).max(60).optional(),
+  privacyTier: PrivacyTierSchema.default("durable"),
 });
 
 export const StoredMemoryRecordSchema = StoreMemoryInputSchema.extend({

@@ -68,12 +68,8 @@ function parseMetadata(entry: MemoryEntry): Record<string, unknown> {
 }
 
 function isActive(entry: MemoryEntry): boolean {
-  // Use evolution metadata if available (new system), fall back to legacy meta.state
-  if (isActiveMemory(entry.metadata)) {
-    const meta = parseMetadata(entry);
-    return meta.state !== "archived" && meta.state !== "superseded";
-  }
-  return false;
+  // Unified lifecycle check via evolution.status (no legacy meta.state fallback)
+  return isActiveMemory(entry.metadata);
 }
 
 function canonicalScore(entry: MemoryEntry): number {

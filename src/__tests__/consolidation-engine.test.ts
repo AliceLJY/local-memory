@@ -152,7 +152,7 @@ describe("ConsolidationEngine", () => {
 
   it("skips archived entries", async () => {
     const entryA = makeEntry({ id: "a", text: "active entry here", vector: [1, 0, 0] });
-    const entryB = makeEntry({ id: "b", text: "archived entry here", vector: [0.95, 0.1, 0], metadata: JSON.stringify({ state: "archived" }) });
+    const entryB = makeEntry({ id: "b", text: "archived entry here", vector: [0.95, 0.1, 0], metadata: JSON.stringify({ evolution: { status: "archived" } }) });
 
     const { store } = createMockStore([entryA, entryB]);
     const engine = new ConsolidationEngine(store);
