@@ -210,6 +210,18 @@ Five upgrades derived from 9 research dimensions in philosophy of memory, each m
 
 ---
 
+## New in v2.2: Retrieval Quality Hardening
+
+v2.1 added philosophy-informed behavior; v2.2 closes the last three engine-layer gaps identified by a frontier research scan (ACC, PI-LLM, TSM).
+
+- **Memory Confidence Meta-tags** *(ACC / Dual-Process UQ)* — Each memory now carries structured `ConfidenceMetadata` (score, reliability tier: `direct` / `inferred` / `hearsay`). Auto-assigned from source on write (`manual` = 0.9, `agent` = 0.7, `conversation_import` = 0.5). Retrieval scores are weighted by confidence. `resume_context` tags low-confidence items with `[低置信]`.
+
+- **Interference Detection + Active Forgetting Gate** *(PI-LLM / SleepGate)* — Semantic cluster detection identifies groups of near-duplicate memories competing for retrieval. Enhanced RIF keeps only top-K (default 3) per cluster; extras are demoted 50% instead of removed. Write-time pre-warning: when a scope accumulates ≥5 high-similarity active memories, the weakest is flagged `pending_review`. `data_checkup` reports interference density.
+
+- **Temporal Validity Windows** *(TSM / TiMem / Zep)* — `store_memory` accepts `validUntil` (expiration) and `eventTime` (when the event actually happened). `search_memory` supports `validAt` (point-in-time query) and `includeExpired` (demote 80% instead of hide). Auto-GC applies 2× decay acceleration to expired memories.
+
+---
+
 ## Architecture
 
 ```

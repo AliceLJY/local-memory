@@ -65,12 +65,12 @@ Test baseline: 1,428 tests, 0 failures
 
 ### Current Gap
 
-RecallNest is a mature three-terminal continuity layer with philosophy-informed memory architecture. The remaining gaps are operational and architectural:
+RecallNest is a mature three-terminal continuity layer with philosophy-informed memory architecture and research-grade retrieval quality (confidence scoring, interference detection, temporal validity). The remaining gaps are operational and architectural:
 
 - continuity eval still depends on the latest live checkpoint in one case
 - scheduled conflict audit/export for recurring review is still missing
 - cross-scope semantic bridge threshold may need per-user tuning
-- `retriever.ts` and `capture-engine.ts` are the two largest modules (1,879 and 1,192 lines) and need decomposition
+- `retriever.ts` and `capture-engine.ts` are the two largest modules (2,111 and 1,280 lines) and need decomposition
 - Feature flags (6 total) need gradual production validation before defaulting to on
 
 ## Phase 1: Shared Memory Foundation
@@ -227,11 +227,11 @@ Goal: reduce complexity in the two largest modules and centralize configuration.
 
 Planned work:
 
-- ⬜ MC-1: Split `retriever.ts` (1,879 lines) into retrieval pipeline modules (~250 lines each)
+- ⬜ MC-1: Split `retriever.ts` (2,111 lines) into retrieval pipeline modules (~250 lines each)
 - ⬜ MC-2: `search_memory` tokenBudget parameter with L0/L1/L2 auto-layer selection
 - ⬜ MC-3: `distill_session` auto-persist to long-term memory (close the two-step gap)
 - ⬜ MC-4: Centralize all `process.env.RECALLNEST_*` reads into one typed config module
-- ⬜ MC-5: Refactor `capture-engine.ts` (1,192 lines) into middleware pipeline
+- ⬜ MC-5: Refactor `capture-engine.ts` (1,280 lines) into middleware pipeline
 - ⬜ MC-6: Centralize type definitions with re-export index
 
 Dependencies: none (all independent of each other, can be done in any order)
