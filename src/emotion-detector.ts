@@ -26,8 +26,33 @@ const HIGH_AROUSAL_SIGNALS: string[] = [
   "紧急", "立刻", "马上", "赶紧", "救命",
 ];
 
+/** Chinese negation prefixes that flip positive → negative */
+const CN_NEGATION_PREFIXES = ["不", "没", "非", "无", "别", "未"];
+
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
+}
+
+/**
+ * Count positive signal matches, handling Chinese negation.
+ * "不喜欢" → skip positive, add to negatedCount (caller adds to negative).
+ * Returns { positive, negated } counts.
+ */
+function countPositiveSignals(lower: string): { positive: number; negated: number } {
+  let positive = 0;
+  let negated = 0;
+  for (const signal of POSITIVE_SIGNALS) {
+    const s = signal.toLowerCase();
+    const idx = lower.indexOf(s);
+    if (idx === -1) continue;
+    const isNegated = idx > 0 && CN_NEGATION_PREFIXES.some(neg => lower.substring(idx - neg.length, idx) === neg);
+    if (isNegated) {
+      negated++;
+    } else {
+      positive++;
+    }
+  }
+  return { positive, negated };
 }
 
 /**
@@ -42,10 +67,11 @@ export function detectEmotion(text: string): EmotionMetadata {
   const lower = text.toLowerCase();
 
   const negCount = NEGATIVE_SIGNALS.filter(s => lower.includes(s.toLowerCase())).length;
-  const posCount = POSITIVE_SIGNALS.filter(s => lower.includes(s.toLowerCase())).length;
+  const { positive: posCount, negated: negatedPosCount } = countPositiveSignals(lower);
   const arousalCount = HIGH_AROUSAL_SIGNALS.filter(s => text.includes(s)).length;
 
-  const valence = clamp((posCount - negCount) * 0.3, -1, 1);
+  // Negated positive signals (e.g. "不开心") count as additional negatives
+  const valence = clamp((posCount - negCount - negatedPosCount) * 0.3, -1, 1);
   const arousal = clamp(arousalCount * 0.25, 0, 1);
   const label = valence > 0.25 ? "positive" : valence < -0.25 ? "negative" : "neutral";
 

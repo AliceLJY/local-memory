@@ -335,7 +335,11 @@ export function formatFullResults(
     const accessCount = typeof meta.accessCount === "number" ? String(meta.accessCount) : "-";
     const importance = results[i].entry.importance.toFixed(2);
     const tags = Array.isArray(meta.tags) ? (meta.tags as string[]).join(", ") : "-";
-    lines.push(`   meta : evolution=${evolution} accessCount=${accessCount} importance=${importance} tags=[${tags}]`);
+    // Emotion metadata (from emotion-detector)
+    const emotionPart = meta.emotion && typeof meta.emotion === "object"
+      ? ` emotion=${(meta.emotion as Record<string, unknown>).label ?? "-"}(v=${(meta.emotion as Record<string, unknown>).valence ?? 0},a=${(meta.emotion as Record<string, unknown>).arousal ?? 0})`
+      : "";
+    lines.push(`   meta : evolution=${evolution} accessCount=${accessCount} importance=${importance} tags=[${tags}]${emotionPart}`);
   }
 
   return lines.join("\n");
