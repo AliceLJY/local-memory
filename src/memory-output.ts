@@ -4,6 +4,7 @@ import type { RetrievalProfileName } from "./retrieval-profiles.js";
 import { extractMemoryProvenance } from "./memory-boundaries.js";
 import { extractMultiVectorText } from "./multi-vector.js";
 import { parseNarrative } from "./narrative-schema.js";
+import { getConfidence, getConfidenceMetadata } from "./confidence-tracker.js";
 
 interface MemoryMetadata {
   source?: string;
@@ -346,7 +347,12 @@ export function formatFullResults(
     const narrativePart = narrative
       ? ` narrative=${narrative.lifePeriodLabel}/${narrative.generalEventLabel}`
       : "";
-    lines.push(`   meta : evolution=${evolution} accessCount=${accessCount} importance=${importance} tags=[${tags}]${emotionPart}${narrativePart}`);
+    // F1: Confidence metadata
+    const confMeta = getConfidenceMetadata(results[i].entry);
+    const confPart = confMeta
+      ? ` confidence=${confMeta.score.toFixed(2)}(${confMeta.reliability})`
+      : "";
+    lines.push(`   meta : evolution=${evolution} accessCount=${accessCount} importance=${importance} tags=[${tags}]${confPart}${emotionPart}${narrativePart}`);
   }
 
   return lines.join("\n");

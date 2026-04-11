@@ -2,6 +2,7 @@ import { extractBoundaryMetadata, extractCanonicalKey, shouldUseStableMemoryResu
 import { buildProjectScopeCueTerms, normalizeScopedValue } from "./context-composer-scope.js";
 import { bestSummaryText, cleanText, dedupeText, stripConversationMarkers } from "./context-composer-text.js";
 import type { RetrievalResult } from "./retriever.js";
+import { getConfidence } from "./confidence-tracker.js";
 import {
   GENERIC_ENTITY_TASK_TERMS,
   GENERIC_SCOPE_TERMS,
@@ -158,7 +159,10 @@ function hasUnsupportedPreferenceSpecificity(result: RetrievalResult, taskSeed?:
 
 function formatStableResult(category: StableCategory, result: RetrievalResult): string {
   const text = bestSummaryText(result.entry.text, result.entry.metadata);
-  return cleanText(`${STABLE_CATEGORY_LABELS[category]}: ${text}`, 220);
+  // F1: Tag low-confidence memories in resume_context output
+  const conf = getConfidence(result.entry);
+  const tag = conf < 0.5 ? " [低置信]" : "";
+  return cleanText(`${STABLE_CATEGORY_LABELS[category]}: ${text}${tag}`, 230);
 }
 
 export function selectStableResults(

@@ -299,8 +299,15 @@ registerTool(
     privacyTier: PrivacyTierSchema.default("durable").describe("Privacy tier: ephemeral (auto-expire, no KG), private (persist, no KG), durable (default), shared (cross-scope)"),
     validUntil: z.union([z.string(), z.number()]).optional().describe("Optional expiration: ISO date string or ms timestamp. Memory will be deprioritized after this time."),
     eventTime: z.union([z.string(), z.number()]).optional().describe("Optional event time: when the event actually happened (ISO date or ms), distinct from storage time."),
+    confidence: z.union([
+      z.number().min(0).max(1),
+      z.object({
+        score: z.number().min(0).max(1),
+        reliability: z.enum(["direct", "inferred", "hearsay"]).optional(),
+      }),
+    ]).optional().describe("Optional confidence override: number (0-1) or {score, reliability}. Auto-assigned from source if omitted."),
   },
-  async ({ text, category, importance, scope, source, tags, canonicalKey, topicTag, privacyTier, validUntil, eventTime }) => {
+  async ({ text, category, importance, scope, source, tags, canonicalKey, topicTag, privacyTier, validUntil, eventTime, confidence }) => {
     const { store, embedder } = getComponents();
     const stored = await persistMemory({
       store,
@@ -320,6 +327,8 @@ registerTool(
       // F3: Pass temporal validity params (extracted by persistMemory before Zod parse)
       validUntil,
       eventTime,
+      // F1: Pass confidence override (extracted by persistMemory before Zod parse)
+      confidence,
     });
 
     return {

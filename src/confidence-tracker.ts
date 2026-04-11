@@ -40,6 +40,55 @@ export const CONFIDENCE_CONTRADICTED = 0.0;
 const MAX_CONFIDENCE_HISTORY = 20;
 
 // ---------------------------------------------------------------------------
+// F1: Structured Confidence Metadata
+// ---------------------------------------------------------------------------
+
+export type ConfidenceReliability = "direct" | "inferred" | "hearsay";
+
+export interface ConfidenceMetadata {
+  /** 0–1 composite confidence score. */
+  score: number;
+  /** Source reliability tier. */
+  reliability: ConfidenceReliability;
+  /** Last verification timestamp (ms). */
+  verifiedAt?: number;
+  /** Who verified: user / system / llm. */
+  verifiedBy?: string;
+}
+
+/**
+ * F1: Assign default confidence based on memory source.
+ * Returns a ConfidenceMetadata object to embed in metadata JSON.
+ */
+export function assignDefaultConfidence(
+  source: string,
+  explicitConfidence?: Partial<ConfidenceMetadata>,
+): ConfidenceMetadata {
+  // If caller provided explicit values, use them (fill in defaults for missing fields)
+  if (explicitConfidence?.score != null) {
+    return {
+      score: explicitConfidence.score,
+      reliability: explicitConfidence.reliability ?? "inferred",
+      verifiedAt: explicitConfidence.verifiedAt,
+      verifiedBy: explicitConfidence.verifiedBy,
+    };
+  }
+  switch (source) {
+    case "manual":
+      return { score: 0.9, reliability: "direct" };
+    case "agent":
+    case "api":
+      return { score: 0.7, reliability: "inferred" };
+    case "session_distill":
+      return { score: 0.6, reliability: "inferred" };
+    case "conversation_import":
+      return { score: 0.5, reliability: "hearsay" };
+    default:
+      return { score: CONFIDENCE_DEFAULT, reliability: "inferred" };
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
@@ -73,11 +122,41 @@ function parseMeta(entry: MemoryEntry): Record<string, unknown> {
 }
 
 /**
- * Read confidence from metadata. Returns default (0.7) if not set.
+ * Read confidence score from metadata. Handles both flat number (legacy)
+ * and structured ConfidenceMetadata object (F1).
+ * Returns default (0.7) if not set.
  */
 export function getConfidence(entry: MemoryEntry): number {
   const meta = parseMeta(entry);
-  return typeof meta.confidence === "number" ? meta.confidence : CONFIDENCE_DEFAULT;
+  if (typeof meta.confidence === "number") return meta.confidence;
+  if (meta.confidence && typeof meta.confidence === "object") {
+    const obj = meta.confidence as Record<string, unknown>;
+    if (typeof obj.score === "number") return obj.score;
+  }
+  return CONFIDENCE_DEFAULT;
+}
+
+/**
+ * F1: Read full ConfidenceMetadata from entry. Returns null if not set.
+ */
+export function getConfidenceMetadata(entry: MemoryEntry): ConfidenceMetadata | null {
+  const meta = parseMeta(entry);
+  if (meta.confidence && typeof meta.confidence === "object") {
+    const obj = meta.confidence as Record<string, unknown>;
+    if (typeof obj.score === "number") {
+      return {
+        score: obj.score,
+        reliability: (obj.reliability as ConfidenceReliability) ?? "inferred",
+        verifiedAt: typeof obj.verifiedAt === "number" ? obj.verifiedAt : undefined,
+        verifiedBy: typeof obj.verifiedBy === "string" ? obj.verifiedBy : undefined,
+      };
+    }
+  }
+  // Legacy flat number → wrap
+  if (typeof meta.confidence === "number") {
+    return { score: meta.confidence, reliability: "inferred" };
+  }
+  return null;
 }
 
 function appendHistory(

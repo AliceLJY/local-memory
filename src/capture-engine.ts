@@ -7,6 +7,7 @@ import { verifyWrite } from "./write-verifier.js";
 // persistMemoryBatch relies on per-item conflict detection (A-2) instead.
 import { defaultEvolution, buildSupersedeMetadata, buildSupersedeMetadataForNew, buildPendingReviewMetadata, isActiveMemory, patchEvolution } from "./memory-evolution.js";
 import { detectTopicTag, injectTopicTag } from "./topic-tag.js";
+import { assignDefaultConfidence, type ConfidenceMetadata } from "./confidence-tracker.js";
 import {
   type CaseMemoryInput,
   CaseMemoryInputSchema,
@@ -953,6 +954,18 @@ export async function persistMemory(
         : new Date(String(eventTimeRaw)).getTime();
     }
     metadata = patchEvolution(metadata, temporalPatch);
+  }
+
+  // F1: Assign structured confidence based on source (user can override via explicit param)
+  const confidenceRaw = rawObj?.confidence as Partial<ConfidenceMetadata> | number | undefined;
+  const explicitConfidence = typeof confidenceRaw === "number"
+    ? { score: confidenceRaw }
+    : (confidenceRaw ?? undefined);
+  const confidenceMeta = assignDefaultConfidence(input.source, explicitConfidence);
+  {
+    const parsed: Record<string, unknown> = JSON.parse(metadata);
+    parsed.confidence = confidenceMeta;
+    metadata = JSON.stringify(parsed);
   }
 
   const { entry, disposition, conflictId } = await writeDurableEntry(deps, {
