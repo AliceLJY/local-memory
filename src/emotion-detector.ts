@@ -61,7 +61,7 @@ function countPositiveSignals(lower: string): { positive: number; negated: numbe
  */
 export function detectEmotion(text: string): EmotionMetadata {
   if (!text || text.length === 0) {
-    return { valence: 0, arousal: 0, label: "neutral" };
+    return { valence: 0, arousal: 0, label: "neutral", salience: 0, source: "keyword" };
   }
 
   const lower = text.toLowerCase();
@@ -75,7 +75,10 @@ export function detectEmotion(text: string): EmotionMetadata {
   const arousal = clamp(arousalCount * 0.25, 0, 1);
   const label = valence > 0.25 ? "positive" : valence < -0.25 ? "negative" : "neutral";
 
-  return { valence, arousal, label };
+  // Salience: composite mnemonic significance — average of emotional intensity and arousal
+  const salience = clamp((Math.abs(valence) + arousal) / 2, 0, 1);
+
+  return { valence, arousal, label, salience, source: "keyword" };
 }
 
 /**

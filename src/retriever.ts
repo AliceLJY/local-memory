@@ -10,7 +10,7 @@ import { shouldSkipRetrieval } from "./adaptive-retrieval.js";
 import { expandQuery } from "./query-expander.js";
 import { detectLang, tokenizeFts } from "./language-hook.js";
 import { type AccessTracker, computeHotnessScore, parseAccessMetadata } from "./access-tracker.js";
-import { weibullDecay, resolveTier, isDecayExempt } from "./decay-engine.js";
+import { weibullDecay, resolveTier, isDecayExempt, adjustHalfLifeForEmotion, computeArousalBoost } from "./decay-engine.js";
 import { logWarn } from "./stderr-log.js";
 import { extractBoundaryMetadata, isDurableMemoryScope, isTranscriptScope } from "./memory-boundaries.js";
 import type { TraceCollector } from "./retrieval-trace.js";
@@ -1667,18 +1667,26 @@ export class MemoryRetriever {
       const ageDays = (now - ts) / 86_400_000;
 
       // Use access-reinforced half-life if tracker is attached
-      const halfLife = this.accessTracker
+      let halfLife = this.accessTracker
         ? this.accessTracker.computeEffectiveHalfLife(baseHalfLife, r.entry.metadata)
         : baseHalfLife;
+
+      // HP-emo: Emotion-adjusted half-life — strong emotion slows forgetting
+      const emotion = isEmotionScoringEnabled() ? parseEmotion(r.entry.metadata) : null;
+      if (emotion) {
+        halfLife = adjustHalfLifeForEmotion(halfLife, emotion);
+      }
 
       // Resolve tier from metadata (defaults to peripheral)
       const tier = resolveTier(r.entry.metadata);
 
       // Weibull decay with tier-specific shape and floor
       const factor = weibullDecay(ageDays, halfLife, tier);
+      // HP-emo: Arousal boost — flashbulb memory effect (1.0–1.1x)
+      const arousalFactor = emotion ? computeArousalBoost(emotion) : 1.0;
       return {
         ...r,
-        score: clamp01(r.score * factor, r.score * 0.3),
+        score: clamp01(r.score * arousalFactor * factor, r.score * 0.3),
       };
     });
 
@@ -1709,7 +1717,7 @@ export class MemoryRetriever {
         };
       }
       const evo = parseEvolution(r.entry.metadata, r.entry.timestamp);
-      const decay = computeDecayScore(evo, r.entry.importance);
+      const decay = computeDecayScore(evo, r.entry.importance, undefined, r.entry.metadata);
       return {
         ...r,
         score: clamp01(r.score * (1 - EVOLUTION_BLEND_WEIGHT) + decay * EVOLUTION_BLEND_WEIGHT, 0),

@@ -44,12 +44,18 @@ export interface EmotionMetadata {
   arousal: number;
   /** Human-readable label */
   label?: string;
+  /** Composite mnemonic significance: (|valence| + arousal) / 2, range 0-1 */
+  salience?: number;
+  /** Detection method */
+  source?: "keyword" | "llm" | "user";
 }
 
 export const EmotionMetadataSchema = z.object({
   valence: z.number().min(-1).max(1),
   arousal: z.number().min(0).max(1),
   label: z.string().max(30).optional(),
+  salience: z.number().min(0).max(1).optional(),
+  source: z.enum(["keyword", "llm", "user"]).optional(),
 });
 
 /** Parse emotion from metadata JSON string, returns null if absent */

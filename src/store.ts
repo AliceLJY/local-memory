@@ -454,6 +454,18 @@ export class MemoryStore {
       fts_text: entry.fts_text || entry.text,
     };
 
+    // HP-emo: Backfill emotion if absent during import
+    try {
+      const metaParsed = JSON.parse(full.metadata || "{}");
+      if (!metaParsed.emotion) {
+        const emotionResult = detectEmotionIfEnabled(full.text);
+        if (emotionResult) {
+          metaParsed.emotion = emotionResult;
+          full.metadata = JSON.stringify(metaParsed);
+        }
+      }
+    } catch { /* malformed metadata — skip backfill */ }
+
     await this.table!.add([full]);
     return full;
   }
@@ -913,6 +925,16 @@ export class MemoryStore {
       language: updates.language ?? ((row.language as string) || "en"),
       fts_text: updates.fts_text ?? ((row.fts_text as string) || (updates.text ?? (row.text as string))),
     };
+
+    // HP-emo: Re-detect emotion when text changes
+    if (updates.text) {
+      const emotionResult = detectEmotionIfEnabled(updates.text);
+      if (emotionResult) {
+        const meta = JSON.parse(updated.metadata || "{}");
+        meta.emotion = emotionResult;
+        updated.metadata = JSON.stringify(meta);
+      }
+    }
 
     // LanceDB doesn't support in-place update; delete + re-add
     const resolvedId = escapeSqlLiteral(row.id as string);

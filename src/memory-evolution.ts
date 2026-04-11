@@ -8,8 +8,11 @@
  * Design principles (from arXiv 2512.13564 survey):
  * - Archive-first, delete-never
  * - Supersede-on-conflict (old stays, new links to it)
- * - Composite decay = 0.2 time + 0.3 frequency + 0.5 importance
+ * - Composite decay = 0.2 time + 0.3 frequency + 0.5 importance (base)
+ *   With emotion: 0.15 time + 0.25 frequency + 0.45 importance + 0.15 emotionSalience
  */
+
+import { parseEmotion, isEmotionScoringEnabled } from "./memory-schema.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -290,23 +293,37 @@ export function resolvePendingReview(metadata: string | undefined): string {
 // ---------------------------------------------------------------------------
 
 const TIME_HALF_LIFE_DAYS = 90;
-const TIME_WEIGHT = 0.2;
-const FREQUENCY_WEIGHT = 0.3;
-const IMPORTANCE_WEIGHT = 0.5;
+
+// Base weights (no emotion): 0.2 + 0.3 + 0.5 = 1.0
+const TIME_WEIGHT_BASE = 0.2;
+const FREQUENCY_WEIGHT_BASE = 0.3;
+const IMPORTANCE_WEIGHT_BASE = 0.5;
+
+// Emotion-enabled weights: 0.15 + 0.25 + 0.45 + 0.15 = 1.0
+const TIME_WEIGHT_EMO = 0.15;
+const FREQUENCY_WEIGHT_EMO = 0.25;
+const IMPORTANCE_WEIGHT_EMO = 0.45;
+const EMOTION_WEIGHT = 0.15;
 
 /**
  * Compute composite decay score (0–1, higher = more valuable to keep).
  *
- *   decay = 0.2 × timeDecay + 0.3 × frequencyScore + 0.5 × importance
+ * Base:    0.2 × timeDecay + 0.3 × frequencyScore + 0.5 × importance
+ * Emotion: 0.15 × time + 0.25 × freq + 0.45 × importance + 0.15 × emotionSalience
  *
  * Time decay: exponential with 90-day half-life.
  * Frequency: log(1 + accessCount) × recencyBoost, capped at 1.
  * Importance: as-stored (0–1).
+ * Emotion salience: (|valence| + arousal) / 2 — composite mnemonic significance.
+ *
+ * @param metadata - Optional metadata JSON string for emotion extraction.
+ *                   When absent or emotion flag off, falls back to base weights.
  */
 export function computeDecayScore(
   evo: EvolutionMetadata,
   importance: number,
   now?: number,
+  metadata?: string,
 ): number {
   const ts = now ?? Date.now();
 
@@ -321,9 +338,24 @@ export function computeDecayScore(
     : 0.5; // never accessed → neutral
   const frequencyScore = Math.min(1, rawFreq * recencyBoost);
 
+  const clampedImportance = Math.max(0, Math.min(1, importance));
+
+  // HP-emo: Emotion-aware decay scoring
+  const useEmotion = isEmotionScoringEnabled() && !!metadata;
+  if (useEmotion) {
+    const emotion = parseEmotion(metadata);
+    const salience = emotion?.salience ?? 0;
+    return (
+      TIME_WEIGHT_EMO * timeDecay +
+      FREQUENCY_WEIGHT_EMO * frequencyScore +
+      IMPORTANCE_WEIGHT_EMO * clampedImportance +
+      EMOTION_WEIGHT * salience
+    );
+  }
+
   return (
-    TIME_WEIGHT * timeDecay +
-    FREQUENCY_WEIGHT * frequencyScore +
-    IMPORTANCE_WEIGHT * Math.max(0, Math.min(1, importance))
+    TIME_WEIGHT_BASE * timeDecay +
+    FREQUENCY_WEIGHT_BASE * frequencyScore +
+    IMPORTANCE_WEIGHT_BASE * clampedImportance
   );
 }

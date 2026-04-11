@@ -139,7 +139,7 @@ export async function maybeRunGc(
     let shouldArchive = false;
     if (ageDays >= config.minAgeDays) {
       const evo = parseEvolution(entry.metadata, entry.timestamp);
-      const decayScore = computeDecayScore(evo, importance, now);
+      const decayScore = computeDecayScore(evo, importance, now, entry.metadata);
       if (decayScore < config.decayScoreThreshold) {
         shouldArchive = true;
       }
