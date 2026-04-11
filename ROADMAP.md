@@ -57,8 +57,11 @@ What matters first is this: opening another window should not erase stable conte
 - Feature flags: 6 independent flags for gradual rollout
 - `forget_memory` MCP tool with cascade deletion and audit trail
 - `set_reminder` MCP tool with behavioral prediction engine
+- Memory confidence meta-tags: structured `ConfidenceMetadata` (score/reliability/verifiedAt), source-based auto-assignment, retrieval weighting, low-confidence tagging in `resume_context`
+- Interference detection + active forgetting gate: semantic cluster detection, enhanced RIF with top-K cluster demotion, write-time interference pre-warning, `data_checkup` density report
+- Temporal validity windows: `eventTime`/`validUntil` on `store_memory`, `validAt`/`includeExpired` on `search_memory`, expired memory demotion, auto-GC decay acceleration
 
-Test baseline: 1,391 tests, 0 failures
+Test baseline: 1,428 tests, 0 failures
 
 ### Current Gap
 
@@ -93,6 +96,7 @@ Delivered:
 
 - ✅ hybrid retrieval (vector + BM25 + RRF)
 - ✅ 6-channel retrieval: vector + BM25 + L0/L1/L2 multi-vector + KG graph (PPR)
+- ✅ temporal validity windows: `validAt`/`includeExpired` retrieval, expired memory demotion
 - ✅ 4 retrieval profiles (default, writing, debug, fact-check)
 - ✅ 6 memory categories with topic tags
 - ✅ Weibull decay + tiering (core / working / peripheral)
@@ -179,6 +183,8 @@ Delivered:
 - ✅ promotion suggestions for memories that should become skills (`scan_skill_promotions`)
 - ✅ offline consolidation via `dream` (clustering, merging, pruning)
 - ✅ admission control: write-time noise filter, importance floor, dedup, rate limiting
+- ✅ memory confidence meta-tags: structured scoring (direct/inferred/hearsay), source-based auto-assignment
+- ✅ interference detection + active forgetting gate: semantic clustering, RIF top-K demotion, write-time pre-warning
 
 Interfaces:
 

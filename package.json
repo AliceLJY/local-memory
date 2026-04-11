@@ -1,6 +1,6 @@
 {
   "name": "recallnest",
-  "version": "1.4.1",
+  "version": "1.5.0",
   "description": "RecallNest \u2014 MCP-native, local-first memory search and distillation for AI conversations",
   "license": "MIT",
   "type": "module",
