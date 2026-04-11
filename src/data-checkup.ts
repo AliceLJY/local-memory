@@ -14,6 +14,7 @@
 
 import type { MemoryEntry, MemoryStore } from "./store.js";
 import { resolveTier, type MemoryTier } from "./decay-engine.js";
+import { measureInterferenceDensity } from "./interference-detector.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -150,6 +151,40 @@ function checkVersionGroups(entries: MemoryEntry[]): CheckResult {
   };
 }
 
+/** Check 6 (F2): Interference density — detect semantic clustering pressure. */
+function checkInterferenceDensity(entries: MemoryEntry[]): CheckResult {
+  // Only check entries with vectors (skip schema/empty entries)
+  const withVectors = entries.filter(e => e.vector && e.vector.length > 0);
+  if (withVectors.length < 10) {
+    return { name: "interference_density", status: "ok", detail: "Too few entries for interference analysis" };
+  }
+
+  // Sample up to 200 entries for performance (interference detection is O(n²))
+  const sample = withVectors.length > 200
+    ? withVectors.sort(() => Math.random() - 0.5).slice(0, 200)
+    : withVectors;
+
+  const density = measureInterferenceDensity(sample);
+  const issues: string[] = [];
+
+  if (density.highRiskCount > sample.length * 0.2) {
+    issues.push(`${density.highRiskCount} high-risk entries (>${Math.round(sample.length * 0.2)} threshold)`);
+  }
+  if (density.avgClusterSize > 5) {
+    issues.push(`avg cluster size ${density.avgClusterSize.toFixed(1)} (recommended: ≤5)`);
+  }
+
+  const detail = `${density.clusterCount} clusters, avg size ${density.avgClusterSize.toFixed(1)}, ${density.highRiskCount} high-risk`;
+  if (issues.length === 0) {
+    return { name: "interference_density", status: "ok", detail: `Healthy: ${detail}` };
+  }
+  return {
+    name: "interference_density",
+    status: issues.length > 1 ? "error" : "warning",
+    detail: `${detail} — ${issues.join("; ")}`,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -169,6 +204,7 @@ export async function runDataCheckup(deps: CheckupDeps): Promise<CheckupReport> 
       checkTierDistribution(entries),
       checkConflictBacklog(deps.openConflictCount),
       checkVersionGroups(entries),
+      checkInterferenceDensity(entries),
     ],
     totalEntries: entries.length,
     timestamp: new Date().toISOString(),

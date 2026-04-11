@@ -58,7 +58,7 @@ describe("runDataCheckup", () => {
       openConflictCount: 0,
     });
 
-    expect(report.checks.length).toBe(5);
+    expect(report.checks.length).toBe(6);
     expect(report.checks.every(c => c.status === "ok")).toBe(true);
     expect(report.totalEntries).toBe(3);
   });

@@ -909,6 +909,33 @@ export async function persistMemory(
     }
   }
 
+  // F2: Interference pre-warning — if scope already has ≥5 high-similarity memories,
+  // mark the weakest as pending_review and record an interferenceNote.
+  if (deps.store.vectorSearch && deps.store.update) {
+    try {
+      const nearMatches = await deps.store.vectorSearch(vector, 6, 0.82, [resolvedScope]);
+      const activeNear = nearMatches.filter(
+        c => c.entry.id !== deterministicId(resolvedScope, input.text) &&
+             isActiveMemory(c.entry.metadata),
+      );
+      if (activeNear.length >= 5) {
+        // Find weakest by importance × confidence
+        const weakest = activeNear.reduce((min, cur) => {
+          const curScore = (cur.entry.importance ?? 0.5) * cur.score;
+          const minScore = (min.entry.importance ?? 0.5) * min.score;
+          return curScore < minScore ? cur : min;
+        });
+        const reviewMeta = buildPendingReviewMetadata(weakest.entry.metadata);
+        const parsed: Record<string, unknown> = JSON.parse(reviewMeta);
+        const evo = parsed.evolution as Record<string, unknown> | undefined;
+        if (evo) evo.evolutionNote = `F2: interference cluster detected (${activeNear.length} similar active memories)`;
+        await deps.store.update(weakest.entry.id, { metadata: JSON.stringify(parsed) });
+      }
+    } catch {
+      // Interference detection must never block memory writes
+    }
+  }
+
   // F-3: PII detection — inject warning into metadata if PII found.
   // Non-blocking: PII does not prevent the write.
   let metadata = buildStoreMemoryMetadata(input, canonicalKey);
