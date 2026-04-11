@@ -75,6 +75,11 @@ export const ResumeContextResponseSchema = z.object({
   reconstructedContext: z.string().max(2000).optional(),
   /** Confidence score (0-1) for the reconstructed context. */
   reconstructionConfidence: z.number().min(0).max(1).optional(),
+  /** HP-narrative: Memories grouped by autobiographical life period. */
+  narrativeGroups: z.array(z.object({
+    period: z.string().max(120),
+    items: z.array(z.string().max(240)).max(5),
+  })).max(10).optional(),
   generatedAt: z.string().datetime(),
 });
 

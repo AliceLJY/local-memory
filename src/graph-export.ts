@@ -9,6 +9,7 @@
 import type { MemoryEntry, MemoryStore } from "./store.js";
 import { parseEvolution, isActiveMemory } from "./memory-evolution.js";
 import { cosineSimilarity } from "./multi-vector.js";
+import { parseNarrative } from "./narrative-schema.js";
 import { writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 
@@ -29,7 +30,7 @@ export interface GraphNode {
 export interface GraphEdge {
   source: string;
   target: string;
-  type: "supersede" | "consolidation" | "cluster" | "scope" | "semantic";
+  type: "supersede" | "consolidation" | "cluster" | "scope" | "semantic" | "narrative";
 }
 
 export interface MemoryGraph {
@@ -218,7 +219,24 @@ export async function buildMemoryGraph(
     }
   }
 
-  // 7. Cross-scope semantic bridges — connect entries from DIFFERENT scopes
+  // 7. HP-narrative: Narrative edges — connect entries sharing the same generalEventId
+  const byGeneralEvent = new Map<string, string[]>();
+  for (const entry of selected) {
+    const narrative = parseNarrative(entry.metadata);
+    if (!narrative) continue;
+    const list = byGeneralEvent.get(narrative.generalEventId) ?? [];
+    list.push(entry.id);
+    byGeneralEvent.set(narrative.generalEventId, list);
+  }
+  for (const [, ids] of byGeneralEvent) {
+    if (ids.length < 2 || ids.length > 15) continue;
+    // Chain: connect each node to the next in the narrative group
+    for (let i = 0; i < ids.length - 1; i++) {
+      edges.push({ source: ids[i], target: ids[i + 1], type: "narrative" });
+    }
+  }
+
+  // 8. Cross-scope semantic bridges — connect entries from DIFFERENT scopes
   //    that are semantically similar (cosine ≥ 0.65). This reveals hidden
   //    cross-domain knowledge connections that the user's interdisciplinary
   //    thinking creates but explicit metadata doesn't capture.
@@ -380,6 +398,7 @@ export function renderGraphHTML(graph: MemoryGraph): string {
   <div class="legend-item"><div class="legend-line dashed"></div><span>cluster</span></div>
   <div class="legend-item"><div class="legend-line dotted"></div><span>scope</span></div>
   <div class="legend-item"><div class="legend-line" style="border-top-color:#f472b6;border-top-style:dashed"></div><span>semantic bridge</span></div>
+  <div class="legend-item"><div class="legend-line" style="border-top-color:#34d399"></div><span>narrative</span></div>
 </div>
 
 <div id="tooltip">
@@ -423,6 +442,7 @@ function edgeColor(type) {
   if (type === "supersede" || type === "consolidation") return "#fbbf24";
   if (type === "cluster") return "#60a5fa";
   if (type === "semantic") return "#f472b6";
+  if (type === "narrative") return "#34d399";
   return "#9ca3af";
 }
 
@@ -607,8 +627,12 @@ export function formatGraphExportResult(path: string, graph: MemoryGraph): strin
     edgeTypeCounts.set(edge.type, (edgeTypeCounts.get(edge.type) ?? 0) + 1);
   }
   const semanticCount = edgeTypeCounts.get("semantic") ?? 0;
-  const edgeSummary = semanticCount > 0
-    ? ` (${semanticCount} semantic bridges)`
+  const narrativeCount = edgeTypeCounts.get("narrative") ?? 0;
+  const edgeDetails: string[] = [];
+  if (semanticCount > 0) edgeDetails.push(`${semanticCount} semantic`);
+  if (narrativeCount > 0) edgeDetails.push(`${narrativeCount} narrative`);
+  const edgeSummary = edgeDetails.length > 0
+    ? ` (${edgeDetails.join(", ")})`
     : "";
 
   return [

@@ -27,6 +27,7 @@ import type { LLMClient } from "./llm-client.js";
 import { collapseResults, estimateTokens, type CollapseInput } from "./context-collapse-renderer.js";
 import { filterByRelevance } from "./post-retrieval-filter.js";
 import { reconstruct as runReconstruction } from "./context-reconstructor.js";
+import { parseNarrative, isNarrativeModeEnabled } from "./narrative-schema.js";
 type ResumeCategory = "profile" | "preferences" | "entities" | "patterns" | "cases";
 
 interface ResumeRetriever {
@@ -415,6 +416,24 @@ export async function composeResumeContext(
     synthesizeSection(recentCases, queryHint, llm),
   ]);
 
+  // HP-narrative: Group recalled items by life period for narrative context
+  let narrativeGroups: Array<{ period: string; items: string[] }> | undefined;
+  if (isNarrativeModeEnabled()) {
+    const allNarrativeResults = [...profileResults, ...preferenceResults, ...entityResults, ...filteredPatterns, ...filteredCases];
+    const periodMap = new Map<string, string[]>();
+    for (const r of allNarrativeResults) {
+      const narrative = parseNarrative(r.entry.metadata);
+      if (!narrative) continue;
+      const items = periodMap.get(narrative.lifePeriodLabel) ?? [];
+      items.push(cleanText(r.entry.text, 120));
+      periodMap.set(narrative.lifePeriodLabel, items);
+    }
+    if (periodMap.size > 0) {
+      narrativeGroups = [...periodMap.entries()]
+        .map(([period, items]) => ({ period, items: items.slice(0, 5) }));
+    }
+  }
+
   // CC-7: Collapse rendering — build mixed-granularity view of all recalled items.
   // Gathers all retrieval results, deduplicates, and renders at L0/L1/L2 based on score.
   const allResults: RetrievalResult[] = [];
@@ -497,6 +516,7 @@ export async function composeResumeContext(
       : undefined,
     reconstructedContext,
     reconstructionConfidence,
+    narrativeGroups,
     generatedAt: new Date().toISOString(),
   };
 

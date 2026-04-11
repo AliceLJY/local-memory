@@ -58,6 +58,7 @@ import type { KGExtractor } from "./kg-extractor.js";
 import { scanForPII } from "./pii-detector.js";
 import type { AuditLogger } from "./audit-log.js";
 import { checkAdmission, type ScopeRateLimiter, type AdmissionConfig } from "./admission-control.js";
+import { tagNarrativeIfEnabled } from "./narrative-tagger.js";
 
 type StoreDeps = Pick<MemoryStore, "store"> & Partial<Pick<MemoryStore, "list" | "update" | "getById" | "get" | "vectorSearch">>;
 type ConflictStoreDeps = Pick<ConflictCandidateStore, "save" | "replace" | "getOpenByFingerprint" | "getLatestByFingerprint">;
@@ -145,7 +146,19 @@ function buildStructuredMetadata(params: {
   category: DurableMemoryCategory;
   canonicalKey: string;
   extra?: Record<string, unknown>;
+  /** Optional: scope + text for narrative tagging (Phase 3) */
+  narrativeInput?: { scope: string; text: string; sessionId?: string };
 }): string {
+  // HP-narrative: Tag with autobiographical narrative metadata when enabled
+  const narrative = params.narrativeInput
+    ? tagNarrativeIfEnabled({
+        scope: params.narrativeInput.scope,
+        text: params.narrativeInput.text,
+        timestamp: Date.now(),
+        sessionId: params.narrativeInput.sessionId,
+      })
+    : null;
+
   return JSON.stringify({
     source: params.source,
     tags: params.tags,
@@ -154,6 +167,7 @@ function buildStructuredMetadata(params: {
     canonicalKey: params.canonicalKey,
     evolution: defaultEvolution(),
     ...params.extra,
+    ...(narrative ? { narrative } : {}),
   });
 }
 
@@ -638,6 +652,7 @@ function buildStoreMemoryMetadata(input: StoreMemoryInput, canonicalKey: string)
     category: input.category,
     canonicalKey,
     extra: mergeExtra(buildPreferenceSlotExtra(input.category, input.text), anchorExtra, privacyExtra),
+    narrativeInput: { scope: input.scope, text: input.text },
   });
 }
 
@@ -664,6 +679,7 @@ function buildWorkflowPatternMetadata(
     category: "patterns",
     canonicalKey,
     extra: wpExtra,
+    narrativeInput: { scope: input.scope, text: input.title + ": " + input.trigger },
   });
 }
 
@@ -691,6 +707,7 @@ function buildCaseMemoryMetadata(
     category: "cases",
     canonicalKey,
     extra: cmExtra,
+    narrativeInput: { scope: input.scope, text: input.title + ": " + input.problem },
   });
 }
 
@@ -720,6 +737,7 @@ function buildPromotionMetadata(
         },
       },
     ),
+    narrativeInput: { scope: input.scope, text },
   });
 }
 
@@ -993,6 +1011,7 @@ export async function persistMemory(
       category: "preferences",
       canonicalKey: prefCanonicalKey,
       extra: prefSlot ? { preferenceSlot: prefSlot } : undefined,
+      narrativeInput: { scope: input.scope, text: input.text },
     });
     writeDurableEntry(deps, {
       text: input.text,

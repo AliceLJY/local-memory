@@ -37,6 +37,7 @@ import { buildGraph, pprTraverse } from "./ppr-traversal.js";
 import { logInfo } from "./stderr-log.js";
 import type { AuditLogger } from "./audit-log.js";
 import { parseEmotion, isEmotionScoringEnabled } from "./memory-schema.js";
+import { parseNarrative, isNarrativeModeEnabled } from "./narrative-schema.js";
 import type { EmotionMetadata } from "./memory-schema.js";
 import { detectEmotion } from "./emotion-detector.js";
 import { shouldReconstruct, reconstruct as runReconstruction } from "./context-reconstructor.js";
@@ -169,6 +170,8 @@ export interface RetrievalResult extends MemorySearchResult {
     graph?: { score: number; rank: number };
     fused?: { score: number };
     reranked?: { score: number };
+    /** HP-narrative: true when this result was pulled as a narrative sibling */
+    narrativeSibling?: boolean;
   };
 }
 
@@ -1741,6 +1744,66 @@ export class MemoryRetriever {
         score: clamp01(r.score * (1 + boost), 0),
       };
     });
+  }
+
+  /**
+   * HP-narrative: Expand retrieval results with narrative siblings.
+   * When a retrieved memory has narrative metadata, pull other memories
+   * sharing the same generalEventId to provide temporal context.
+   *
+   * Siblings are added with a dampened score (70% of the triggering result)
+   * and capped at 3 siblings per general event to avoid flooding.
+   */
+  async expandNarrativeSiblings(results: RetrievalResult[]): Promise<RetrievalResult[]> {
+    if (!isNarrativeModeEnabled() || results.length === 0) return results;
+
+    // Collect unique generalEventIds from results
+    const eventIdToScore = new Map<string, number>();
+    const existingIds = new Set(results.map(r => r.entry.id));
+
+    for (const r of results) {
+      const narrative = parseNarrative(r.entry.metadata);
+      if (!narrative) continue;
+      const existing = eventIdToScore.get(narrative.generalEventId);
+      if (!existing || r.score > existing) {
+        eventIdToScore.set(narrative.generalEventId, r.score);
+      }
+    }
+
+    if (eventIdToScore.size === 0) return results;
+
+    // Search store for siblings — use scope-based listing and filter by generalEventId
+    const siblings: RetrievalResult[] = [];
+    const MAX_SIBLINGS_PER_EVENT = 3;
+
+    try {
+      const allEntries = await this.store.list(undefined, undefined, 500, 0);
+      for (const entry of allEntries) {
+        if (existingIds.has(entry.id)) continue;
+        const narrative = parseNarrative(entry.metadata);
+        if (!narrative) continue;
+        const triggerScore = eventIdToScore.get(narrative.generalEventId);
+        if (triggerScore === undefined) continue;
+
+        // Count how many siblings we've already added for this event
+        const eventSiblingCount = siblings.filter(s => {
+          const sn = parseNarrative(s.entry.metadata);
+          return sn?.generalEventId === narrative.generalEventId;
+        }).length;
+        if (eventSiblingCount >= MAX_SIBLINGS_PER_EVENT) continue;
+
+        siblings.push({
+          entry,
+          score: triggerScore * 0.7,
+          sources: { narrativeSibling: true },
+        });
+        existingIds.add(entry.id);
+      }
+    } catch {
+      // Non-blocking — if store listing fails, return original results
+    }
+
+    return [...results, ...siblings].sort((a, b) => b.score - a.score);
   }
 
   private applyHotnessBlend(results: RetrievalResult[]): RetrievalResult[] {

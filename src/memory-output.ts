@@ -3,6 +3,7 @@ import type { RetrievalResult } from "./retriever.js";
 import type { RetrievalProfileName } from "./retrieval-profiles.js";
 import { extractMemoryProvenance } from "./memory-boundaries.js";
 import { extractMultiVectorText } from "./multi-vector.js";
+import { parseNarrative } from "./narrative-schema.js";
 
 interface MemoryMetadata {
   source?: string;
@@ -168,6 +169,7 @@ function getRetrievalPath(result: RetrievalResult): string {
   if (result.sources.vector) parts.push("vector");
   if (result.sources.bm25) parts.push("bm25");
   if (result.sources.reranked) parts.push("reranked");
+  if (result.sources.narrativeSibling) parts.push("narrative");
   return parts.join("+") || "direct";
 }
 
@@ -339,7 +341,12 @@ export function formatFullResults(
     const emotionPart = meta.emotion && typeof meta.emotion === "object"
       ? ` emotion=${(meta.emotion as Record<string, unknown>).label ?? "-"}(v=${(meta.emotion as Record<string, unknown>).valence ?? 0},a=${(meta.emotion as Record<string, unknown>).arousal ?? 0})`
       : "";
-    lines.push(`   meta : evolution=${evolution} accessCount=${accessCount} importance=${importance} tags=[${tags}]${emotionPart}`);
+    // HP-narrative: Narrative metadata (from narrative-tagger)
+    const narrative = parseNarrative(results[i].entry.metadata);
+    const narrativePart = narrative
+      ? ` narrative=${narrative.lifePeriodLabel}/${narrative.generalEventLabel}`
+      : "";
+    lines.push(`   meta : evolution=${evolution} accessCount=${accessCount} importance=${importance} tags=[${tags}]${emotionPart}${narrativePart}`);
   }
 
   return lines.join("\n");

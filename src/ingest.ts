@@ -27,6 +27,7 @@ import {
   samePreferenceSlot,
 } from "./preference-slots.js";
 import { compressToolOutput } from "./tool-output-compressor.js";
+import { tagNarrativeIfEnabled } from "./narrative-tagger.js";
 
 // ============================================================================
 // Types
@@ -690,6 +691,14 @@ function buildIngestedEntry(params: {
         importance: params.extraction.importance,
       });
 
+  // HP-narrative: Tag with autobiographical narrative metadata when enabled
+  const narrative = tagNarrativeIfEnabled({
+    scope: params.scope,
+    text: params.text,
+    timestamp: Date.now(),
+    sessionId: params.sessionId,
+  });
+
   return {
     text: params.text,
     vector: params.vector,
@@ -707,6 +716,7 @@ function buildIngestedEntry(params: {
       ...(params.coreSummary ? { core_summary: params.coreSummary } : {}),
       tier,
       boundary: resolution.boundary,
+      ...(narrative ? { narrative } : {}),
     }),
   };
 }

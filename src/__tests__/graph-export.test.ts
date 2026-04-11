@@ -387,7 +387,7 @@ describe("formatGraphExportResult", () => {
       ],
     };
     const result = formatGraphExportResult("/tmp/test.html", graph);
-    expect(result).toContain("2 semantic bridges");
+    expect(result).toContain("2 semantic");
   });
 });
 
