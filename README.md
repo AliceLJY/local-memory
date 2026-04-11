@@ -37,124 +37,9 @@ Evaluated on 500 questions across 6 memory abilities ([methodology](https://arxi
 | Overall Accuracy | **29.6%** | 24.2% | **+5.4pp** |
 | User Facts | **64.3%** | 52.9% | +11.4pp |
 | Knowledge Update | **43.6%** | 42.3% | +1.3pp |
-| Abstention Rate | **55.6%** | 67.8% | **−12.2pp** |
+| Abstention Rate | **55.6%** | 67.8% | **-12.2pp** |
 
 Wins or ties in **all 6 categories**, with no regression. The hybrid retrieval pipeline (BM25 + vector + recency + RIF dedup) surfaces 12.2% more relevant context than vector-only search.
-
-### Memory Dashboard
-
-See your memories grow — total count, category distribution, health score, and growth trends at a glance.
-
-<p align="center">
-  <img src="assets/dashboard.png" alt="RecallNest Dashboard" width="800" />
-</p>
-
-### Knowledge Graph
-
-Visualize your memory network as an interactive force-directed graph. Each node is a memory, colored by category. **Semantic bridges** (pink lines) reveal hidden cross-domain connections — knowledge that lives in different scopes but shares the same underlying insight.
-
-<p align="center">
-  <img src="assets/knowledge-graph.png" alt="RecallNest Knowledge Graph" width="800" />
-</p>
-
-### What you get
-
-| | Capability |
-|---|---|
-| **CC Plugin** | Install in Claude Code with one command — no manual config |
-| **Shared Index** | One LanceDB store for Claude Code, Codex, and Gemini CLI |
-| **Dual Interface** | MCP (stdio) for CLI tools + HTTP API for custom agents |
-| **One-Click Setup** | Integration scripts install MCP access and continuity rules |
-| **Hybrid Retrieval** | Vector + BM25 + reranking + emotion-aware Weibull decay + tier promotion |
-| **KG Graph Traversal** | Entity relation graph with PPR algorithm for multi-hop questions |
-| **Session Continuity** | `checkpoint_session` + `resume_context` (full/light/summary modes) |
-| **Session Distiller** | 3-layer conversation compression: microcompact → LLM summary → knowledge extraction |
-| **Conversation Import** | Import from Claude Code, Claude.ai, ChatGPT, Slack, and plaintext |
-| **Topic Tags** | Intra-scope topic partitioning — auto-detected, filterable in search |
-| **Memory Evolution** | Supersede chains, decay scoring, LLM importance, consolidation, archival |
-| **Skill Memory** | Store, retrieve, and promote executable skills from recurring patterns |
-| **Workflow Observation** | Dedicated append-only workflow health records, outside regular memory |
-| **Structured Assets** | Pins, briefs, and distilled summaries — not just raw logs |
-| **Smart Promotion** | Evidence → durable memory with conflict guards and merge resolution |
-| **Emotion-Aware Decay** | Emotional memories decay 20-30% slower via salience-weighted Weibull formula |
-| **Privacy Tiers** | ephemeral / private / durable / shared — with cascade forgetting + audit trail |
-| **Narrative Architecture** | 3-layer autobiographical metadata (life-period → event → specific) |
-| **Constructive Retrieval** | Multi-source candidate expansion + grounded context reconstruction |
-| **Predictive Reminders** | Behavioral-signal prediction engine surfaces "you might need this" suggestions |
-| **6 Categories** | profile, preferences, entities, events, cases, patterns |
-| **4 Retrieval Profiles** | default, writing, debug, fact-check — tuned for different tasks |
-| **Admission Control** | Write-time gating: noise filter, importance floor, rate limiting |
-| **Memory Lint** | Contradiction, duplicate, stale, and orphan detection with health score |
-| **Knowledge Graph** | Export interactive HTML visualization of your memory network |
-| **Dashboard** | Web UI with stats, category distribution, growth trends, and health |
-
----
-
-## Highlights (v2.1 — Philosophy of Memory)
-
-RecallNest has evolved from a simple transcript search tool into a full **memory operating system** — now grounded in philosophy of memory research from Plato to Michaelian.
-
-| Metric | Value |
-|--------|-------|
-| Core code | 35,500+ lines across 115+ source files |
-| MCP tools | 41 tools in 3 tiers (core / advanced / governance) |
-| HTTP endpoints | 21 REST endpoints |
-| Test coverage | 1,391 tests, 0 failures |
-| Retrieval | 6-channel hybrid: vector + BM25 + L0/L1/L2 multi-vector + KG graph (PPR) |
-| Memory evolution | Supersede chains, Weibull decay, LLM importance scoring, auto-archival |
-
-### New: Philosophy-Informed Memory Architecture
-
-Five upgrades derived from 9 research dimensions in philosophy of memory, each mapped to concrete engineering:
-
-- **Emotion-Aware Decay** *(Affective Memory Theory)* — Memories with strong emotional content decay 20-30% slower. Keyword-based emotion detection computes `salience` (mnemonic significance), which feeds into the Weibull half-life formula and a rebalanced 4-factor evolution score. Zero LLM cost.
-
-- **Memory Ethics Layer** *(Right to Be Forgotten / GDPR Art. 17)* — Four privacy tiers (`ephemeral` / `private` / `durable` / `shared`). Cascade forgetting engine that propagates deletion through KG triples, evolution chains, pin assets, and briefs. Full audit trail. `forget_memory` MCP tool for agent-driven deletion.
-
-- **Autobiographical Narrative** *(Narrative Identity Theory / Conway's 3-layer model)* — Memories are tagged with `lifePeriod → generalEvent → specificEvent` hierarchy, orthogonal to existing 6 categories. Retrieval pulls narrative siblings. Context rendering groups by life period. Rule-based tagger with EN+CN support.
-
-- **Constructive Retrieval** *(Simulation Theory / Michaelian)* — Instead of returning raw stored text, RecallNest now reconstructs context from an expanded candidate set: KG neighbors + evolution chains + cluster members + narrative siblings. Source-map grounded coverage replaces lexical overlap. Contradictions are detected and flagged.
-
-- **Predictive Prospective Memory** *(Mental Time Travel / Tulving)* — Heuristic prediction engine that surfaces "you might need this" reminders from behavioral signals: stale checkpoint open loops, corrected workflow observations, high-frequency dormant memories, and uncovered query topics. Zero LLM cost. Auto-expire in 7 days if unaccepted.
-
-### Previous highlights (v2.0)
-
-- **Session Distiller** — 3-layer conversation compression (microcompact → LLM structured summary → knowledge extraction to durable memory)
-- **Conversation Import** — bring your history from Claude Code, Claude.ai, ChatGPT, Slack, or plaintext — auto-detected
-- **Topic Tags** — intra-scope topic partitioning with 15 auto-detected topics, filterable in `search_memory`
-- **Ultra-Light Wake-up** — `resume_context(mode='light')` returns <300 tokens for low-budget terminals
-- **Skill Memory** — store, retrieve, and auto-promote executable skills from recurring patterns
-- **Admission Control** — write-time gating with noise filter, importance floor, dedup, and rate limiting
-- **Memory Lint** — content quality checker with health score (contradictions, duplicates, stale, orphans)
-- **Knowledge Graph** — interactive D3.js force-directed visualization with cross-scope semantic bridges
-
-### Architecture Highlights
-
-RecallNest is not just a vector search wrapper. Key design decisions:
-
-- **Weibull Decay + Emotion Modulation** — memories decay along a parametric Weibull curve; importance scores modulate the half-life, and emotional salience extends it further (up to 30%). A frustrating 3-day debugging session decays slower than a routine config update — just like human memory
-- **Constructive Retrieval** — inspired by Simulation Theory (Michaelian): retrieval doesn't just look up stored text, it *reconstructs* context by expanding candidates across KG neighbors, evolution chains, and narrative siblings, then synthesizes with source-map grounding and contradiction detection
-- **4-Tier Privacy + Cascade Forgetting** — `ephemeral` memories leave no trace (no KG, auto-expire); `private` memories persist but don't leak into the knowledge graph; `durable` is default; `shared` enables cross-scope access. Deletion cascades through all derivatives with full audit trail
-- **Autobiographical Narrative Layer** — memories carry orthogonal narrative metadata (life-period / general-event / specific-event), enabling "tell me about that week" style retrieval without disrupting the 6-category system
-- **L0 / L1 / L2 Dynamic Folding** — every memory stores 3 granularity layers (one-liner / bullet summary / full content); retrieval dynamically selects which layer to return based on relevance score and token budget
-- **Vector Pre-filter + LLM Dedup** — 90% of dedup decisions use cheap cosine similarity (≥ 0.92); only borderline cases invoke LLM judgment, keeping costs low without sacrificing accuracy
-- **Category-Aware Merge Strategies** — `profile` and `preferences` use merge-on-conflict (latest wins); `events` and `cases` use append-only (history preserved). No one-size-fits-all
-- **Display Score vs Elimination Score** — retrieval uses a dual-track system: tier floor prevents core memories from ever dropping out, while decay boost lets fresh memories surface temporarily without permanently displacing stable ones
-- **Predictive Prospective Memory** — the system doesn't just recall the past; it predicts what you'll need next, surfacing suggestions from stale open loops, workflow patterns, and behavioral signals — zero LLM cost
-
----
-
-## Web UI
-
-<div align="center">
-<img src="assets/screenshots/ui-full.png" alt="RecallNest Web UI — search, skills, assets, exports" width="720" />
-<p><em>Search Workbench: hybrid search with topic tag filtering, 4 retrieval profiles, Skills browser, and asset management.</em></p>
-</div>
-
-```bash
-cd ~/recallnest && bun run src/ui-server.ts
-# → http://localhost:4317
-```
 
 ---
 
@@ -226,28 +111,102 @@ bun run src/cli.ts doctor
 
 ---
 
-## Multilingual Support
+## Web UI
 
-RecallNest works out of the box with English. For multilingual memory (Chinese, Japanese, Thai, and 20+ more), install [babel-memory](https://github.com/AliceLJY/babel-memory) with the language packs you need:
+<p align="center">
+  <img src="assets/dashboard.png" alt="RecallNest Dashboard" width="800" />
+  <br><em>Dashboard — total count, category distribution, health score, and growth trends at a glance.</em>
+</p>
+
+<p align="center">
+  <img src="assets/screenshots/ui-full.png" alt="RecallNest Search Workbench" width="800" />
+  <br><em>Search Workbench — hybrid search with topic tag filtering, 4 retrieval profiles, Skills browser, and asset management.</em>
+</p>
+
+<p align="center">
+  <img src="assets/knowledge-graph.png" alt="RecallNest Knowledge Graph" width="800" />
+  <br><em>Knowledge Graph — interactive force-directed visualization with semantic bridges revealing cross-domain connections.</em>
+</p>
 
 ```bash
-# Chinese
-npm install babel-memory jieba-wasm
-
-# Japanese
-npm install babel-memory @sglkc/kuromoji
-
-# Thai
-npm install babel-memory wordcut
-
-# European languages (German, French, Spanish, Russian, etc.)
-npm install babel-memory snowball-stemmers
-
-# Multiple languages at once
-npm install babel-memory jieba-wasm @sglkc/kuromoji snowball-stemmers
+bun run src/ui-server.ts
+# → http://localhost:4317
 ```
 
-RecallNest auto-detects babel-memory at startup — no configuration needed. Without babel-memory, RecallNest still works perfectly with standard BM25 text search.
+---
+
+## Core Capabilities
+
+### Access & Setup
+
+| Capability | Description |
+|---|---|
+| **CC Plugin** | Install in Claude Code with one command — no manual config |
+| **Shared Index** | One LanceDB store for Claude Code, Codex, and Gemini CLI |
+| **Dual Interface** | MCP (stdio) for CLI tools + HTTP API for custom agents |
+| **One-Click Setup** | Integration scripts install MCP access and continuity rules |
+
+### Recall & Continuity
+
+| Capability | Description |
+|---|---|
+| **Hybrid Retrieval** | 6-channel: vector + BM25 + L0/L1/L2 multi-vector + KG graph (PPR) |
+| **4 Retrieval Profiles** | default, writing, debug, fact-check — tuned for different tasks |
+| **Session Continuity** | `checkpoint_session` + `resume_context` (full/light/summary modes) with repo-state guard |
+| **Session Distiller** | 3-layer conversation compression: microcompact → LLM summary → knowledge extraction |
+| **Conversation Import** | Import from Claude Code, Claude.ai, ChatGPT, Slack, and plaintext |
+| **Topic Tags** | Intra-scope topic partitioning — auto-detected, filterable in search |
+
+### Memory Lifecycle & Governance
+
+| Capability | Description |
+|---|---|
+| **Memory Evolution** | Supersede chains, decay scoring, LLM importance, consolidation, archival |
+| **Smart Promotion** | Evidence → durable memory with conflict guards, merge resolution, and audit trail |
+| **Privacy Tiers** | 4-tier (`ephemeral` / `private` / `durable` / `shared`) with cascade forgetting |
+| **Admission Control** | Write-time gating: noise filter, importance floor, dedup, rate limiting |
+| **Memory Lint** | Contradiction, duplicate, stale, and orphan detection with health score |
+| **Offline Consolidation** | `dream` command: clustering, merging, pruning of accumulated memories |
+
+### Reasoning & Structure
+
+| Capability | Description |
+|---|---|
+| **Knowledge Graph** | Entity relation graph with PPR algorithm for multi-hop questions |
+| **Constructive Retrieval** | Multi-source candidate expansion + grounded context reconstruction |
+| **Narrative Architecture** | 3-layer autobiographical metadata (life-period → general-event → specific-event) |
+| **Skill Memory** | Store, retrieve, and promote executable skills from recurring patterns |
+| **Predictive Reminders** | Behavioral-signal prediction engine surfaces "you might need this" suggestions |
+| **6 Categories** | profile, preferences, entities, events, cases, patterns — with category-aware merge strategies |
+
+### Visibility & Operations
+
+| Capability | Description |
+|---|---|
+| **Dashboard** | Web UI with stats, category distribution, growth trends, and health |
+| **Workflow Observation** | Dedicated append-only workflow health records, outside regular memory |
+| **Structured Assets** | Pins, briefs, and distilled summaries — not just raw logs |
+| **Data Checkup** | Data quality health checks on the memory store |
+| **Export Graph** | Export interactive HTML knowledge graph visualization |
+| **Batch Operations** | Store up to 20 memories in a single call with dedup |
+
+---
+
+## New in v2.1: Philosophy-Informed Memory
+
+v2.0 built the operational memory platform; v2.1 added philosophy-informed memory behavior.
+
+Five upgrades derived from 9 research dimensions in philosophy of memory, each mapped to concrete engineering:
+
+- **Emotion-Aware Decay** *(Affective Memory Theory)* — Memories with strong emotional content decay 20-30% slower. Keyword-based emotion detection computes `salience` (mnemonic significance), which feeds into the Weibull half-life formula and a rebalanced 4-factor evolution score. Zero LLM cost.
+
+- **Memory Ethics Layer** *(Right to Be Forgotten / GDPR Art. 17)* — Four privacy tiers (`ephemeral` / `private` / `durable` / `shared`). Cascade forgetting engine that propagates deletion through KG triples, evolution chains, pin assets, and briefs. Full audit trail. `forget_memory` MCP tool for agent-driven deletion.
+
+- **Autobiographical Narrative** *(Narrative Identity Theory / Conway's 3-layer model)* — Memories are tagged with `lifePeriod → generalEvent → specificEvent` hierarchy, orthogonal to existing 6 categories. Retrieval pulls narrative siblings. Context rendering groups by life period. Rule-based tagger with EN+CN support.
+
+- **Constructive Retrieval** *(Simulation Theory / Michaelian)* — Instead of returning raw stored text, RecallNest now reconstructs context from an expanded candidate set: KG neighbors + evolution chains + cluster members + narrative siblings. Source-map grounded coverage replaces lexical overlap. Contradictions are detected and flagged.
+
+- **Predictive Prospective Memory** *(Mental Time Travel / Tulving)* — Heuristic prediction engine that surfaces "you might need this" reminders from behavioral signals: stale checkpoint open loops, corrected workflow observations, high-frequency dormant memories, and uncovered query topics. Zero LLM cost. Auto-expire in 7 days if unaccepted.
 
 ---
 
@@ -268,7 +227,7 @@ RecallNest auto-detects babel-memory at startup — no configuration needed. Wit
 │                   Integration Layer                       │
 │  ┌─────────────────────┐  ┌────────────────────────────┐ │
 │  │  MCP Server         │  │  HTTP API Server           │ │
-│  │  29 tools           │  │  19 endpoints              │ │
+│  │  41 tools           │  │  21 endpoints              │ │
 │  └─────────┬───────────┘  └──────────┬─────────────────┘ │
 └────────────┼─────────────────────────┼───────────────────┘
              └──────────┬──────────────┘
@@ -298,11 +257,19 @@ RecallNest auto-detects babel-memory at startup — no configuration needed. Wit
 └──────────────────────────────────────────────────────────┘
 ```
 
+### Internal Design
+
+- **L0 / L1 / L2 Dynamic Folding** — every memory stores 3 granularity layers (one-liner / bullet summary / full content); retrieval dynamically selects which layer to return based on relevance score and token budget
+- **Weibull Decay + Emotion Modulation** — memories decay along a parametric Weibull curve; importance scores modulate the half-life, and emotional salience extends it further (up to 30%)
+- **Vector Pre-filter + LLM Dedup** — 90% of dedup decisions use cheap cosine similarity (>= 0.92); only borderline cases invoke LLM judgment, keeping costs low without sacrificing accuracy
+- **Category-Aware Merge Strategies** — `profile` and `preferences` use merge-on-conflict (latest wins); `events` and `cases` use append-only (history preserved)
+- **Display Score vs Elimination Score** — dual-track retrieval: tier floor prevents core memories from ever dropping out, while decay boost lets fresh memories surface temporarily without permanently displacing stable ones
+
 > Full architecture deep-dive: [`docs/architecture.md`](docs/architecture.md)
 
 ---
 
-## Integrations
+## Interfaces
 
 RecallNest serves two interfaces:
 
@@ -321,77 +288,8 @@ Examples live in [`integrations/examples/`](integrations/examples/):
 
 ---
 
-## Core Features
-
-### Hybrid Retrieval
-
-```
-Query → Embedding ──┐
-                    ├── Hybrid Fusion → Rerank → Weibull Decay → Filter → Top-K
-Query → BM25 FTS ──┘
-```
-
-- **Vector search** — semantic similarity via LanceDB ANN
-- **BM25 full-text search** — exact keyword matching via LanceDB FTS
-- **Hybrid fusion** — vector + BM25 combined scoring
-- **Reranking** — Jina cross-encoder reranking
-- **Decay + tiering** — Emotion-aware Weibull freshness model with Core / Working / Peripheral tiers; emotional memories get extended half-life
-
-### Session Continuity
-
-The killer feature for multi-window workflows:
-
-- **`checkpoint_session`** — snapshot current work state (decisions, open loops, next actions)
-- **Repo-state guard** — saved checkpoints strip `git status` / modified-file text so volatile repo state does not contaminate later handoffs
-- **`resume_context`** — compose startup context from checkpoints + durable memory + pins
-- **Managed rules** — integration scripts install continuity rules so `resume_context` fires automatically
-
-### Workflow Observation
-
-RecallNest now keeps workflow observations in a dedicated append-only store instead of stuffing them into the regular memory index:
-
-- **`workflow_observe`** — record whether `resume_context`, `checkpoint_session`, or another workflow primitive succeeded, failed, was corrected, or was missed
-- **`workflow_health`** — aggregate 7d / 30d health for one workflow or show a degraded-workflow dashboard
-- **`workflow_evidence`** — package recent issue observations, top signals, and suggested next actions for debugging
-
-These records live under `data/workflow-observations`, not in the 6 memory categories, and they are never composed into `resume_context` as stable recall.
-Managed MCP / HTTP continuity calls now append observations automatically for `resume_context` and `checkpoint_session`, while repo-state sanitization is recorded as a `corrected` checkpoint observation instead of polluting durable memory.
-
-### Memory Promotion & Conflict Resolution
-
-Raw transcripts don't silently become long-term memory:
-
-- **Evidence → durable** — explicit `promote_memory` with `canonicalKey` and provenance
-- **Conflict guards** — canonical-key collisions surface as conflict candidates
-- **Resolution** — keep existing, accept new, or merge — with advice and cluster views
-- **Audit + escalation** — `conflicts audit --export` for operational review
-
-### Retrieval Profiles
-
-| Profile | Best for | Bias |
-|---------|----------|------|
-| `default` | Everyday recall | Balanced |
-| `writing` | Drafting and idea mining | Broader semantic, older material OK |
-| `debug` | Errors, commands, fixes | Keyword-heavy, recency-biased |
-| `fact-check` | Evidence lookup | Tighter cutoff, exact-match bias |
-
-### Memory Categories
-
-| Category | Description | Strategy |
-|----------|-------------|----------|
-| `profile` | User identity and background | Merge |
-| `preferences` | Habits, style, dislikes | Merge |
-| `entities` | Projects, tools, people | Merge |
-| `events` | Things that happened | Append |
-| `cases` | Problem → solution pairs | Append |
-| `patterns` | Reusable workflows | Merge |
-
-Details: [`docs/memory-categories.md`](docs/memory-categories.md)
-
----
-
 <details>
-<summary><strong>MCP Tools (40 tools)</strong></summary>
+<summary><strong>MCP Tools (41 tools)</strong></summary>
 
 | Tool | Description |
 |------|-------------|
@@ -511,17 +409,36 @@ bun run src/cli.ts doctor
 
 </details>
 
-<details>
-<summary><strong>Web UI</strong></summary>
+---
+
+## Multilingual Support
+
+RecallNest works out of the box with English. For multilingual memory (Chinese, Japanese, Thai, and 20+ more), install [babel-memory](https://github.com/AliceLJY/babel-memory) with the language packs you need:
 
 ```bash
-bun run src/ui-server.ts
-# → http://localhost:4317
+# Chinese
+npm install babel-memory jieba-wasm
+
+# Japanese
+npm install babel-memory @sglkc/kuromoji
+
+# Thai
+npm install babel-memory wordcut
+
+# European languages (German, French, Spanish, Russian, etc.)
+npm install babel-memory snowball-stemmers
+
+# Multiple languages at once
+npm install babel-memory jieba-wasm @sglkc/kuromoji snowball-stemmers
 ```
 
-The Web UI provides a **Memory Dashboard** (stats, category distribution, health score, growth trends, stale memories) and a **Search Workbench** (search, explain, distill, pin, export).
+RecallNest auto-detects babel-memory at startup — no configuration needed. Without babel-memory, RecallNest still works perfectly with standard BM25 text search.
 
-</details>
+---
+
+## Project Status & Roadmap
+
+RecallNest is actively maintained. All major architecture phases are complete — see the full [Roadmap](ROADMAP.md) for current priorities and future plans.
 
 ---
 
@@ -542,17 +459,8 @@ RecallNest started as a fork of [memory-lancedb-pro](https://github.com/CortexRe
 
 Special thanks to Qin Chao ([@win4r](https://github.com/win4r)) and the [CortexReach](https://github.com/CortexReach) team for the foundational work.
 
-## Star History
-
-<a href="https://star-history.com/#AliceLJY/recallnest&Date">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=AliceLJY/recallnest&type=Date&theme=dark&transparent=true" />
-    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=AliceLJY/recallnest&type=Date&transparent=true" />
-    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=AliceLJY/recallnest&type=Date&transparent=true" />
-  </picture>
-</a>
-
-## Ecosystem
+<details>
+<summary><strong>Ecosystem</strong></summary>
 
 Part of the **小试AI** open-source AI workflow:
 
@@ -571,6 +479,8 @@ Part of the **小试AI** open-source AI workflow:
 | [cc-genius](https://github.com/AliceLJY/cc-genius) | Web-based Claude chat client (PWA) — self-hosted, iPad-ready |
 | [agent-nexus](https://github.com/AliceLJY/agent-nexus) | One-command installer for memory + remote control |
 | [cc-cabin](https://github.com/AliceLJY/cc-cabin) | Complete Claude Code workflow scaffold |
+
+</details>
 
 ## License
 

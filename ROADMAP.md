@@ -28,7 +28,7 @@ What matters first is this: opening another window should not erase stable conte
 ### Already Done
 
 - Shared local LanceDB index
-- MCP server for Claude Code, Gemini CLI, and Codex (40 tools in 3 tiers)
+- MCP server for Claude Code, Gemini CLI, and Codex (41 tools in 3 tiers)
 - HTTP API for custom agents (21 endpoints)
 - Ingestion from existing transcripts and memory files
 - Hybrid retrieval: vector + BM25 + reranking + 4 retrieval profiles
@@ -53,14 +53,22 @@ What matters first is this: opening another window should not erase stable conte
 - Offline consolidation (`dream`): clustering, merging, pruning
 - Batch operations (`batch_store`): up to 20 memories per call with dedup
 - Data quality health checks (`data_checkup`)
+- Philosophy-Informed Memory: emotion-aware decay, memory ethics layer, autobiographical narrative, constructive retrieval, predictive prospective memory (5 phases, all complete)
+- Feature flags: 6 independent flags for gradual rollout
+- `forget_memory` MCP tool with cascade deletion and audit trail
+- `set_reminder` MCP tool with behavioral prediction engine
+
+Test baseline: 1,391 tests, 0 failures
 
 ### Current Gap
 
-RecallNest is a mature three-terminal continuity layer. The remaining gaps are operational, not architectural:
+RecallNest is a mature three-terminal continuity layer with philosophy-informed memory architecture. The remaining gaps are operational and architectural:
 
 - continuity eval still depends on the latest live checkpoint in one case
 - scheduled conflict audit/export for recurring review is still missing
 - cross-scope semantic bridge threshold may need per-user tuning
+- `retriever.ts` and `capture-engine.ts` are the two largest modules (1,879 and 1,192 lines) and need decomposition
+- Feature flags (6 total) need gradual production validation before defaulting to on
 
 ## Phase 1: Shared Memory Foundation
 
@@ -194,7 +202,7 @@ Delivered:
 - ✅ Knowledge Graph export: interactive HTML visualization with D3.js force-directed layout
 - ✅ Cross-scope semantic bridges: auto-discover hidden cross-domain knowledge connections
 - ✅ SKILL.md: Memory Partner Protocol for LLM onboarding (session protocol, anti-patterns, tool decision tree)
-- ✅ stronger docs: updated README/README_CN with screenshots, v2.0 highlights, 40 tools, 21 endpoints
+- ✅ stronger docs: updated README/README_CN with screenshots, v2.0 highlights, 41 tools in 3 tiers, 21 endpoints
 - ✅ Session Distiller: 3-layer conversation compression (microcompact -> LLM summary -> knowledge extraction)
 - ✅ Conversation Import: Claude Code, Claude.ai, ChatGPT, Slack, plaintext — auto-detected
 
@@ -203,6 +211,24 @@ Remaining work:
 - ⬜ continuity eval isolation from live checkpoints
 - ⬜ broader continuity-focused evals and benchmarks
 - ⬜ cleaner setup for long-running background usage
+- ⬜ Philosophy feature flags: validate each flag in production, then default to on
+
+## Phase 8: Code Architecture Hardening
+
+Status: planned
+
+Goal: reduce complexity in the two largest modules and centralize configuration.
+
+Planned work:
+
+- ⬜ MC-1: Split `retriever.ts` (1,879 lines) into retrieval pipeline modules (~250 lines each)
+- ⬜ MC-2: `search_memory` tokenBudget parameter with L0/L1/L2 auto-layer selection
+- ⬜ MC-3: `distill_session` auto-persist to long-term memory (close the two-step gap)
+- ⬜ MC-4: Centralize all `process.env.RECALLNEST_*` reads into one typed config module
+- ⬜ MC-5: Refactor `capture-engine.ts` (1,192 lines) into middleware pipeline
+- ⬜ MC-6: Centralize type definitions with re-export index
+
+Dependencies: none (all independent of each other, can be done in any order)
 
 ## Principles
 
