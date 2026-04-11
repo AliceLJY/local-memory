@@ -1,7 +1,7 @@
 # Implementation Plan: Memory Philosophy-Driven RecallNest Upgrades
 
 > Date: 2026-04-11
-> Status: Plan complete, Phase 1 ready for implementation
+> Status: ✅ ALL 5 PHASES COMPLETE (commits a9e53d3..d150b8d, 1391 tests / 0 fail)
 > Source: Memory philosophy research map + Codex code analysis + Explorer codebase audit
 
 ---
@@ -66,29 +66,29 @@ Wire the existing emotion-adjusted decay functions (`adjustHalfLifeForEmotion`, 
 #### 1.1 Extend EmotionMetadata schema
 **File:** `src/memory-schema.ts` (lines 40-53)
 
-- [ ] Add `salience?: number` field to `EmotionMetadata` interface (0-1 composite of |valence| + arousal)
-- [ ] Add `source?: "keyword" | "llm" | "user"` field to `EmotionMetadata` interface
-- [ ] Update `EmotionMetadataSchema` Zod object to include `salience: z.number().min(0).max(1).optional()` and `source: z.enum(["keyword", "llm", "user"]).optional()`
-- [ ] Verify `parseEmotion()` still works with old data (no salience/source)
+- [x] Add `salience?: number` field to `EmotionMetadata` interface (0-1 composite of |valence| + arousal)
+- [x] Add `source?: "keyword" | "llm" | "user"` field to `EmotionMetadata` interface
+- [x] Update `EmotionMetadataSchema` Zod object to include `salience: z.number().min(0).max(1).optional()` and `source: z.enum(["keyword", "llm", "user"]).optional()`
+- [x] Verify `parseEmotion()` still works with old data (no salience/source)
 - **Why:** Salience is the single composite signal that decay and evolution scoring will consume. Source enables future LLM-based emotion detection without breaking keyword entries.
 - **Risk:** Low -- additive optional fields, backward compatible
 
 #### 1.2 Compute salience in detectEmotion
 **File:** `src/emotion-detector.ts`, function `detectEmotion()` (line 62)
 
-- [ ] After computing `valence` and `arousal`, compute `salience = clamp((Math.abs(valence) + arousal) / 2, 0, 1)`
-- [ ] Add `salience` and `source: "keyword"` to the returned `EmotionMetadata` object
-- [ ] Update `detectEmotionIfEnabled()` -- no change needed (passes through)
+- [x] After computing `valence` and `arousal`, compute `salience = clamp((Math.abs(valence) + arousal) / 2, 0, 1)`
+- [x] Add `salience` and `source: "keyword"` to the returned `EmotionMetadata` object
+- [x] Update `detectEmotionIfEnabled()` -- no change needed (passes through)
 - **Why:** Decay engine needs a single 0-1 signal, not separate valence/arousal. Formula: average of emotional intensity and arousal, giving equal weight to "how emotional" and "how urgent."
 - **Risk:** Low -- pure addition to return value
 
 #### 1.3 Wire emotion into applyTimeDecay
 **File:** `src/retriever.ts`, method `applyTimeDecay()` (line 1657)
 
-- [ ] Import `adjustHalfLifeForEmotion` from `decay-engine.ts` and `parseEmotion` from `memory-schema.ts`
-- [ ] At line 1670-1672 (after `this.accessTracker.computeEffectiveHalfLife()`), add emotion adjustment: if `isEmotionScoringEnabled()`, parse emotion from `r.entry.metadata`, call `adjustHalfLifeForEmotion(halfLife, emotion)` to get final half-life
-- [ ] Guard behind `isEmotionScoringEnabled()` flag check
-- [ ] The arousal boost (`computeArousalBoost()`) applies to score before decay
+- [x] Import `adjustHalfLifeForEmotion` from `decay-engine.ts` and `parseEmotion` from `memory-schema.ts`
+- [x] At line 1670-1672 (after `this.accessTracker.computeEffectiveHalfLife()`), add emotion adjustment: if `isEmotionScoringEnabled()`, parse emotion from `r.entry.metadata`, call `adjustHalfLifeForEmotion(halfLife, emotion)` to get final half-life
+- [x] Guard behind `isEmotionScoringEnabled()` flag check
+- [x] The arousal boost (`computeArousalBoost()`) applies to score before decay
 
 **Current code pattern:**
 ```typescript
@@ -122,10 +122,10 @@ return { ...r, score: clamp01(r.score * arousalFactor * factor, r.score * 0.3) }
 #### 1.4 Add emotion factor to computeDecayScore
 **File:** `src/memory-evolution.ts`, function `computeDecayScore()` (line 306), constants at lines 292-295
 
-- [ ] Import `parseEmotion`, `isEmotionScoringEnabled` from `memory-schema.ts`
-- [ ] Add optional `metadata?: string` parameter to `computeDecayScore()` (backward compatible)
-- [ ] When `isEmotionScoringEnabled()` and metadata is provided, extract salience
-- [ ] Rebalance weights from `0.2/0.3/0.5` to `0.15/0.25/0.45/0.15`:
+- [x] Import `parseEmotion`, `isEmotionScoringEnabled` from `memory-schema.ts`
+- [x] Add optional `metadata?: string` parameter to `computeDecayScore()` (backward compatible)
+- [x] When `isEmotionScoringEnabled()` and metadata is provided, extract salience
+- [x] Rebalance weights from `0.2/0.3/0.5` to `0.15/0.25/0.45/0.15`:
   ```typescript
   const EMOTION_WEIGHT = isEmotionScoringEnabled() ? 0.15 : 0;
   const TIME_W = isEmotionScoringEnabled() ? 0.15 : 0.2;
@@ -133,7 +133,7 @@ return { ...r, score: clamp01(r.score * arousalFactor * factor, r.score * 0.3) }
   const IMP_W = isEmotionScoringEnabled() ? 0.45 : 0.5;
   // Final: TIME_W * timeDecay + FREQ_W * frequencyScore + IMP_W * importance + EMOTION_WEIGHT * salience
   ```
-- [ ] Update all callers to pass metadata where available:
+- [x] Update all callers to pass metadata where available:
   - `auto-gc.ts:142` -- pass `entry.metadata`
   - `retriever.ts:1712` (applyEvolutionDecayBlend) -- pass `r.entry.metadata`
 - **Why:** The evolution decay score determines GC archival and evolution blend. Without emotion, high-emotion events get same decay as routine logs.
@@ -142,7 +142,7 @@ return { ...r, score: clamp01(r.score * arousalFactor * factor, r.score * 0.3) }
 #### 1.5 Re-detect emotion on text update
 **File:** `src/store.ts`, method `update()` (line 863)
 
-- [ ] After building the `updated` entry, if `updates.text` is provided (text changed), re-run emotion detection:
+- [x] After building the `updated` entry, if `updates.text` is provided (text changed), re-run emotion detection:
   ```typescript
   if (updates.text) {
     const emotionResult = detectEmotionIfEnabled(updated.text);
@@ -153,14 +153,14 @@ return { ...r, score: clamp01(r.score * arousalFactor * factor, r.score * 0.3) }
     }
   }
   ```
-- [ ] Place this BEFORE the `table!.delete` + `table!.add` at lines 918-920
+- [x] Place this BEFORE the `table!.delete` + `table!.add` at lines 918-920
 - **Why:** When text is updated (e.g., supersede-with-edit), stale emotion metadata creates scoring inaccuracy.
 - **Risk:** Low -- only fires when text is explicitly changed
 
 #### 1.6 Backfill emotion on importEntry
 **File:** `src/store.ts`, method `importEntry()` (line 433)
 
-- [ ] After building `full` entry, check if emotion is already present in metadata. If not, detect and inject:
+- [x] After building `full` entry, check if emotion is already present in metadata. If not, detect and inject:
   ```typescript
   const metaParsed = JSON.parse(full.metadata || "{}");
   if (!metaParsed.emotion) {
@@ -175,15 +175,15 @@ return { ...r, score: clamp01(r.score * arousalFactor * factor, r.score * 0.3) }
 - **Risk:** Low -- only adds when absent, never overwrites
 
 #### 1.7 Tests
-- [ ] **emotion-decay.test.ts**: Add test that `salience` is present in `detectEmotion()` output and matches expected formula
-- [ ] **emotion-decay.test.ts**: Add test that `source` field is `"keyword"` in `detectEmotion()` output
-- [ ] **New: emotion-evolution-decay.test.ts**: Test `computeDecayScore` with emotion metadata yields higher score than without
-- [ ] **New: emotion-evolution-decay.test.ts**: Test backward compat -- no metadata param still works
-- [ ] **New: emotion-evolution-decay.test.ts**: Test weight rebalancing (weights sum to 1.0)
-- [ ] **Extend retriever tests**: Two entries, same age/importance/frequency, different emotion -- emotional one scores higher after `applyTimeDecay`
-- [ ] **Store tests**: Verify `update()` with text change re-detects emotion
-- [ ] **Store tests**: Verify `importEntry()` backfills emotion when absent, preserves when present
-- [ ] Run `bun test` -- all 1000+ tests must pass
+- [x] **emotion-decay.test.ts**: Add test that `salience` is present in `detectEmotion()` output and matches expected formula
+- [x] **emotion-decay.test.ts**: Add test that `source` field is `"keyword"` in `detectEmotion()` output
+- [x] **New: emotion-evolution-decay.test.ts**: Test `computeDecayScore` with emotion metadata yields higher score than without
+- [x] **New: emotion-evolution-decay.test.ts**: Test backward compat -- no metadata param still works
+- [x] **New: emotion-evolution-decay.test.ts**: Test weight rebalancing (weights sum to 1.0)
+- [x] **Extend retriever tests**: Two entries, same age/importance/frequency, different emotion -- emotional one scores higher after `applyTimeDecay`
+- [x] **Store tests**: Verify `update()` with text change re-detects emotion
+- [x] **Store tests**: Verify `importEntry()` backfills emotion when absent, preserves when present
+- [x] Run `bun test` -- all 1000+ tests must pass
 
 ### Verification
 1. `bun test` -- full green, baseline maintained
@@ -226,36 +226,36 @@ Add privacy tiers, build a proper forget engine with cascade deletion, unify lif
 ### Steps
 
 #### 2.1 Add PrivacyTier to schema
-- [ ] `PrivacyTier` type: `"ephemeral" | "private" | "durable" | "shared"`
-- [ ] `PrivacyTierSchema` Zod enum
-- [ ] Optional `privacyTier` in `StoreMemoryInputSchema`
+- [x] `PrivacyTier` type: `"ephemeral" | "private" | "durable" | "shared"`
+- [x] `PrivacyTierSchema` Zod enum
+- [x] Optional `privacyTier` in `StoreMemoryInputSchema`
 
 #### 2.2 Unify lifecycle state
-- [ ] `cascade-forget.ts:91` -- replace `meta.state` with `isActiveMemory()`
-- [ ] `consolidation-engine.ts:70-77` -- simplify to only `isActiveMemory()`
-- [ ] Grep for any other `meta.state` reads, migrate them all
+- [x] `cascade-forget.ts:91` -- replace `meta.state` with `isActiveMemory()`
+- [x] `consolidation-engine.ts:70-77` -- simplify to only `isActiveMemory()`
+- [x] Grep for any other `meta.state` reads, migrate them all
 
 #### 2.3 Extend audit operations
-- [ ] Add `"forget"` and `"cascade_forget"` to `AuditOperation` union
+- [x] Add `"forget"` and `"cascade_forget"` to `AuditOperation` union
 
 #### 2.4 Build forget engine (NEW: `src/forget-engine.ts`)
-- [ ] `forgetMemory()`: fetch → privacy check → evidence export → KG delete → pin archive → cascade → primary delete → audit
-- [ ] `forgetByScope()` for bulk scope-level forget
-- [ ] Confirmation gate for `"durable"` entries
+- [x] `forgetMemory()`: fetch → privacy check → evidence export → KG delete → pin archive → cascade → primary delete → audit
+- [x] `forgetByScope()` for bulk scope-level forget
+- [x] Confirmation gate for `"durable"` entries
 
 #### 2.5 Privacy tier gate in capture
-- [ ] Before KG extraction, skip if `privacyTier === "ephemeral" | "private"`
+- [x] Before KG extraction, skip if `privacyTier === "ephemeral" | "private"`
 
 #### 2.6 Register `forget_memory` MCP tool
-- [ ] Schema: `{ memoryId: string, confirm: boolean, reason?: string }`
-- [ ] Returns deletion summary + evidence paths
+- [x] Schema: `{ memoryId: string, confirm: boolean, reason?: string }`
+- [x] Returns deletion summary + evidence paths
 
 #### 2.7 Tests
-- [ ] forget-engine: KG cleanup, cascade demotion, audit trail
-- [ ] Privacy tier blocks without confirm
-- [ ] Evidence export for high-importance memories
-- [ ] Consolidation/cascade-forget regression with new `isActiveMemory()`
-- [ ] `bun test` full green
+- [x] forget-engine: KG cleanup, cascade demotion, audit trail
+- [x] Privacy tier blocks without confirm
+- [x] Evidence export for high-importance memories
+- [x] Consolidation/cascade-forget regression with new `isActiveMemory()`
+- [x] `bun test` full green
 
 ### Verification
 1. Store memory → extract KG → forget → verify KG triples gone
@@ -287,12 +287,12 @@ Add orthogonal narrative metadata layer (life-period / general-event / specific-
 | `src/graph-export.ts` | Graph edges | Narrative relationship edges |
 
 ### Steps
-- [ ] 3.1 Define `NarrativeMetadata` interface: `lifePeriodId/Label`, `generalEventId/Label`, `specificEventId/Label`, `startAt`, `endAt`, `sequence`
-- [ ] 3.2 Build rule-based narrative tagger (scope prefix, temporal clustering, keyword signals)
-- [ ] 3.3 Inject narrative at write points (`capture-engine.ts:140`, `ingest.ts:662`)
-- [ ] 3.4 `expandNarrativeSiblings()` in retriever: pull entries sharing same `generalEventId`
-- [ ] 3.5 Rendering updates: group by `lifePeriodLabel`, narrative edges in graph export
-- [ ] 3.6 Tests + `bun test` full green
+- [x] 3.1 Define `NarrativeMetadata` interface: `lifePeriodId/Label`, `generalEventId/Label`, `specificEventId/Label`, `startAt`, `endAt`, `sequence`
+- [x] 3.2 Build rule-based narrative tagger (scope prefix, temporal clustering, keyword signals)
+- [x] 3.3 Inject narrative at write points (`capture-engine.ts:140`, `ingest.ts:662`)
+- [x] 3.4 `expandNarrativeSiblings()` in retriever: pull entries sharing same `generalEventId`
+- [x] 3.5 Rendering updates: group by `lifePeriodLabel`, narrative edges in graph export
+- [x] 3.6 Tests + `bun test` full green
 
 ---
 
@@ -307,13 +307,13 @@ Replace "top-k then summarize" with multi-source candidate expansion + grounded 
 - But: only top-k summarize, `metadata._reconstruction` is hacky, `computeCoverage()` is lexical
 
 ### Steps
-- [ ] 4.1 Define `ReconstructionOutput` with sources, confidence, contradictions
-- [ ] 4.2 Add candidate expansion: KG neighbors + evolution chains + cluster members + narrative siblings
-- [ ] 4.3 Replace lexical coverage with source-map grounding + contradiction detection
-- [ ] 4.4 Return reconstruction as first-class object (remove `metadata._reconstruction` hack)
-- [ ] 4.5 Update MCP rendering for new output shape
-- [ ] 4.6 Pass checkpoint context (openLoops, nextActions) into reconstruction prompt
-- [ ] 4.7 Tests + `bun test` full green
+- [x] 4.1 Define `ReconstructionOutput` with sources, confidence, contradictions
+- [x] 4.2 Add candidate expansion: KG neighbors + evolution chains + cluster members + narrative siblings
+- [x] 4.3 Replace lexical coverage with source-map grounding + contradiction detection
+- [x] 4.4 Return reconstruction as first-class object (remove `metadata._reconstruction` hack)
+- [x] 4.5 Update MCP rendering for new output shape
+- [x] 4.6 Pass checkpoint context (openLoops, nextActions) into reconstruction prompt
+- [x] 4.7 Tests + `bun test` full green
 
 ---
 
@@ -327,12 +327,12 @@ Evolve `prospective-memory.ts` from explicit reminders to include pattern-predic
 - Behavioral signals: checkpoint openLoops, workflow observations, frequency tracker, access tracker, topic tags
 
 ### Steps
-- [ ] 5.1 Extend `ProspectiveMetadata` with `source`, `confidence`, `evidence`, `lastSuggestedAt`, `acceptedAt`
-- [ ] 5.2 Build `prediction-engine.ts`: collect signals, score predictions, threshold at confidence >= 0.6
-- [ ] 5.3 `suggestPredictedReminders()`: deduplicate vs existing, store as ephemeral, auto-expire 7d
-- [ ] 5.4 Surface in `search_memory` as separate "Suggested Reminders" section
-- [ ] 5.5 Acceptance/promotion flow: repeated/accepted → promote to explicit; ignored → demote
-- [ ] 5.6 Tests + `bun test` full green
+- [x] 5.1 Extend `ProspectiveMetadata` with `source`, `confidence`, `evidence`, `lastSuggestedAt`, `acceptedAt`
+- [x] 5.2 Build `prediction-engine.ts`: collect signals, score predictions, threshold at confidence >= 0.6
+- [x] 5.3 `suggestPredictedReminders()`: deduplicate vs existing, store as ephemeral, auto-expire 7d
+- [x] 5.4 Surface in `search_memory` as separate "Suggested Reminders" section
+- [x] 5.5 Acceptance/promotion flow: repeated/accepted → promote to explicit; ignored → demote
+- [x] 5.6 Tests + `bun test` full green
 
 ---
 
@@ -349,15 +349,15 @@ Evolve `prospective-memory.ts` from explicit reminders to include pattern-predic
 
 ## Success Criteria
 
-- [ ] Phase 1: Emotional memories decay 20-30% slower than neutral memories of same age
-- [ ] Phase 1: `computeDecayScore` with emotion gives higher scores for high-salience memories
-- [ ] Phase 1: All existing tests pass, emotion-decay tests extended
-- [ ] Phase 2: `forget_memory` MCP tool deletes entry + KG triples + cascade demotes + audit logs
-- [ ] Phase 2: No more `meta.state` reads anywhere in codebase (all `evolution.status`)
-- [ ] Phase 3: Ingested sessions have narrative metadata with period/event IDs
-- [ ] Phase 3: Search returns narrative siblings alongside direct matches
-- [ ] Phase 4: Reconstruction uses expanded candidate set (KG + evolution + cluster)
-- [ ] Phase 4: Reconstruction is first-class return object, not metadata hack
-- [ ] Phase 5: Predicted reminders surface from behavioral signals
-- [ ] Phase 5: Predictions auto-expire and respect acceptance/rejection
-- [ ] All phases: `bun test` passes with baseline maintained or increased
+- [x] Phase 1: Emotional memories decay 20-30% slower than neutral memories of same age
+- [x] Phase 1: `computeDecayScore` with emotion gives higher scores for high-salience memories
+- [x] Phase 1: All existing tests pass, emotion-decay tests extended
+- [x] Phase 2: `forget_memory` MCP tool deletes entry + KG triples + cascade demotes + audit logs
+- [x] Phase 2: No more `meta.state` reads anywhere in codebase (all `evolution.status`)
+- [x] Phase 3: Ingested sessions have narrative metadata with period/event IDs
+- [x] Phase 3: Search returns narrative siblings alongside direct matches
+- [x] Phase 4: Reconstruction uses expanded candidate set (KG + evolution + cluster)
+- [x] Phase 4: Reconstruction is first-class return object, not metadata hack
+- [x] Phase 5: Predicted reminders surface from behavioral signals
+- [x] Phase 5: Predictions auto-expire and respect acceptance/rejection
+- [x] All phases: `bun test` passes with baseline maintained or increased
