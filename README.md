@@ -10,7 +10,7 @@ A local-first memory system backed by LanceDB that turns scattered conversation 
 
 [![GitHub](https://img.shields.io/github/stars/AliceLJY/recallnest?style=social)](https://github.com/AliceLJY/recallnest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Bun](https://img.shields.io/badge/Runtime-Bun-f9f1e1?logo=bun)](https://bun.sh)
+[![Runtime](https://img.shields.io/badge/Runtime-Bun_|_Node.js_18+-f9f1e1?logo=bun)](https://bun.sh)
 [![LanceDB](https://img.shields.io/badge/LanceDB-Vector+FTS-orange)](https://lancedb.com)
 [![MCP](https://img.shields.io/badge/MCP-41_tools-blue)](https://modelcontextprotocol.io)
 [![Tests](https://img.shields.io/badge/Tests-1428_pass-brightgreen)](https://github.com/AliceLJY/recallnest)
@@ -54,9 +54,20 @@ Wins or ties in **all 6 categories**, with no regression. The hybrid retrieval p
 
 RecallNest starts automatically with Claude Code. No manual MCP config needed.
 
-> **Requires:** [Bun](https://bun.sh) runtime. Dependencies install on first start.
+> **Requires:** [Bun](https://bun.sh) (recommended) or Node.js 18+. Dependencies install on first start.
 
-### Option B: Manual setup
+### Option B: npm install
+
+```bash
+npx recallnest --help          # run directly
+# or
+npm install -g recallnest      # install globally
+recallnest doctor
+```
+
+Works with Node.js 18+ (via tsx) or Bun. No git clone needed.
+
+### Option C: Manual setup
 
 ```bash
 git clone https://github.com/AliceLJY/recallnest.git
