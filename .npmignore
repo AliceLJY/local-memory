@@ -1,0 +1,51 @@
+# Development & CI
+.github/
+.claude-plugin/
+.mcp.json
+Dockerfile
+.dockerignore
+bun.lock
+
+# Screenshots & media (GitHub README only)
+assets/screenshots/
+assets/dashboard.png
+assets/knowledge-graph.png
+assets/recallnest-workbench.png
+assets/wechat-qr.jpg
+
+# Personal / development data
+daily-reflections/
+plan*.md
+research*.md
+
+# Development scripts
+scripts/
+
+# Documentation (lives on GitHub)
+docs/
+ROADMAP.md
+CHANGELOG.md
+EVAL.md
+FAILURES.md
+OPERATIONS.md
+DEMO.md
+SKILL.md
+
+# Tests
+src/__tests__/
+
+# Eval reports (seeds needed by doctor, but reports are not)
+eval/reports/
+eval/continuity/results-*.md
+eval/continuity/runbook.md
+eval/continuity/seed-cases.md
+
+# UI assets (separate concern, not needed for CLI/MCP)
+assets/ui/
+
+# Runtime data (LanceDB, checkpoints, etc.)
+data/
+
+# Misc
+lm
+glama.json
