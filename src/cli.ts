@@ -14,6 +14,7 @@ import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { homedir } from "node:os";
 
+import { metaDir } from "./compat.js";
 import type { RetrievalResult } from "./retriever.js";
 import { applyRetrievalProfile, listRetrievalProfiles } from "./retrieval-profiles.js";
 import { distillResults, formatExplainResults, formatSearchResults, selectBriefSeedResults, summarizeResults } from "./memory-output.js";
@@ -280,19 +281,19 @@ function filterConflictsByAttention<T extends { status: string; createdAt: strin
 function workflowPatternSeedsPath(file?: string): string {
   return file
     ? resolve(file)
-    : resolve(import.meta.dir, "../eval/continuity/pattern-seeds.json");
+    : resolve(metaDir(import.meta), "../eval/continuity/pattern-seeds.json");
 }
 
 function caseMemorySeedsPath(file?: string): string {
   return file
     ? resolve(file)
-    : resolve(import.meta.dir, "../eval/continuity/case-seeds.json");
+    : resolve(metaDir(import.meta), "../eval/continuity/case-seeds.json");
 }
 
 function memorySeedsPath(file?: string): string {
   return file
     ? resolve(file)
-    : resolve(import.meta.dir, "../eval/continuity/memory-seeds.json");
+    : resolve(metaDir(import.meta), "../eval/continuity/memory-seeds.json");
 }
 
 function parseMetadata(raw?: string): Record<string, unknown> {
@@ -1409,7 +1410,7 @@ program
     if (source === "all" || source === "desktop") {
       const desktopSource = config.sources.desktop;
       if (desktopSource) {
-        const desktopPath = resolve(import.meta.dir, "..", desktopSource.path);
+        const desktopPath = resolve(metaDir(import.meta), "..", desktopSource.path);
         if (existsSync(desktopPath)) {
           console.log("🖥️  导入 Claude Desktop 对话...");
           const r = await ingestCCTranscripts(store, embedder, desktopPath, ingestOpts);
@@ -1580,7 +1581,7 @@ program
     }
 
     const config = loadConfig();
-    const dbPath = resolve(import.meta.dir, "..", expandHome(config.dbPath));
+    const dbPath = resolve(metaDir(import.meta), "..", expandHome(config.dbPath));
 
     if (existsSync(dbPath)) {
       const { rmSync } = await import("node:fs");
@@ -2002,8 +2003,11 @@ program
     console.log(formatGraphExportResult(path, graph));
 
     if (options.open) {
-      const proc = Bun.spawn(["open", path]);
-      await proc.exited;
+      const { execFileSync } = await import("node:child_process");
+      try {
+        const cmd = process.platform === "darwin" ? "open" : process.platform === "win32" ? "start" : "xdg-open";
+        execFileSync(cmd, [path], { stdio: "ignore" });
+      } catch {}
     }
   });
 

@@ -13,6 +13,7 @@
 import { existsSync, accessSync, constants, readFileSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { homedir } from "node:os";
+import { metaDir } from "./compat.js";
 import { loadConfig, expandHome, resolveEnv, findConfigPath, loadDotEnv } from "./runtime-config.js";
 import { createEmbedder, type EmbeddingConfig } from "./embedder.js";
 import { extractCanonicalKey, normalizeCanonicalKey } from "./memory-boundaries.js";
@@ -96,15 +97,15 @@ export function assessScopeInventoryReport(report: ScopeInventoryReport): CheckR
 }
 
 function workflowPatternSeedsPath(): string {
-  return resolve(import.meta.dir, "../eval/continuity/pattern-seeds.json");
+  return resolve(metaDir(import.meta), "../eval/continuity/pattern-seeds.json");
 }
 
 function caseMemorySeedsPath(): string {
-  return resolve(import.meta.dir, "../eval/continuity/case-seeds.json");
+  return resolve(metaDir(import.meta), "../eval/continuity/case-seeds.json");
 }
 
 function memorySeedsPath(): string {
-  return resolve(import.meta.dir, "../eval/continuity/memory-seeds.json");
+  return resolve(metaDir(import.meta), "../eval/continuity/memory-seeds.json");
 }
 
 function parseMetadata(raw?: string): Record<string, unknown> {
@@ -295,16 +296,13 @@ export function assessContinuityBaseline(
 export async function runDoctor(options: { ci?: boolean } = {}): Promise<CheckResult[]> {
   const results: CheckResult[] = [];
 
-  // 1. Bun runtime
+  // 1. Runtime check
   const bunVersion = typeof Bun !== "undefined" ? Bun.version : null;
   if (bunVersion) {
-    results.push(pass("Bun runtime", `v${bunVersion}`));
+    results.push(pass("Runtime", `Bun v${bunVersion}`));
   } else {
-    results.push(fail(
-      "Bun runtime",
-      "Bun not detected (running under Node?)",
-      "Install Bun: curl -fsSL https://bun.sh/install | bash"
-    ));
+    const nodeVersion = process.version;
+    results.push(pass("Runtime", `Node.js ${nodeVersion} (Bun recommended for best performance)`));
   }
 
   // 2. Config file

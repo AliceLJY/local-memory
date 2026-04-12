@@ -5,7 +5,9 @@
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 
-const TRACKER_PATH = resolve(import.meta.dir, "../data/ingested-files.json");
+import { metaDir } from "./compat.js";
+
+const TRACKER_PATH = resolve(metaDir(import.meta), "../data/ingested-files.json");
 
 interface TrackerData {
   files: Record<string, { ingestedAt: string; size: number; chunks: number; mtimeMs?: number }>;

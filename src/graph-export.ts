@@ -12,6 +12,7 @@ import { cosineSimilarity } from "./multi-vector.js";
 import { parseNarrative } from "./narrative-schema.js";
 import { writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { metaDir } from "./compat.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -592,7 +593,7 @@ export async function exportMemoryGraph(
 
   const outputDir = options?.outputPath
     ? resolve(options.outputPath, "..")
-    : resolve(import.meta.dir, "../data/exports");
+    : resolve(metaDir(import.meta), "../data/exports");
 
   if (!existsSync(outputDir)) {
     mkdirSync(outputDir, { recursive: true });

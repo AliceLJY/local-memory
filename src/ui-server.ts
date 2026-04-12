@@ -3,6 +3,7 @@
 import { existsSync, realpathSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 
+import { metaDir } from "./compat.js";
 import type { RetrievalResult } from "./retriever.js";
 import type { MemoryStore } from "./store.js";
 import { distillResults, formatExplainResults, formatSearchResults, selectBriefSeedResults, summarizeResults } from "./memory-output.js";
@@ -83,8 +84,8 @@ function errorResponse(error: unknown): Response {
 function isAllowedArtifactPath(targetPath: string): boolean {
   try {
     const resolved = realpathSync(targetPath);
-    const exportsDir = resolve(import.meta.dir, "../data/exports");
-    const pinsDir = resolve(import.meta.dir, "../data/pins");
+    const exportsDir = resolve(metaDir(import.meta), "../data/exports");
+    const pinsDir = resolve(metaDir(import.meta), "../data/pins");
     return (
       resolved === exportsDir ||
       resolved.startsWith(`${exportsDir}${sep}`) ||
@@ -141,7 +142,7 @@ function serializeResults(results: RetrievalResult[]) {
 }
 
 function serveStatic(pathname: string): Response | null {
-  const uiDir = resolve(import.meta.dir, "../assets/ui");
+  const uiDir = resolve(metaDir(import.meta), "../assets/ui");
   const relativePath = pathname === "/"
     ? join(uiDir, "index.html")
     : join(uiDir, pathname.replace(/^\/ui\//, ""));

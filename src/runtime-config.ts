@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { homedir } from "node:os";
 
+import { metaDir } from "./compat.js";
 import { MemoryStore, validateStoragePath } from "./store.js";
 import { createEmbedder, getVectorDimensions, type EmbeddingConfig } from "./embedder.js";
 import { createRetriever, type RetrievalConfig, DEFAULT_RETRIEVAL_CONFIG } from "./retriever.js";
@@ -43,7 +44,7 @@ export interface LocalMemoryConfig {
 }
 
 export function loadDotEnv(): void {
-  const envPath = resolve(import.meta.dir, "../.env");
+  const envPath = resolve(metaDir(import.meta), "../.env");
   if (!existsSync(envPath)) return;
   const content = readFileSync(envPath, "utf-8");
   for (const line of content.split("\n")) {
@@ -61,13 +62,13 @@ export function loadDotEnv(): void {
 export function findConfigPath(): string {
   if (process.env.LOCAL_MEMORY_CONFIG) return resolve(process.env.LOCAL_MEMORY_CONFIG);
 
-  const localConfig = resolve(import.meta.dir, "../config.json");
+  const localConfig = resolve(metaDir(import.meta), "../config.json");
   if (existsSync(localConfig)) return localConfig;
 
   const branded = join(homedir(), ".config", "recallnest", "config.json");
   if (existsSync(branded)) return branded;
 
-  const exampleExists = existsSync(resolve(import.meta.dir, "../config.json.example"));
+  const exampleExists = existsSync(resolve(metaDir(import.meta), "../config.json.example"));
   throw new Error(
     "Config not found.\n" +
     (exampleExists
@@ -96,7 +97,7 @@ export function expandHome(p: string): string {
 }
 
 export function createComponents(config: LocalMemoryConfig, profileName?: string) {
-  const dbPath = resolve(import.meta.dir, "..", expandHome(config.dbPath));
+  const dbPath = resolve(metaDir(import.meta), "..", expandHome(config.dbPath));
   validateStoragePath(dbPath);
 
   const embeddingConfig: EmbeddingConfig = {
@@ -123,7 +124,7 @@ export function createComponents(config: LocalMemoryConfig, profileName?: string
   retriever.setAccessTracker(accessTracker);
 
   // P0.2: Attach frequency tracker for hit-count based boosting
-  const dataDir = resolve(import.meta.dir, "..", expandHome(config.dbPath), "..");
+  const dataDir = resolve(metaDir(import.meta), "..", expandHome(config.dbPath), "..");
   const frequencyTracker = new FrequencyTracker({
     filePath: join(dataDir, "frequency-stats.json"),
   });
@@ -142,7 +143,7 @@ export function createComponents(config: LocalMemoryConfig, profileName?: string
 }
 
 export function createStoreOnly(config: LocalMemoryConfig): MemoryStore {
-  const dbPath = resolve(import.meta.dir, "..", expandHome(config.dbPath));
+  const dbPath = resolve(metaDir(import.meta), "..", expandHome(config.dbPath));
   validateStoragePath(dbPath);
   return new MemoryStore({
     dbPath,

@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync,
 import { randomUUID } from "node:crypto";
 import { basename, extname, join, resolve } from "node:path";
 
+import { metaDir } from "./compat.js";
 import type { MemoryEntry } from "./store.js";
 import type { RetrievalResult } from "./retriever.js";
 import type { RetrievalProfileName } from "./retrieval-profiles.js";
@@ -71,7 +72,7 @@ export interface DirtyBriefAssetRecord extends BriefAsset {
   scope: string;
 }
 
-const DATA_DIR = resolve(import.meta.dir, "../data");
+const DATA_DIR = resolve(metaDir(import.meta), "../data");
 const PINS_DIR = join(DATA_DIR, "pins");
 const ASSETS_DIR = join(DATA_DIR, "assets");
 const ARCHIVE_DIR = join(DATA_DIR, "archive", "dirty-briefs");

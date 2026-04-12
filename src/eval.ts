@@ -3,6 +3,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 
+import { metaDir } from "./compat.js";
 import { buildSessionCheckpointRecord, normalizeCheckpointScope } from "./session-engine.js";
 import type { ResumeContextResponse, SessionCheckpointRecord } from "./session-schema.js";
 import { composeResumeContext } from "./context-composer.js";
@@ -158,8 +159,8 @@ function parseArgs(args: string[]): EvalArgs {
 
 function defaultCasesPath(mode: EvalMode): string {
   return mode === "continuity"
-    ? resolve(import.meta.dir, "../eval/continuity/cases.json")
-    : resolve(import.meta.dir, "../eval/cases.json");
+    ? resolve(metaDir(import.meta), "../eval/continuity/cases.json")
+    : resolve(metaDir(import.meta), "../eval/cases.json");
 }
 
 function loadCases<T>(mode: EvalMode, pathArg?: string): T[] {

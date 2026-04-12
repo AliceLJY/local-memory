@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
+import { metaDir } from "./compat.js";
 import type { ConflictCandidateRecord, ConflictStatus } from "./conflict-schema.js";
 import { ConflictCandidateRecordSchema } from "./conflict-schema.js";
 
@@ -24,7 +25,7 @@ function sortNewestFirst(records: ConflictCandidateRecord[]): ConflictCandidateR
 }
 
 export class ConflictCandidateStore {
-  constructor(private readonly dir = resolve(import.meta.dir, "../data/conflict-candidates")) {}
+  constructor(private readonly dir = resolve(metaDir(import.meta), "../data/conflict-candidates")) {}
 
   get dataDir(): string {
     return ensureDir(this.dir);

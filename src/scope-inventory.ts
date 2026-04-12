@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 
+import { metaDir } from "./compat.js";
 import { suppressesLegacyScopeIssue } from "./legacy-scope-review.js";
 import { classifyLegacyScope, type LegacyScopeAudit, type LegacyScopeIssueKind, type MemoryStore } from "./store.js";
 
@@ -205,9 +206,9 @@ export async function collectScopeInventory(options: ScopeInventoryOptions): Pro
     recommendation: "Migrate or delete historical unscoped memory rows before removing compatibility shims.",
   };
 
-  const pinsDir = options.pinsDir || resolve(import.meta.dir, "../data/pins");
-  const checkpointsDir = options.checkpointsDir || resolve(import.meta.dir, "../data/session-checkpoints");
-  const workflowObservationsDir = options.workflowObservationsDir || resolve(import.meta.dir, "../data/workflow-observations");
+  const pinsDir = options.pinsDir || resolve(metaDir(import.meta), "../data/pins");
+  const checkpointsDir = options.checkpointsDir || resolve(metaDir(import.meta), "../data/session-checkpoints");
+  const workflowObservationsDir = options.workflowObservationsDir || resolve(metaDir(import.meta), "../data/workflow-observations");
 
   const pinLayer = scanJsonLayer({
     dir: pinsDir,

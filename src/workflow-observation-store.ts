@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
+import { metaDir } from "./compat.js";
 import type { WorkflowObservationOutcome, WorkflowObservationRecord } from "./workflow-observation-schema.js";
 import { WorkflowObservationRecordSchema } from "./workflow-observation-schema.js";
 
@@ -26,7 +27,7 @@ function sortNewestFirst(records: WorkflowObservationRecord[]): WorkflowObservat
 }
 
 export class WorkflowObservationStore {
-  constructor(private readonly dir = resolve(import.meta.dir, "../data/workflow-observations")) {}
+  constructor(private readonly dir = resolve(metaDir(import.meta), "../data/workflow-observations")) {}
 
   get dataDir(): string {
     return ensureDir(this.dir);

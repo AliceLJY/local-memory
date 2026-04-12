@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 
+import { metaDir } from "./compat.js";
 import type { SessionCheckpointRecord } from "./session-schema.js";
 import { SessionCheckpointRecordSchema } from "./session-schema.js";
 import { normalizeCheckpointScope, type CheckpointQuality } from "./session-engine.js";
@@ -66,7 +67,7 @@ export interface CheckpointGcResult {
 }
 
 export class SessionCheckpointStore {
-  constructor(private readonly dir = resolve(import.meta.dir, "../data/session-checkpoints")) {}
+  constructor(private readonly dir = resolve(metaDir(import.meta), "../data/session-checkpoints")) {}
 
   get dataDir(): string {
     return ensureDir(this.dir);

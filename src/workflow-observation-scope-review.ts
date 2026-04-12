@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 
+import { metaDir } from "./compat.js";
 import { buildLegacyScopeKeepReview, suppressesLegacyScopeIssue } from "./legacy-scope-review.js";
 import { classifyLegacyScope } from "./store.js";
 
@@ -66,7 +67,7 @@ export interface WorkflowObservationScopeReviewOptions {
 }
 
 function defaultDir(): string {
-  return resolve(import.meta.dir, "../data/workflow-observations");
+  return resolve(metaDir(import.meta), "../data/workflow-observations");
 }
 
 function clip(text: string, maxLen = 72): string {
