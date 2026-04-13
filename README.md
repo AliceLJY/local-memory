@@ -13,7 +13,7 @@ A local-first memory system backed by LanceDB that turns scattered conversation 
 [![Runtime](https://img.shields.io/badge/Runtime-Bun_|_Node.js_18+-f9f1e1?logo=bun)](https://bun.sh)
 [![LanceDB](https://img.shields.io/badge/LanceDB-Vector+FTS-orange)](https://lancedb.com)
 [![MCP](https://img.shields.io/badge/MCP-41_tools-blue)](https://modelcontextprotocol.io)
-[![Tests](https://img.shields.io/badge/Tests-1428_pass-brightgreen)](https://github.com/AliceLJY/recallnest)
+[![Tests](https://img.shields.io/badge/Tests-1486_pass-brightgreen)](https://github.com/AliceLJY/recallnest)
 [![CC Plugin](https://img.shields.io/badge/Claude_Code-Plugin-blueviolet)](https://github.com/AliceLJY/recallnest)
 
 **English** | [简体中文](README_CN.md) | [Roadmap](ROADMAP.md)
@@ -197,9 +197,11 @@ bun run src/ui-server.ts
 | **Dashboard** | Web UI with stats, category distribution, growth trends, and health |
 | **Workflow Observation** | Dedicated append-only workflow health records, outside regular memory |
 | **Structured Assets** | Pins, briefs, and distilled summaries — not just raw logs |
-| **Data Checkup** | Data quality health checks on the memory store |
+| **Data Checkup** | Data quality health checks on the memory store (including source health) |
+| **Source Heartbeats** | Automatic ingest health tracking per data source with staleness alerts |
 | **Export Graph** | Export interactive HTML knowledge graph visualization |
 | **Batch Operations** | Store up to 20 memories in a single call with dedup |
+| **Connector Framework** | Standard connector-v1 format for external data sources with example adapters |
 
 ---
 
@@ -230,6 +232,18 @@ v2.1 added philosophy-informed behavior; v2.2 closes the last three engine-layer
 - **Interference Detection + Active Forgetting Gate** *(PI-LLM / SleepGate)* — Semantic cluster detection identifies groups of near-duplicate memories competing for retrieval. Enhanced RIF keeps only top-K (default 3) per cluster; extras are demoted 50% instead of removed. Write-time pre-warning: when a scope accumulates ≥5 high-similarity active memories, the weakest is flagged `pending_review`. `data_checkup` reports interference density.
 
 - **Temporal Validity Windows** *(TSM / TiMem / Zep)* — `store_memory` accepts `validUntil` (expiration) and `eventTime` (when the event actually happened). `search_memory` supports `validAt` (point-in-time query) and `includeExpired` (demote 80% instead of hide). Auto-GC applies 2× decay acceleration to expired memories.
+
+---
+
+## New in v2.3: Connector Ecosystem + Source Health
+
+v2.2 hardened retrieval quality; v2.3 opens RecallNest to external data sources with a standard connector framework and operational health monitoring.
+
+- **Connector-v1 Standard** *(GB-2)* — A JSON format (`ConnectorOutputV1`) that any external script can produce. Obsidian vaults, emails, RSS feeds, log files — normalize once, ingest through the full dedup/embed/extract pipeline. See [`docs/connector-spec.md`](docs/connector-spec.md) for the specification and [`connectors/examples/`](connectors/examples/) for adapter skeletons (email, logs, RSS).
+
+- **Obsidian Vault Ingestion** *(GB-1)* — First-party Obsidian connector: scans `.md` files, extracts frontmatter + wikilinks, maps folder structure to tags. One command: `lm ingest --obsidian /path/to/vault`.
+
+- **Source Health Monitoring** *(GB-3)* — Every connector ingest writes a heartbeat to `data/source-heartbeat.json`. `data_checkup` flags stale sources (>7d warning, >30d error). `doctor --ci` shows a per-source heartbeat summary with human-readable age.
 
 ---
 

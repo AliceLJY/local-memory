@@ -52,7 +52,8 @@ What matters first is this: opening another window should not erase stable conte
 - SKILL.md: Memory Partner Protocol for LLM onboarding
 - Offline consolidation (`dream`): clustering, merging, pruning
 - Batch operations (`batch_store`): up to 20 memories per call with dedup
-- Data quality health checks (`data_checkup`)
+- Data quality health checks (`data_checkup`) with source health monitoring
+- Connector-v1 standard: external data source ingestion format + Obsidian vault connector + adapter examples (email, logs, RSS)
 - Philosophy-Informed Memory: emotion-aware decay, memory ethics layer, autobiographical narrative, constructive retrieval, predictive prospective memory (5 phases, all complete)
 - Feature flags: 6 independent flags for gradual rollout
 - `forget_memory` MCP tool with cascade deletion and audit trail
@@ -61,7 +62,12 @@ What matters first is this: opening another window should not erase stable conte
 - Interference detection + active forgetting gate: semantic cluster detection, enhanced RIF with top-K cluster demotion, write-time interference pre-warning, `data_checkup` density report
 - Temporal validity windows: `eventTime`/`validUntil` on `store_memory`, `validAt`/`includeExpired` on `search_memory`, expired memory demotion, auto-GC decay acceleration
 
-Test baseline: 1,428 tests, 0 failures
+- Connector-v1 standard format for external data sources (`ConnectorOutputV1` JSON schema, `ingestConnectorFile()`)
+- Obsidian vault ingestion: scan `.md` files, extract frontmatter + wikilinks, map folder structure to tags
+- Source health monitoring: heartbeat tracking per connector source, staleness alerts in `data_checkup` and `doctor --ci`
+- Connector adapter examples: email, logs, RSS skeletons in `connectors/examples/`
+
+Test baseline: 1,486 tests, 0 failures
 
 ### Current Gap
 
