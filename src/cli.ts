@@ -29,6 +29,8 @@ import {
   ingestCodexSessions,
   ingestGeminiSessions,
   ingestMarkdownFiles,
+  ingestObsidianVault,
+  ingestConnectorFile,
 } from "./ingest.js";
 import { runDoctor, formatDoctorResults } from "./doctor.js";
 import { persistCaseMemory, persistMemory, persistWorkflowPattern } from "./capture-engine.js";
@@ -1306,6 +1308,8 @@ program
   .option("--no-dedup", "跳过向量去重")
   .option("--no-llm", "禁用 LLM 提取（原始对话将跳过不存入，排入待处理队列）")
   .option("--recent [hours]", "快速模式：只处理最近 N 小时修改的文件（默认 2 小时），跳过 ingested-files 检查")
+  .option("--obsidian <vault-path>", "导入 Obsidian vault（自动检测 .obsidian/ 目录）")
+  .option("--connector <file-path>", "导入 connector-v1 格式 JSON 文件")
   .action(async (options) => {
     const config = loadConfig();
     const { store, embedder, llm } = createComponents(config);
@@ -1438,6 +1442,32 @@ program
         results.push(r);
         console.log(`  ✅ Memory: ${formatIngestSummary(r)}`);
       }
+    }
+
+    // Obsidian vault (--obsidian <path>)
+    if (options.obsidian) {
+      console.log("🗃️  导入 Obsidian vault...");
+      const r = await ingestObsidianVault(store, embedder, options.obsidian, {
+        verbose,
+        noDedup,
+        llm: effectiveLlm,
+      });
+      results.push(r);
+      console.log(`  ✅ Obsidian: ${formatIngestSummary(r)}`);
+    }
+
+    // Connector-v1 file (--connector <path>)
+    if (options.connector) {
+      console.log("🔌 导入 connector-v1 文件...");
+      const { readFileSync: readFs } = await import("node:fs");
+      const connectorContent = readFs(options.connector, "utf-8");
+      const r = await ingestConnectorFile(store, embedder, connectorContent, {
+        verbose,
+        noDedup,
+        llm: effectiveLlm,
+      });
+      results.push(r);
+      console.log(`  ✅ Connector: ${formatIngestSummary(r)}`);
     }
 
     // Summary

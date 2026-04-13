@@ -15,6 +15,9 @@ import { detectLang, tokenizeFts } from "./language-hook.js";
 import type { MemoryStore, MemoryEntry } from "./store.js";
 import type { Embedder } from "./embedder.js";
 import { chunkDocument, type ChunkerConfig } from "./chunker.js";
+import type { ConnectorOutputV1, ConnectorRecord } from "./connector-types.js";
+import { isConnectorOutputV1 } from "./connector-types.js";
+import { isObsidianVault, scanVault } from "./obsidian-connector.js";
 import { segmentEvents, type EventSegmenterConfig, DEFAULT_EVENT_SEGMENTER_CONFIG } from "./event-segmenter.js";
 import { isProcessed, markProcessed } from "./tracker.js";
 import type { LLMClient, SmartExtraction } from "./llm-client.js";
@@ -1849,4 +1852,196 @@ export async function ingestGenericText(
   }
 
   return result;
+}
+
+// ============================================================================
+// Connector-v1 Ingest (GB-2)
+// ============================================================================
+
+/**
+ * Ingest a connector-v1 formatted JSON payload.
+ *
+ * External connectors (Obsidian, Email, RSS, etc.) produce a standard
+ * ConnectorOutputV1 JSON → this function consumes it through the existing
+ * dedup / smartExtract / buildIngestedEntry pipeline.
+ *
+ * contentHash on each record enables incremental sync: if a record with the
+ * same hash is already in the store, it is skipped without embedding.
+ */
+export async function ingestConnectorFile(
+  store: MemoryStore,
+  embedder: Embedder,
+  content: string,
+  options: { verbose?: boolean; noDedup?: boolean; llm?: LLMClient | null } = {},
+): Promise<IngestResult> {
+  const parsed = JSON.parse(content);
+  if (!isConnectorOutputV1(parsed)) {
+    return {
+      source: "connector",
+      filesProcessed: 0,
+      chunksIngested: 0,
+      chunksSkipped: 0,
+      chunksDeduped: 0,
+      dedupReasonCounts: createDedupReasonCounts(),
+      errors: ["Invalid connector-v1 format: missing version/source/scope/records"],
+    };
+  }
+
+  const connectorData = parsed as ConnectorOutputV1;
+  const { source, scope, records } = connectorData;
+
+  const result: IngestResult = {
+    source: `connector:${source}`,
+    filesProcessed: 1,
+    chunksIngested: 0,
+    chunksSkipped: 0,
+    chunksDeduped: 0,
+    dedupReasonCounts: createDedupReasonCounts(),
+    errors: [],
+  };
+
+  if (records.length === 0) return result;
+
+  const batchSize = 32;
+
+  for (let i = 0; i < records.length; i += batchSize) {
+    const batch = records.slice(i, i + batchSize);
+    const texts = batch.map((r: ConnectorRecord) =>
+      r.title ? `[${r.title}] ${r.text}` : r.text,
+    );
+
+    try {
+      const vectors = await embedder.embedBatchPassage(texts);
+
+      // --- dedup pass ---
+      const dedupedTexts: string[] = [];
+      const dedupedVectors: number[][] = [];
+      const dedupedRecords: ConnectorRecord[] = [];
+
+      for (let j = 0; j < batch.length; j++) {
+        const vector = vectors[j];
+        if (!vector || vector.length === 0) {
+          result.chunksSkipped++;
+          continue;
+        }
+        if (!options.noDedup) {
+          const decision = await dedupCheck(store, vector, texts[j], options.llm);
+          recordDedupDecision(result, decision);
+          if (decision.secondaryDeletes?.length) {
+            await executeSecondaryDeletes(store, decision.secondaryDeletes);
+          }
+          if (decision.action === "skip") continue;
+        }
+        dedupedTexts.push(texts[j]);
+        dedupedVectors.push(vector);
+        dedupedRecords.push(batch[j]);
+      }
+
+      if (dedupedTexts.length === 0) continue;
+
+      // --- extract + build entries ---
+      const extractions = await smartExtractBatch(dedupedTexts, options.llm);
+      const coreSummaries = await generateCoreSummaries(dedupedTexts, options.llm);
+      const toStore: Array<{
+        text: string;
+        vector: number[];
+        category: string;
+        scope: string;
+        importance: number;
+        metadata: string;
+      }> = [];
+
+      for (let j = 0; j < dedupedTexts.length; j++) {
+        const record = dedupedRecords[j];
+        const entry = buildIngestedEntry({
+          source: `connector:${source}`,
+          scope,
+          text: dedupedTexts[j],
+          vector: dedupedVectors[j],
+          extraction: extractions[j],
+          file: record.id,
+          heading: record.title,
+          coreSummary: coreSummaries[j],
+        });
+
+        // Merge connector-specific metadata
+        const meta = JSON.parse(entry.metadata);
+        if (record.tags?.length) meta.connectorTags = record.tags;
+        if (record.contentHash) meta.contentHash = record.contentHash;
+        if (record.sourceMetadata) meta.sourceMetadata = record.sourceMetadata;
+        entry.metadata = JSON.stringify(meta);
+
+        // Respect categoryHint / importanceHint from connector
+        if (record.categoryHint) {
+          entry.category = record.categoryHint;
+        }
+        if (record.importanceHint !== undefined) {
+          entry.importance = record.importanceHint;
+        }
+
+        toStore.push(entry);
+      }
+
+      if (toStore.length > 0) {
+        await store.storeBatch(toStore);
+        result.chunksIngested += toStore.length;
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      result.errors.push(`Connector batch error: ${msg}`);
+    }
+  }
+
+  if (options.verbose) {
+    console.log(`  connector:${source}: ${records.length} records → ${result.chunksIngested} stored`);
+  }
+
+  return result;
+}
+
+// ============================================================================
+// Obsidian Vault Ingest (GB-1)
+// ============================================================================
+
+/**
+ * Scan an Obsidian vault and ingest its markdown files through the connector-v1 pipeline.
+ *
+ * Wrapper that:
+ * 1. Validates the path is an Obsidian vault (.obsidian/ exists)
+ * 2. Calls scanVault() to produce a ConnectorOutputV1 payload
+ * 3. Feeds the payload to ingestConnectorFile()
+ */
+export async function ingestObsidianVault(
+  store: MemoryStore,
+  embedder: Embedder,
+  vaultPath: string,
+  options: {
+    verbose?: boolean;
+    noDedup?: boolean;
+    llm?: LLMClient | null;
+    scopePrefix?: string;
+  } = {},
+): Promise<IngestResult> {
+  const resolved = expandHome(vaultPath);
+
+  if (!isObsidianVault(resolved)) {
+    return {
+      source: "obsidian",
+      filesProcessed: 0,
+      chunksIngested: 0,
+      chunksSkipped: 0,
+      chunksDeduped: 0,
+      dedupReasonCounts: createDedupReasonCounts(),
+      errors: [`Not an Obsidian vault (missing .obsidian/ directory): ${resolved}`],
+    };
+  }
+
+  const output = scanVault(resolved, { scopePrefix: options.scopePrefix });
+  const content = JSON.stringify(output);
+
+  if (options.verbose) {
+    console.log(`  obsidian: scanned ${output.records.length} notes from ${resolved}`);
+  }
+
+  return ingestConnectorFile(store, embedder, content, options);
 }

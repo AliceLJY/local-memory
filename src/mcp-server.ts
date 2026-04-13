@@ -1819,11 +1819,11 @@ registerTool(
 
 registerTool(
   "import_conversations",
-  "Import a conversation file (Claude Code JSONL, Claude.ai JSON, ChatGPT JSON, Slack JSON, or plaintext) into memory. Auto-detects format or use explicit format parameter. Messages are normalized and stored via the standard persistMemory pipeline.",
+  "Import a conversation file (Claude Code JSONL, Claude.ai JSON, ChatGPT JSON, Slack JSON, plaintext, or connector-v1 JSON) into memory. Auto-detects format or use explicit format parameter. Messages are normalized and stored via the standard persistMemory pipeline. For connector-v1 format, use the standard ConnectorOutputV1 schema (see docs/connector-spec.md).",
   {
     content: z.string().min(1).max(500_000).describe("Raw file content to import"),
     scope: z.string().min(1).max(160).describe("Target scope for imported memories, e.g. 'project:myapp'"),
-    format: z.enum(["auto", "claude-code", "claude-ai", "chatgpt", "slack", "plaintext"]).default("auto").describe("Conversation format. Use 'auto' to detect automatically."),
+    format: z.enum(["auto", "claude-code", "claude-ai", "chatgpt", "slack", "plaintext", "connector-v1"]).default("auto").describe("Conversation format. Use 'auto' to detect automatically. 'connector-v1' for standard connector output."),
   },
   async ({ content, scope, format }) => {
     const { detectFormat, normalizeConversation, ingestNormalizedMessages } = await import("./conversation-importer.js");

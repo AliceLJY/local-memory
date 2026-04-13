@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import type { PersistMemoryDeps } from "./capture-engine.js";
 import { persistMemory } from "./capture-engine.js";
 import type { StoredMemoryRecord } from "./memory-schema.js";
+import { isConnectorOutputV1, type ConnectorOutputV1 } from "./connector-types.js";
 
 export interface NormalizedMessage {
   role: "user" | "assistant" | "system";
@@ -14,7 +15,8 @@ export type ConversationFormat =
   | "claude-ai"
   | "chatgpt"
   | "slack"
-  | "plaintext";
+  | "plaintext"
+  | "connector-v1";
 
 // ---------------------------------------------------------------------------
 // Format detection
@@ -40,6 +42,10 @@ export function detectFormat(content: string): ConversationFormat {
       }
 
       if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        // connector-v1: highest priority — explicit version tag
+        if (isConnectorOutputV1(parsed)) {
+          return "connector-v1";
+        }
         if (parsed.chat_conversations !== undefined) {
           return "claude-ai";
         }
@@ -367,6 +373,22 @@ export function normalizePlaintext(content: string): NormalizedMessage[] {
 }
 
 // ---------------------------------------------------------------------------
+// Connector-v1 normalizer
+// ---------------------------------------------------------------------------
+
+export function normalizeConnectorV1(content: string): NormalizedMessage[] {
+  const parsed: ConnectorOutputV1 = JSON.parse(content);
+  if (!isConnectorOutputV1(parsed)) {
+    throw new Error("Invalid connector-v1 format: missing version/source/scope/records");
+  }
+  return parsed.records.map((r) => ({
+    role: "user" as const,
+    content: r.title ? `[${r.title}] ${r.text}` : r.text,
+    ...(r.timestamp ? { timestamp: r.timestamp } : {}),
+  }));
+}
+
+// ---------------------------------------------------------------------------
 // Unified normalize dispatcher
 // ---------------------------------------------------------------------------
 
@@ -382,6 +404,8 @@ export function normalizeConversation(content: string, format: ConversationForma
       return normalizeSlack(content);
     case "plaintext":
       return normalizePlaintext(content);
+    case "connector-v1":
+      return normalizeConnectorV1(content);
   }
 }
 
