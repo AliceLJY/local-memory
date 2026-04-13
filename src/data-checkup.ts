@@ -15,6 +15,7 @@
 import type { MemoryEntry, MemoryStore } from "./store.js";
 import { resolveTier, type MemoryTier } from "./decay-engine.js";
 import { measureInterferenceDensity } from "./interference-detector.js";
+import { readHeartbeats, checkSourceStaleness, formatAge } from "./source-heartbeat.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -151,7 +152,33 @@ function checkVersionGroups(entries: MemoryEntry[]): CheckResult {
   };
 }
 
-/** Check 6 (F2): Interference density — detect semantic clustering pressure. */
+/** Check 6 (GB-3): Source health — detect stale connector data sources. */
+function checkSourceHealth(heartbeatPath?: string): CheckResult {
+  const heartbeats = readHeartbeats(heartbeatPath);
+  const sources = Object.values(heartbeats);
+  if (sources.length === 0) {
+    return { name: "source_health", status: "ok", detail: "No connector sources tracked yet" };
+  }
+
+  const stale30 = checkSourceStaleness(30, heartbeatPath);
+  const stale7 = checkSourceStaleness(7, heartbeatPath);
+
+  const summary = sources
+    .map((s) => `${s.source}: ${formatAge(s.lastIngest)}`)
+    .join(", ");
+
+  if (stale30.length > 0) {
+    const names = stale30.map((s) => `${s.source} (${s.daysSince}d)`).join(", ");
+    return { name: "source_health", status: "error", detail: `${summary} — critically stale: ${names}` };
+  }
+  if (stale7.length > 0) {
+    const names = stale7.map((s) => `${s.source} (${s.daysSince}d)`).join(", ");
+    return { name: "source_health", status: "warning", detail: `${summary} — stale: ${names}` };
+  }
+  return { name: "source_health", status: "ok", detail: `All sources fresh: ${summary}` };
+}
+
+/** Check 7 (F2): Interference density — detect semantic clustering pressure. */
 function checkInterferenceDensity(entries: MemoryEntry[]): CheckResult {
   // Only check entries with vectors (skip schema/empty entries)
   const withVectors = entries.filter(e => e.vector && e.vector.length > 0);
@@ -192,6 +219,8 @@ function checkInterferenceDensity(entries: MemoryEntry[]): CheckResult {
 export interface CheckupDeps {
   store: Pick<MemoryStore, "list" | "stats">;
   openConflictCount: number;
+  /** Optional override path for source-heartbeat.json (used in tests). */
+  heartbeatPath?: string;
 }
 
 export async function runDataCheckup(deps: CheckupDeps): Promise<CheckupReport> {
@@ -204,6 +233,7 @@ export async function runDataCheckup(deps: CheckupDeps): Promise<CheckupReport> 
       checkTierDistribution(entries),
       checkConflictBacklog(deps.openConflictCount),
       checkVersionGroups(entries),
+      checkSourceHealth(deps.heartbeatPath),
       checkInterferenceDensity(entries),
     ],
     totalEntries: entries.length,

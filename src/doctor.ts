@@ -27,6 +27,7 @@ import {
 } from "./memory-schema.js";
 import { collectScopeInventory, type ScopeInventoryReport } from "./scope-inventory.js";
 import { MemoryStore, type MemoryEntry, validateStoragePath } from "./store.js";
+import { readHeartbeats, formatAge } from "./source-heartbeat.js";
 
 interface CheckResult {
   name: string;
@@ -506,6 +507,34 @@ export async function runDoctor(options: { ci?: boolean } = {}): Promise<CheckRe
       "not yet audited",
       "bun run scope-inventory"
     ));
+  }
+
+  // GB-3: Source heartbeat summary
+  try {
+    const heartbeats = readHeartbeats();
+    const sources = Object.values(heartbeats);
+    if (sources.length === 0) {
+      results.push(pass("Source heartbeats", "no connector sources tracked yet"));
+    } else {
+      const summary = sources
+        .map((s) => `${s.source}: ${formatAge(s.lastIngest)}`)
+        .join(", ");
+      const staleCount = sources.filter((s) => {
+        const daysSince = (Date.now() - Date.parse(s.lastIngest)) / 86_400_000;
+        return daysSince > 7;
+      }).length;
+      if (staleCount > 0) {
+        results.push(warn(
+          "Source heartbeats",
+          `${summary} (${staleCount} stale >7d)`,
+          "lm ingest --connector <file>",
+        ));
+      } else {
+        results.push(pass("Source heartbeats", summary));
+      }
+    }
+  } catch {
+    results.push(warn("Source heartbeats", "unable to read heartbeat file"));
   }
 
   return results;

@@ -1996,6 +1996,14 @@ export async function ingestConnectorFile(
     console.log(`  connector:${source}: ${records.length} records → ${result.chunksIngested} stored`);
   }
 
+  // GB-3: Write source heartbeat after connector ingest
+  try {
+    const { writeHeartbeat } = await import("./source-heartbeat.js");
+    writeHeartbeat(source, result.chunksIngested, result.errors);
+  } catch {
+    // Heartbeat write is best-effort — don't break ingest on failure
+  }
+
   return result;
 }
 
