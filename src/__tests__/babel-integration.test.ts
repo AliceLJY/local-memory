@@ -1,25 +1,30 @@
 import { describe, expect, test, beforeAll, afterAll } from "bun:test";
-import {
-  detectLanguage,
-  tokenizeForFts,
-  initTokenizer,
-  getKgPrompt,
-  getSessionPrompt,
-} from "babel-memory";
 import { MemoryStore } from "../store.js";
 import { rmSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
+// babel-memory is an optional dependency — skip integration tests if not installed
+let babelMemory: typeof import("babel-memory") | null = null;
+try {
+  babelMemory = await import("babel-memory");
+} catch {
+  // not installed — tests will be skipped
+}
+
+const describeIfBabel = babelMemory ? describe : describe.skip;
+
 beforeAll(async () => {
-  await initTokenizer();
+  if (babelMemory) {
+    await babelMemory.initTokenizer();
+  }
 });
 
-describe("babel-memory integration", () => {
+describeIfBabel("babel-memory integration", () => {
   test("Chinese memory: language detected + fts_text tokenized", () => {
     const text = "RecallNest 是一个基于 LanceDB 的 AI 记忆系统";
-    const language = detectLanguage(text);
-    const fts_text = tokenizeForFts(text, language);
+    const language = babelMemory!.detectLanguage(text);
+    const fts_text = babelMemory!.tokenizeForFts(text, language);
 
     expect(language).toBe("zh");
     expect(fts_text).toContain("RecallNest");
@@ -28,8 +33,8 @@ describe("babel-memory integration", () => {
 
   test("English memory: language detected + fts_text unchanged", () => {
     const text = "RecallNest is an AI memory system built on LanceDB";
-    const language = detectLanguage(text);
-    const fts_text = tokenizeForFts(text, language);
+    const language = babelMemory!.detectLanguage(text);
+    const fts_text = babelMemory!.tokenizeForFts(text, language);
 
     expect(language).toBe("en");
     expect(fts_text).toBe(text);
@@ -37,12 +42,12 @@ describe("babel-memory integration", () => {
 
   test("BM25 query symmetry: tokenized query matches tokenized stored text", () => {
     const storedText = "机器学习在自然语言处理中的应用";
-    const storedLang = detectLanguage(storedText);
-    const storedFts = tokenizeForFts(storedText, storedLang);
+    const storedLang = babelMemory!.detectLanguage(storedText);
+    const storedFts = babelMemory!.tokenizeForFts(storedText, storedLang);
 
     const query = "机器学习";
-    const queryLang = detectLanguage(query);
-    const queryFts = tokenizeForFts(query, queryLang);
+    const queryLang = babelMemory!.detectLanguage(query);
+    const queryFts = babelMemory!.tokenizeForFts(query, queryLang);
 
     const queryTerms = queryFts
       .split(" ")
@@ -55,22 +60,22 @@ describe("babel-memory integration", () => {
 
   test("KG prompt routes correctly for Chinese input", () => {
     const text = "RecallNest 使用 LanceDB 存储记忆";
-    const lang = detectLanguage(text);
-    const { system } = getKgPrompt(lang);
+    const lang = babelMemory!.detectLanguage(text);
+    const { system } = babelMemory!.getKgPrompt(lang);
     expect(system).toContain("知识图谱");
   });
 
   test("Session prompt routes correctly for Chinese input", () => {
     const text = "用户今天讨论了多语言支持方案";
-    const lang = detectLanguage(text);
-    const { dimensionLabels } = getSessionPrompt(lang);
+    const lang = babelMemory!.detectLanguage(text);
+    const { dimensionLabels } = babelMemory!.getSessionPrompt(lang);
     expect(dimensionLabels.user_intent).toContain("用户意图");
   });
 
   test("backward compat: missing language defaults to en", () => {
     const entry = { text: "some old text", language: undefined };
     const lang = entry.language || "en";
-    const fts = tokenizeForFts(entry.text, lang);
+    const fts = babelMemory!.tokenizeForFts(entry.text, lang);
     expect(lang).toBe("en");
     expect(fts).toBe(entry.text);
   });
