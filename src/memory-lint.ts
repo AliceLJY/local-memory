@@ -9,6 +9,9 @@
  * 2. Duplicates — near-identical memories by vector cosine similarity
  * 3. Stale — memories never or rarely accessed and old enough to review
  * 4. Orphans — memories with missing scope or broken consolidation links
+ * 5. Weak lessons — workflow patterns lacking any action verbs (inspired by
+ *    KarryViber/Orb memory-lint heuristic — a "lesson" should prescribe an
+ *    action, not describe a phenomenon)
  *
  * Produces a health score (0-100) and a human-readable report.
  */
@@ -24,7 +27,7 @@ import { parseEvolution, isActiveMemory } from "./memory-evolution.js";
 export type LintSeverity = "info" | "warning" | "error";
 
 export interface LintFinding {
-  check: string;     // e.g., "contradiction", "duplicate", "stale", "orphan"
+  check: string;     // e.g., "contradiction", "duplicate", "stale", "orphan", "weakLesson"
   severity: LintSeverity;
   detail: string;
   memoryIds: string[];
@@ -40,6 +43,7 @@ export interface MemoryLintReport {
     duplicates: number;
     staleMemories: number;
     orphans: number;
+    weakLessons: number;
   };
 }
 
@@ -77,6 +81,32 @@ const CONTRADICTION_CATEGORIES = new Set(["profile", "preferences", "entities", 
 const STALE_DAYS = 90;
 
 const STALE_MS = STALE_DAYS * 24 * 60 * 60 * 1000;
+
+/**
+ * Categories where the action-verb lesson-quality heuristic applies.
+ *
+ * Workflow `patterns` are meant to be reusable "do it this way next time"
+ * prescriptions. A pattern whose text contains no imperative/action verb is
+ * usually too abstract for the agent to reuse and is flagged as a weak lesson.
+ *
+ * We intentionally do NOT apply this to `cases` (problem/solution pairs whose
+ * text may be descriptive), `events` (append-only log), `profile`/`preferences`
+ * (static facts), or `entities` (noun-centric).
+ *
+ * Inspired by KarryViber/Orb `lib/holographic/memory-lint.py`.
+ */
+const LESSON_CATEGORIES = new Set(["patterns"]);
+
+/**
+ * Regex matching action/imperative verbs used to judge whether a workflow
+ * pattern is actionable. Bilingual: English word-bounded; Chinese substring
+ * (CJK has no word boundaries).
+ *
+ * Intentionally wide — false-negatives here are benign (a weak-lesson flag is
+ * an `info` hint, not an error). We only want to catch patterns that are pure
+ * observations/descriptions with no prescriptive action at all.
+ */
+const ACTION_VERBS = /\b(check|verify|validate|ensure|use|avoid|implement|run|call|set|add|remove|update|refactor|test|document|commit|push|rollback|escalate|stop|retry|install|configure|create|delete|write|read|spawn|enable|disable|init|start|restart|launch|store|fetch|query|log|match|replace|generate|prefer|require|invoke|route|build|deploy|review|fix|parse|apply|assert|include|exclude|skip|catch|throw|wrap|mock|mount|import|export|inject|extract|prepend|append|return|raise|cache|clear|reset|refresh|merge|split|rename|move|copy|scan|patrol|trigger|schedule|observe|record|emit|publish|subscribe|notify|confirm|choose|select|filter|sort|group|reduce|map|forward|resolve|reject)\b|使用|避免|检查|验证|确认|添加|删除|修改|改为|回滚|停止|重试|安装|配置|运行|调用|启用|禁用|生成|初始化|启动|重启|存储|获取|查询|记录|匹配|替换|创建|写入|读取|强制|禁止|必须|应当|保留|抛出|捕获|重构|部署|审查|修复|解析|应用|断言|包含|排除|跳过|合并|拆分|重命名|移动|复制|刷新|重置|清理|缓存|注入|提取|追加|遍历|订阅|发布|通知|选择|筛选|排序|触发|观察/iu;
 
 // ---------------------------------------------------------------------------
 // Contradiction Detection (inline copy from consolidation-engine.ts)
@@ -280,6 +310,42 @@ function findOrphans(entries: MemoryEntry[]): LintFinding[] {
 }
 
 // ---------------------------------------------------------------------------
+// Check 5: Weak Lessons (action-verb heuristic)
+// ---------------------------------------------------------------------------
+
+/**
+ * Identify "weak lessons" — workflow `patterns` whose text contains no
+ * imperative/action verb. Such entries are usually descriptive rather than
+ * prescriptive, so the agent cannot act on them next time.
+ *
+ * Severity is `info` (not warning/error): this is a quality hint, not a bug.
+ * Low penalty (see computeHealthScore) reflects that.
+ *
+ * Inspired by KarryViber/Orb `lib/holographic/memory-lint.py`.
+ */
+function findWeakLessons(entries: MemoryEntry[]): LintFinding[] {
+  const findings: LintFinding[] = [];
+
+  for (const entry of entries) {
+    if (!LESSON_CATEGORIES.has(entry.category)) continue;
+
+    // Empty/whitespace text is caught elsewhere; skip to avoid double-flagging.
+    if (!entry.text || entry.text.trim() === "") continue;
+
+    if (ACTION_VERBS.test(entry.text)) continue;
+
+    findings.push({
+      check: "weakLesson",
+      severity: "info",
+      detail: `Pattern without action verbs (too abstract to reuse): "${truncate(entry.text, 60)}"`,
+      memoryIds: [entry.id],
+    });
+  }
+
+  return findings;
+}
+
+// ---------------------------------------------------------------------------
 // Health Score
 // ---------------------------------------------------------------------------
 
@@ -291,16 +357,27 @@ function findOrphans(entries: MemoryEntry[]): LintFinding[] {
  * - Duplicates: -5 each (waste and confusion risk)
  * - Stale: -0.5 each (minor, many are expected)
  * - Orphans: -3 each (moderate, broken references)
+ * - Weak lessons: -2 each (pattern lacks action verbs, reuse-unfriendly)
+ *
+ * `weakLessons` is optional on the input type for backward compatibility —
+ * callers constructing `summary` without this field still get a correct score.
  */
 export function computeHealthScore(
-  summary: MemoryLintReport["summary"],
+  summary: {
+    contradictions: number;
+    duplicates: number;
+    staleMemories: number;
+    orphans: number;
+    weakLessons?: number;
+  },
   _total: number,
 ): number {
   const penalty =
     summary.contradictions * 10 +
     summary.duplicates * 5 +
     Math.floor(summary.staleMemories * 0.5) +
-    summary.orphans * 3;
+    summary.orphans * 3 +
+    (summary.weakLessons ?? 0) * 2;
 
   return Math.max(0, Math.min(100, 100 - penalty));
 }
@@ -328,14 +405,16 @@ export async function runMemoryLint(deps: LintDeps): Promise<MemoryLintReport> {
   const duplicates = findDuplicates(entries);
   const stale = findStaleMemories(entries);
   const orphans = findOrphans(entries);
+  const weakLessons = findWeakLessons(entries);
 
-  const findings = [...contradictions, ...duplicates, ...stale, ...orphans];
+  const findings = [...contradictions, ...duplicates, ...stale, ...orphans, ...weakLessons];
 
   const summary = {
     contradictions: contradictions.length,
     duplicates: duplicates.length,
     staleMemories: stale.length,
     orphans: orphans.length,
+    weakLessons: weakLessons.length,
   };
 
   return {
@@ -418,6 +497,20 @@ export function formatMemoryLintReport(report: MemoryLintReport): string {
       for (const f of brokenLinks) {
         lines.push(`  - ${f.detail} [${f.memoryIds.map(id => id.slice(0, 8)).join(", ")}]`);
       }
+    }
+    lines.push("");
+  }
+
+  // Weak Lessons
+  if (report.summary.weakLessons > 0) {
+    const items = report.findings.filter(f => f.check === "weakLesson");
+    lines.push(`Weak Lessons (${items.length}):`);
+    if (items.length <= 5) {
+      for (const f of items) {
+        lines.push(`  - ${f.detail} [${f.memoryIds.map(id => id.slice(0, 8)).join(", ")}]`);
+      }
+    } else {
+      lines.push(`  - ${items.length} patterns without action verbs (consider rewriting or promoting)`);
     }
     lines.push("");
   }

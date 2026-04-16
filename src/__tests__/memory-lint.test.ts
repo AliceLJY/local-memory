@@ -196,6 +196,74 @@ describe("runMemoryLint", () => {
     expect(report.totalScanned).toBe(0);
     expect(report.findings).toHaveLength(0);
   });
+
+  // ---- Weak lessons (action-verb heuristic, inspired by Orb) ----------------
+
+  it("flags patterns without any action verb as weak lessons", async () => {
+    const entries = [
+      makeEntry({
+        id: "wl1",
+        text: "This phenomenon is very interesting and noteworthy",
+        category: "patterns",
+        scope: "project:x",
+        vector: [1, 0, 0, 0, 0],
+      }),
+    ];
+    const store = createMockStore(entries);
+    const report = await runMemoryLint({ store });
+
+    expect(report.summary.weakLessons).toBe(1);
+    const finding = report.findings.find(f => f.check === "weakLesson");
+    expect(finding).toBeDefined();
+    expect(finding!.severity).toBe("info");
+    expect(finding!.memoryIds).toContain("wl1");
+  });
+
+  it("does not flag patterns that contain action verbs (English or Chinese)", async () => {
+    const entries = [
+      makeEntry({
+        id: "wl2",
+        text: "Use Bun to run scripts; verify output before committing",
+        category: "patterns",
+        scope: "project:x",
+        vector: [1, 0, 0, 0, 0],
+      }),
+      makeEntry({
+        id: "wl3",
+        text: "使用 playwright 验证网页交互,失败时重试最多三次",
+        category: "patterns",
+        scope: "project:x",
+        vector: [0, 1, 0, 0, 0],
+      }),
+    ];
+    const store = createMockStore(entries);
+    const report = await runMemoryLint({ store });
+
+    expect(report.summary.weakLessons).toBe(0);
+  });
+
+  it("does not flag non-pattern categories for weak lessons (events/profile exempt)", async () => {
+    const entries = [
+      makeEntry({
+        id: "wl4",
+        text: "This phenomenon is interesting",  // no verb, but not a pattern
+        category: "events",
+        scope: "project:x",
+        vector: [1, 0, 0, 0, 0],
+      }),
+      makeEntry({
+        id: "wl5",
+        text: "User background info without verbs",
+        category: "profile",
+        scope: "project:x",
+        vector: [0, 1, 0, 0, 0],
+      }),
+    ];
+    const store = createMockStore(entries);
+    const report = await runMemoryLint({ store });
+
+    expect(report.summary.weakLessons).toBe(0);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -228,7 +296,7 @@ describe("formatMemoryLintReport", () => {
       healthScore: 100,
       totalScanned: 50,
       timestamp: "2026-04-08T12:00:00Z",
-      summary: { contradictions: 0, duplicates: 0, staleMemories: 0, orphans: 0 },
+      summary: { contradictions: 0, duplicates: 0, staleMemories: 0, orphans: 0, weakLessons: 0 },
     };
     const output = formatMemoryLintReport(report);
     expect(output).toContain("All Clear");
@@ -243,7 +311,7 @@ describe("formatMemoryLintReport", () => {
       healthScore: 90,
       totalScanned: 100,
       timestamp: "2026-04-08T12:00:00Z",
-      summary: { contradictions: 1, duplicates: 0, staleMemories: 0, orphans: 0 },
+      summary: { contradictions: 1, duplicates: 0, staleMemories: 0, orphans: 0, weakLessons: 0 },
     };
     const output = formatMemoryLintReport(report);
     expect(output).toContain("Contradictions (1)");
@@ -262,10 +330,26 @@ describe("formatMemoryLintReport", () => {
       healthScore: 95,
       totalScanned: 200,
       timestamp: "2026-04-08T12:00:00Z",
-      summary: { contradictions: 0, duplicates: 0, staleMemories: 10, orphans: 0 },
+      summary: { contradictions: 0, duplicates: 0, staleMemories: 10, orphans: 0, weakLessons: 0 },
     };
     const output = formatMemoryLintReport(report);
     expect(output).toContain("Stale (10)");
     expect(output).toContain("10 memories not accessed");
+  });
+
+  it("renders weak lessons section when present", () => {
+    const report: MemoryLintReport = {
+      findings: [
+        { check: "weakLesson", severity: "info", detail: 'Pattern without action verbs: "X is Y"', memoryIds: ["wl1"] },
+        { check: "weakLesson", severity: "info", detail: 'Pattern without action verbs: "abstract note"', memoryIds: ["wl2"] },
+      ],
+      healthScore: 96,
+      totalScanned: 10,
+      timestamp: "2026-04-16T12:00:00Z",
+      summary: { contradictions: 0, duplicates: 0, staleMemories: 0, orphans: 0, weakLessons: 2 },
+    };
+    const output = formatMemoryLintReport(report);
+    expect(output).toContain("Weak Lessons (2)");
+    expect(output).toContain("96/100");
   });
 });
