@@ -10,6 +10,7 @@ import { logWarn } from "./stderr-log.js";
 import type { DurableMemoryCategory } from "./memory-schema.js";
 import { matchesScopeFilter } from "./scope-policy.js";
 import { detectEmotionIfEnabled } from "./emotion-detector.js";
+import type { MemoryStorePort, MemoryStoreStats, MemoryStoreUpdate } from "./memory-store-port.js";
 
 // ============================================================================
 // Types
@@ -211,7 +212,7 @@ export function validateStoragePath(dbPath: string): string {
 
 const TABLE_NAME = "memories";
 
-export class MemoryStore {
+export class MemoryStore implements MemoryStorePort {
   private db: LanceDB.Connection | null = null;
   private table: LanceDB.Table | null = null;
   private initPromise: Promise<void> | null = null;
@@ -790,11 +791,7 @@ export class MemoryStore {
     return result;
   }
 
-  async stats(scopeFilter?: string[]): Promise<{
-    totalCount: number;
-    scopeCounts: Record<string, number>;
-    categoryCounts: Record<string, number>
-  }> {
+  async stats(scopeFilter?: string[]): Promise<MemoryStoreStats> {
     await this.ensureInitialized();
 
     let query = this.table!.query();
@@ -874,7 +871,7 @@ export class MemoryStore {
 
   async update(
     id: string,
-    updates: { text?: string; vector?: number[]; importance?: number; category?: MemoryEntry["category"]; metadata?: string; timestamp?: number; language?: string; fts_text?: string },
+    updates: MemoryStoreUpdate,
     scopeFilter?: string[]
   ): Promise<MemoryEntry | null> {
     await this.ensureInitialized();

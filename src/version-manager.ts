@@ -12,7 +12,8 @@
  * available for re-evaluation.
  */
 
-import type { MemoryEntry, MemoryStore } from "./store.js";
+import type { MemoryEntry } from "./store.js";
+import type { MemoryStorePort } from "./memory-store-port.js";
 import { logInfo } from "./stderr-log.js";
 
 // ============================================================================
@@ -43,7 +44,7 @@ export interface VersionGroupMetadata {
  * @returns The version_group ID
  */
 export async function createVersionGroup(
-  store: MemoryStore,
+  store: Pick<MemoryStorePort, "update">,
   canonical: MemoryEntry,
   member: MemoryEntry,
   scope: string,

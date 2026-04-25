@@ -505,7 +505,7 @@ describe("F-2 integration: retention policy + auto-gc", () => {
     const updates: Array<{ id: string; metadata: string }> = [];
     return {
       store: {
-        stats: async () => ({ total: data.size }),
+        stats: async () => ({ totalCount: data.size, scopeCounts: {}, categoryCounts: {} }),
         list: async () => Array.from(data.values()),
         update: async (id: string, patch: { metadata: string }) => {
           updates.push({ id, metadata: patch.metadata });
@@ -807,7 +807,7 @@ describe("F-1 integration: audit logger", () => {
     const activeMeta = JSON.stringify({ evolution: { status: "active", version: 1, accessCount: 0, lastAccessedAt: null, validFrom: oldTs, validUntil: null } });
 
     const store = {
-      async stats() { return { total: 100 }; },
+      async stats() { return { totalCount: 100, scopeCounts: {}, categoryCounts: {} }; },
       async list() { return [{ id: "gc-1", text: "old", importance: 0.1, timestamp: oldTs, metadata: activeMeta, category: "events", scope: "project:test" }]; },
       async update(id: string, upd: Record<string, unknown>) { return { id, ...upd }; },
     };

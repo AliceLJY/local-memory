@@ -50,7 +50,7 @@ function createMockStore(entries: MemoryEntry[]) {
       const filtered = [...data.values()].filter(
         e => !scopeFilter || scopeFilter.some(s => e.scope === s),
       );
-      return { total: filtered.length, byCategory: {}, byScope: {} };
+      return { totalCount: filtered.length, scopeCounts: {}, categoryCounts: {} };
     },
     hasFtsSupport: false,
   } as any;

@@ -9,7 +9,7 @@
  * instead of raw age/importance heuristics. Archive-first, delete-never.
  */
 
-import type { MemoryStore } from "./store.js";
+import type { MemoryStorePort } from "./memory-store-port.js";
 import {
   parseEvolution,
   computeDecayScore,
@@ -73,13 +73,13 @@ export interface GcResult {
  * - Not pinned (importance >= 0.95 is considered pinned)
  */
 export async function maybeRunGc(
-  store: MemoryStore,
+  store: MemoryStorePort,
   config: AutoGcConfig = DEFAULT_AUTO_GC_CONFIG,
   retentionConfigDir?: string,
   auditLogger?: AuditLogger,
 ): Promise<GcResult> {
   const stats = await store.stats();
-  const totalMemories = stats.total ?? 0;
+  const totalMemories = stats.totalCount ?? 0;
 
   // Condition 1: enough memories to warrant GC
   if (totalMemories < config.minMemoryCount) {
@@ -100,7 +100,7 @@ export async function maybeRunGc(
   let totalChecked = 0;
 
   // Scan memories by listing them
-  const entries = await store.list({ limit: 5000 });
+  const entries = await store.list(undefined, undefined, 5000, 0);
   totalChecked = entries.length;
 
   // Pre-compute per-scope active memory counts and cache retention policies.

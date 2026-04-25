@@ -10,7 +10,8 @@
  * reason is operational hygiene.
  */
 
-import type { MemoryStore } from "./store.js";
+import type { MemoryEntry } from "./store.js";
+import type { MemoryStorePort } from "./memory-store-port.js";
 import { ConsolidationEngine, type ConsolidationConfig, type ConsolidationResult, DEFAULT_CONSOLIDATION_CONFIG } from "./consolidation-engine.js";
 import type { LLMClient } from "./llm-client.js";
 import { isLLMConsolidationEnabled, evaluateCluster, executeMergeDecisions } from "./llm-consolidation.js";
@@ -54,16 +55,20 @@ export interface AutoConsolidationResult {
 /**
  * Check conditions and run consolidation if thresholds are met.
  * Returns immediately if conditions not met (no-op).
+ *
+ * @deprecated Prefer dream-pipeline.ts for full maintenance. This module is
+ * kept for compatibility with callers that only need count/time-gated
+ * consolidation.
  */
 export async function maybeConsolidate(
-  store: MemoryStore,
+  store: MemoryStorePort,
   scope: string,
   config: AutoConsolidationConfig = DEFAULT_AUTO_CONSOLIDATION_CONFIG,
   /** Tier 3.7: Optional LLM client for semantic consolidation decisions */
   llm?: LLMClient | null,
 ): Promise<AutoConsolidationResult> {
   const stats = await store.stats([scope]);
-  const currentCount = stats.total ?? 0;
+  const currentCount = stats.totalCount ?? 0;
 
   // Condition 1: enough new memories since last run
   const newSinceLastRun = currentCount - lastRunMemoryCount;

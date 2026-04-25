@@ -14,7 +14,7 @@
  * LLM-driven consolidation for semantic-level maintenance.
  */
 
-import type { MemoryStore } from "./store.js";
+import type { MemoryStorePort } from "./memory-store-port.js";
 import type { LLMClient } from "./llm-client.js";
 import type { Embedder } from "./embedder.js";
 import { ConsolidationEngine, clusterAndConsolidate, DEFAULT_CONSOLIDATION_CONFIG } from "./consolidation-engine.js";
@@ -76,7 +76,7 @@ export interface DreamResult {
 // ---------------------------------------------------------------------------
 
 export async function runDream(params: {
-  store: MemoryStore;
+  store: MemoryStorePort;
   llm: LLMClient | null;
   embedder: Pick<Embedder, "embedPassage">;
   scope: string;

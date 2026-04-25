@@ -57,7 +57,7 @@ describe("B-2: Archive Strategy", () => {
       const updates: Array<{ id: string; metadata: string }> = [];
       return {
         store: {
-          stats: async () => ({ total: data.size }),
+          stats: async () => ({ totalCount: data.size, scopeCounts: {}, categoryCounts: {} }),
           list: async () => Array.from(data.values()),
           update: async (id: string, patch: { metadata: string }) => {
             updates.push({ id, metadata: patch.metadata });

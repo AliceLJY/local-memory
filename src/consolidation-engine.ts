@@ -17,7 +17,8 @@
  * LLM-free — deterministic clustering and merge only.
  */
 
-import type { MemoryEntry, MemorySearchResult, MemoryStore } from "./store.js";
+import type { MemoryEntry, MemorySearchResult } from "./store.js";
+import type { MemoryStorePort } from "./memory-store-port.js";
 import { createVersionGroup } from "./version-manager.js";
 import { isActiveMemory, parseEvolution, buildSupersedeMetadata, buildConsolidatedMetadata, patchEvolution } from "./memory-evolution.js";
 import { cosineSimilarity } from "./multi-vector.js";
@@ -108,7 +109,7 @@ export function detectHeuristicContradiction(textA: string, textB: string): bool
 // Store interface (duck-typed to avoid hard dependency)
 // ---------------------------------------------------------------------------
 
-type ConsolidationStore = Pick<MemoryStore, "list" | "getById" | "vectorSearch" | "update">;
+type ConsolidationStore = Pick<MemoryStorePort, "list" | "getById" | "vectorSearch" | "update">;
 
 // ---------------------------------------------------------------------------
 // Engine
@@ -278,7 +279,7 @@ export async function clusterAndConsolidate(params: {
   entries: MemoryEntry[];
   embedder: Pick<Embedder, "embedPassage">;
   llm: LLMClient;
-  store: Pick<MemoryStore, "store" | "update">;
+  store: Pick<MemoryStorePort, "store" | "update">;
   scope: string;
   /** Minimum cluster size to trigger consolidation (default: 3) */
   minClusterSize?: number;

@@ -7,9 +7,9 @@
  * can search your indexed conversations.
  *
  * Tool tiers:
- * - core: Always exposed (5 tools)
- * - advanced: Exposed by default, includes core (15 tools)
- * - full: All tools including governance (24 tools)
+ * - core: Always exposed (7 tools)
+ * - advanced: Exposed by default, includes core (30 tools)
+ * - full: All tools including governance (41 tools)
  *
  * Control: RECALLNEST_MCP_TIER=core|advanced|full
  */

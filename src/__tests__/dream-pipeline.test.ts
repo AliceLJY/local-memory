@@ -44,7 +44,6 @@ function createMockStore(entries: MemoryEntry[]): MemoryStore {
     async stats() {
       return {
         totalCount: stored.length,
-        total: stored.length,
         scopeCounts: {},
         categoryCounts: {},
       };

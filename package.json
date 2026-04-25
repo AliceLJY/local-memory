@@ -22,6 +22,7 @@
     "clean-briefs": "bun run src/cli.ts clean-briefs --apply",
     "test": "bun test",
     "test:core": "bun test src/__tests__/scope-policy.test.ts src/__tests__/core-recall-eval.test.ts src/__tests__/capture-engine.test.ts src/__tests__/store-scope-audit.test.ts src/__tests__/scope-inventory.test.ts src/__tests__/workflow-observation.test.ts src/__tests__/resume-context.test.ts src/__tests__/term-registry.test.ts",
+    "test:contracts": "bun test src/__tests__/contracts.test.ts",
     "eval": "bun run src/eval.ts",
     "eval:continuity": "bun run src/eval.ts --mode continuity --cases eval/continuity/cases.json",
     "profiles": "bun run src/cli.ts profiles",
