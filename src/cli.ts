@@ -11,7 +11,7 @@
 
 import { Command } from "commander";
 import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { homedir } from "node:os";
 
 import { metaDir } from "./compat.js";
@@ -65,47 +65,63 @@ import { collectScopeInventory, formatScopeInventoryReport } from "./scope-inven
 import { buildRetrievalContext, resolveScopeSelection } from "./scope-policy.js";
 
 /**
- * Auto-detect Claude Code transcript directory.
- * Scans ~/.claude/projects/ for subdirectories containing .jsonl files.
+ * Auto-detect Claude Code transcript directories.
+ * Scans ~/.claude/projects/ for ALL subdirectories containing .jsonl files.
+ *
+ * CC 按 cwd 编码 project 子目录，凡是不在 ~ 下跑的会话（Codex spawn 的子进程 / cd 到 repo 跑 /
+ * bridge 临时工作目录）会落到 ~/.claude/projects/-XXX/ 别的子目录。旧版只挑 jsonl 最多的根
+ * 目录返回，导致 28+ 个子目录全失声。修复：返回所有有 jsonl 的子目录，调用方循环 ingest。
  */
-function detectCCPath(): string | null {
+function detectCCPath(): string[] {
   const projectsDir = join(homedir(), ".claude", "projects");
-  if (!existsSync(projectsDir)) return null;
+  if (!existsSync(projectsDir)) return [];
   try {
-    const dirs = readdirSync(projectsDir, { withFileTypes: true })
+    return readdirSync(projectsDir, { withFileTypes: true })
       .filter(d => d.isDirectory())
-      .map(d => join(projectsDir, d.name));
-    // Pick the directory with most .jsonl files
-    let best = "";
-    let bestCount = 0;
-    for (const dir of dirs) {
-      const jsonlCount = readdirSync(dir).filter(f => f.endsWith(".jsonl")).length;
-      if (jsonlCount > bestCount) {
-        bestCount = jsonlCount;
-        best = dir;
-      }
-    }
-    return best || null;
+      .map(d => join(projectsDir, d.name))
+      .filter(dir => {
+        try { return readdirSync(dir).some(f => f.endsWith(".jsonl")); }
+        catch { return false; }
+      });
   } catch {
-    return null;
+    return [];
   }
 }
 
 /**
+ * Pick the CC project subdirectory with the most jsonl files (heuristic: user's primary cwd).
+ * Used by memory source which still expects a single directory.
+ */
+function pickPrimaryCCPath(detected: string[]): string {
+  let best = detected[0];
+  let bestCount = 0;
+  for (const dir of detected) {
+    try {
+      const c = readdirSync(dir).filter(f => f.endsWith(".jsonl")).length;
+      if (c > bestCount) { bestCount = c; best = dir; }
+    } catch { /* skip */ }
+  }
+  return best;
+}
+
+/**
  * Resolve "auto" paths in config to actual directories.
+ *
+ * Note: cc 分支只返回第一个 detect 到的目录（fallback），ingest 入口已改为直接调
+ * detectCCPath() 拿全量子目录循环处理。这里保留是为兼容潜在的其它调用方。
  */
 function resolveSourcePath(source: string, key: string): string {
   if (source !== "auto") return expandHome(source);
 
   if (key === "cc") {
     const detected = detectCCPath();
-    if (!detected) throw new Error("Could not auto-detect Claude Code transcript path. Set sources.cc.path in config.json.");
-    return detected;
+    if (detected.length === 0) throw new Error("Could not auto-detect Claude Code transcript path. Set sources.cc.path in config.json.");
+    return pickPrimaryCCPath(detected);
   }
   if (key === "memory") {
-    const ccPath = detectCCPath();
-    if (!ccPath) throw new Error("Could not auto-detect memory path. Set sources.memory.path in config.json.");
-    return join(ccPath, "memory");
+    const detected = detectCCPath();
+    if (detected.length === 0) throw new Error("Could not auto-detect memory path. Set sources.memory.path in config.json.");
+    return join(pickPrimaryCCPath(detected), "memory");
   }
   throw new Error(`Cannot auto-detect path for source "${key}". Set it manually in config.json.`);
 }
@@ -1376,15 +1392,23 @@ program
     const ingestOpts = { limit, verbose, noDedup, llm: effectiveLlm, recentHours };
 
     // CC Transcripts
+    // CC 按 cwd 编码 project 子目录，所有有 jsonl 的子目录都要 ingest（不只是 jsonl 最多的那个）
     if (source === "all" || source === "cc") {
       console.log("📝 导入 Claude Code 对话...");
       const ccSource = config.sources.cc;
       if (ccSource) {
-        const ccPath = resolveSourcePath(ccSource.path, "cc");
-        const r = await ingestCCTranscripts(store, embedder, ccPath, ingestOpts);
-        results.push(r);
-        console.log(`  ✅ CC: ${formatIngestSummary(r)}`);
-        maybeWarnHighCCDedupRate(r);
+        const ccPaths = ccSource.path === "auto"
+          ? detectCCPath()
+          : [expandHome(ccSource.path)];
+        if (ccPaths.length === 0) {
+          throw new Error("Could not auto-detect Claude Code transcript path. Set sources.cc.path in config.json.");
+        }
+        for (const ccPath of ccPaths) {
+          const r = await ingestCCTranscripts(store, embedder, ccPath, ingestOpts);
+          results.push(r);
+          console.log(`  ✅ CC [${basename(ccPath)}]: ${formatIngestSummary(r)}`);
+          maybeWarnHighCCDedupRate(r);
+        }
       }
     }
 
