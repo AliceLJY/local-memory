@@ -1898,14 +1898,14 @@ registerTool(
     );
 
     const lines = [
-      `Microcompact: ${result.microcompact.toolsCleared} tool results cleared, ~${result.microcompact.tokensFreed} tokens freed`,
+      `Microcompact: ${result.microcompact.tools_cleared} tool results cleared, ~${result.microcompact.tokens_freed} tokens freed`,
     ];
     if (result.summary) {
       lines.push(`Summary: 9-dimension structured summary generated`);
     }
     if (result.persisted) {
       const p = result.persisted;
-      lines.push(`Persisted: ${p.memoriesStored} stored, ${p.memoriesDeduped} deduped, ${p.memoriesConflicted} conflicted, ${p.memoriesRejected} rejected`);
+      lines.push(`Persisted: ${p.memories_stored} stored, ${p.memories_deduped} deduped, ${p.memories_conflicted} conflicted`);
     }
 
     return {
