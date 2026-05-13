@@ -1892,7 +1892,7 @@ registerTool(
     const { distillSession } = await import("./session-distiller.js");
 
     const result = await distillSession(
-      { messages, scope, preserveRecent, keepRecentTools, persist },
+      messages,
       {
         llm: llmClient,
         persistMemory: async (input) => {
@@ -1902,6 +1902,7 @@ registerTool(
           return { disposition: stored.disposition, id: stored.id };
         },
       },
+      { scope, preserveRecent, keepRecentTools, persist },
     );
 
     const lines = [
