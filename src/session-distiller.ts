@@ -93,6 +93,12 @@ const DIMENSION_TO_MEMORY: Record<string, DimensionMapping> = {
   errors_and_fixes: { category: "cases", importance: 0.7 },
   problem_solving: { category: "patterns", importance: 0.8 },
   user_quotes: { category: "preferences", importance: 0.7 },
+  // 2026-05-13 P1.2: 加 unfinished_tasks + next_steps 持久化映射
+  // LLM 早在 DEFAULT_DIMENSION_LABELS 行 74/76 已产出这两条，但缺映射被丢弃
+  // 都映射到 cases/patterns 走 tag 兜底（extractAndPersist 自动加 tags: ["session_distill", dimKey]）
+  // 未来如要 unresolved-first 召回，按 tags 含 "unfinished_tasks" 过滤即可
+  unfinished_tasks: { category: "cases", importance: 0.75 },
+  next_steps: { category: "patterns", importance: 0.65 },
 };
 
 // ============================================================================

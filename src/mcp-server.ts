@@ -1893,15 +1893,7 @@ registerTool(
 
     const result = await distillSession(
       messages,
-      {
-        llm: llmClient,
-        persistMemory: async (input) => {
-          const stored = await persistMemory({
-            store, embedder, conflictStore, kgExtractor,
-          }, input);
-          return { disposition: stored.disposition, id: stored.id };
-        },
-      },
+      { llm: llmClient, store, embedder, conflictStore, kgExtractor },
       { scope, preserveRecent, keepRecentTools, persist },
     );
 

@@ -375,18 +375,47 @@ describe("extractAndPersist", () => {
   });
 
   it("skips dimensions not in DIMENSION_TO_MEMORY mapping", async () => {
+    // Note: 2026-05-13 P1.2 added unfinished_tasks + next_steps to DIMENSION_TO_MEMORY.
+    // Remaining unmapped dims from DEFAULT_DIMENSION_LABELS: technical_concepts, current_state.
     const { deps } = createMockDeps();
     const summary: SummaryResult = {
       text: "summary",
       dimensions: {
         technical_concepts: "TypeScript and Bun runtime details",
         current_state: "Implementation complete, testing phase",
-        next_steps: "Deploy to production",
       },
     };
 
     const result = await extractAndPersist(summary, deps as Parameters<typeof extractAndPersist>[1], "project:test");
     expect(result.memories_stored).toBe(0);
+  });
+
+  it("persists unfinished_tasks (P1.2 regression 2026-05-13: dim added to DIMENSION_TO_MEMORY)", async () => {
+    const { deps } = createMockDeps();
+    const summary: SummaryResult = {
+      text: "summary",
+      dimensions: {
+        unfinished_tasks: "TODO: integrate Sentinel-Core monitoring for aws-podcast bot",
+      },
+    };
+    const result = await extractAndPersist(summary, deps as Parameters<typeof extractAndPersist>[1], "project:p1.2-unfinished");
+    // Before P1.2 fix: this dim was not in DIMENSION_TO_MEMORY → silently dropped → memories_stored=0
+    // After fix: dim mapped to cases category → persisted → memories_stored=1
+    expect(result.memories_stored).toBe(1);
+    expect(result.ids).toHaveLength(1);
+  });
+
+  it("persists next_steps (P1.2 regression 2026-05-13: dim added to DIMENSION_TO_MEMORY)", async () => {
+    const { deps } = createMockDeps();
+    const summary: SummaryResult = {
+      text: "summary",
+      dimensions: {
+        next_steps: "Next: review CodexCLI image_in workflow + write antibot Sentinel-Core spec",
+      },
+    };
+    const result = await extractAndPersist(summary, deps as Parameters<typeof extractAndPersist>[1], "project:p1.2-nextsteps");
+    expect(result.memories_stored).toBe(1);
+    expect(result.ids).toHaveLength(1);
   });
 
   it("returns empty result for empty dimensions", async () => {
