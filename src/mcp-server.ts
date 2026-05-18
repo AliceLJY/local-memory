@@ -87,6 +87,7 @@ import { autoRegisterBabelMemory } from "./language-hook.js";
 import { z } from "zod";
 import type { RetrievalResult } from "./retriever.js";
 import type { MemoryStore } from "./store.js";
+import type { LLMClient } from "./llm-client.js";
 import { distillResults, formatExplainResults, formatSearchResults, formatBriefResults, formatFullResults, selectBriefSeedResults, summarizeResults } from "./memory-output.js";
 import { archiveDirtyBriefAsset, assetSummaryLine, buildBriefAsset, buildPinAsset, listDirtyBriefAssets, listMemoryAssets, listPinAssets, saveBriefAsset, savePinAsset, writeExportArtifact } from "./memory-assets.js";
 import { indexAsset, indexPinnedAsset } from "./asset-sync.js";
@@ -158,7 +159,13 @@ async function saveManagedObservation(observation: Parameters<typeof buildWorkfl
 loadDotEnv();
 const config = loadConfig();
 const getComponents = createComponentResolver(config);
-const { store, llm } = getComponents();
+// Lazy: components (embedder/store/retriever/LLM client) are heavy (~8s incl.
+// LanceDB + LLM client). Constructing at module top-level blocked the stdio
+// `initialize` handshake (server.connect is at EOF), making headless `claude -p`
+// cron runs fail with "✗ Failed to connect". getComponents() is a memoized
+// factory (runtime-config.ts), so deferring to first tool call is free.
+let store!: MemoryStore;
+let llm: LLMClient | null = null;
 const checkpointStore = new SessionCheckpointStore();
 const conflictStore = new ConflictCandidateStore();
 const workflowObservationStore = new WorkflowObservationStore();
@@ -166,17 +173,29 @@ const workflowObservationStore = new WorkflowObservationStore();
 // Tier 4.1: Knowledge Graph triple extraction (gated by RECALLNEST_KG_MODE=true)
 let kgExtractor: KGExtractor | null = null;
 let kgStoreInstance: KGStore | null = null;
-if (isKGModeEnabled() && llm) {
-  try {
-    kgStoreInstance = new KGStore({ dbPath: store.dbPath });
-    kgExtractor = createKGExtractor({ llmClient: llm, kgStore: kgStoreInstance });
-    // Attach KG store to default retriever for PPR graph traversal
-    const { retriever } = getComponents();
-    retriever.setKGStore(kgStoreInstance);
-    console.error("[RecallNest] KG triple extraction + graph traversal enabled");
-  } catch (err) {
-    console.error("[RecallNest] KG init failed:", err);
-  }
+
+// Idempotent + concurrency-safe lazy component init. Runs on first tool call
+// (via registerTool wrapper), NOT during the MCP handshake — so server.connect()
+// answers `initialize` immediately and headless cron no longer times out.
+let componentsReady: Promise<void> | null = null;
+function ensureComponents(): Promise<void> {
+  if (componentsReady) return componentsReady;
+  componentsReady = (async () => {
+    ({ store, llm } = getComponents());
+    if (isKGModeEnabled() && llm) {
+      try {
+        kgStoreInstance = new KGStore({ dbPath: store.dbPath });
+        kgExtractor = createKGExtractor({ llmClient: llm, kgStore: kgStoreInstance });
+        // Attach KG store to default retriever for PPR graph traversal
+        const { retriever } = getComponents();
+        retriever.setKGStore(kgStoreInstance);
+        console.error("[RecallNest] KG triple extraction + graph traversal enabled");
+      } catch (err) {
+        console.error("[RecallNest] KG init failed:", err);
+      }
+    }
+  })();
+  return componentsReady;
 }
 
 const server = new McpServer({
@@ -201,7 +220,13 @@ function registerTool(name: string, description: string, schema: ToolSchema, han
     return;
   }
   TOOL_DESCRIPTIONS.set(name, description);
-  server.tool(name, description, schema, handler);
+  // Lazy-init guard: defer heavy component construction to first tool call so the
+  // MCP handshake (initialize / tools/list) isn't blocked. tools/call enters here.
+  const lazyHandler = (async (...args: unknown[]) => {
+    await ensureComponents();
+    return (handler as (...a: unknown[]) => unknown)(...args);
+  }) as ToolHandler;
+  server.tool(name, description, schema, lazyHandler);
 }
 
 registerTool(
