@@ -7,6 +7,7 @@ import type { MemoryStore, MemorySearchResult } from "./store.js";
 import type { Embedder } from "./embedder.js";
 import { filterNoise } from "./noise-filter.js";
 import { shouldSkipRetrieval } from "./adaptive-retrieval.js";
+import { expandQueryWithAliases } from "./aliases.js";
 import { expandQuery } from "./query-expander.js";
 import { detectLang, tokenizeFts } from "./language-hook.js";
 import { type AccessTracker, computeHotnessScore, parseAccessMetadata } from "./access-tracker.js";
@@ -687,13 +688,17 @@ export class MemoryRetriever {
   }
 
   async retrieve(context: RetrievalContext): Promise<RetrievalResultSet> {
-    const { query, limit, scopeFilter, category, includeArchived, trace, graph } = context;
+    const { query: rawQuery, limit, scopeFilter, category, includeArchived, trace, graph } = context;
     const safeLimit = clampInt(limit, 1, 20);
 
     // Adaptive retrieval: skip trivial queries to save embedding API calls
-    if (shouldSkipRetrieval(query)) {
+    if (shouldSkipRetrieval(rawQuery)) {
       return [];
     }
+
+    // Step 2: alias expansion — append canonical entity tokens for matching colloquial phrases.
+    // 不改原 query，仅追加，保留 vector embedding 原意；BM25 拿到更多锚点。
+    const query = expandQueryWithAliases(rawQuery);
 
     let results: RetrievalResult[];
 
