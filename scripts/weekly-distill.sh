@@ -41,6 +41,11 @@ if [ "$STATUS_LINE" = "[[DISTILL_STATUS]] ok" ]; then
 fi
 
 REASON="${STATUS_LINE:-无 [[DISTILL_STATUS]] 标记（疑似 MCP 未连/管线未启动/CC 未跑完）}"
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] 周蒸馏失败 status=${REASON} (claude exit=$CLAUDE_EXIT)"
-osascript -e "display notification \"RN 周蒸馏失败：${REASON}\" with title \"RecallNest\" sound name \"Basso\"" 2>/dev/null || true
+# 半自动方案（2026-05-19 决策）：launchd 非交互路径已知受限(冷启动 30-50s +
+# 鉴权 403，根治成本高)，故 launchd 仅作触发+通知，实际 distill 由人工交互
+# 式 fallback 跑（话术=RecallNest workflow pattern，下方 canonicalKey）。
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] 周蒸馏 launchd 自动未完成 status=${REASON} (claude exit=$CLAUDE_EXIT)"
+echo "[半自动] 请在 mini 交互式 claude 手动跑 distill；话术见 RecallNest workflow pattern:"
+echo "[半自动]   canonicalKey = recallnest-weekly-distill-mcp-coldstart-cli-fallback"
+osascript -e 'display notification "周蒸馏需手动跑：mini 交互 claude + pattern …coldstart-cli-fallback" with title "RecallNest 半自动" sound name "Basso"' 2>/dev/null || true
 exit 1

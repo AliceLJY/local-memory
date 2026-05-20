@@ -16,7 +16,20 @@ log() {
   echo "$msg" | tee -a "$LOG" "$ROTATING_LOG"
 }
 
+register_codex_projectless_threads() {
+  local registrar="$HOME/recallnest/scripts/codex-projectless-register.py"
+  if [ ! -x "$registrar" ]; then
+    log "⚠️ Codex projectless registrar 不存在，跳过"
+    return 0
+  fi
+  log "→ register Codex vscode/user threads as projectless"
+  "$registrar" --all-vscode-user >> "$ROTATING_LOG" 2>&1 \
+    || log "⚠️ Codex projectless registrar 失败 exit=$?"
+}
+
 log "=== pull 开始 ==="
+
+register_codex_projectless_threads
 
 # 1. 检测 MacBook 是否在线（ssh 5 秒超时）
 if ! ssh -o ConnectTimeout=5 -o BatchMode=yes mac 'echo online' >/dev/null 2>&1; then
@@ -88,6 +101,8 @@ os.replace(tmp, target)
 print(f"merged Codex session_index entries={len(entries)}")
 PY
 fi
+
+register_codex_projectless_threads
 
 # 5. 触发 incremental-ingest（无论上面有没有 partial 失败，已拉到的部分也值得 ingest）
 if [ $EC -eq 0 ]; then
