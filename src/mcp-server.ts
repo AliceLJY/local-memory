@@ -979,6 +979,27 @@ registerTool(
       operation: "search_memory",
     }));
 
+    // Scope 0-hit fallback: 用户给的 scope 太严返回 0 hit 时，自动 allScopes=true 重试一次。
+    // 仅在 !allScopes 时触发，避免重复跨 scope 搜。
+    if (results.length === 0 && !allScopes) {
+      results = await retriever.retrieve(buildRetrievalContext({
+        query,
+        limit: (after || before || topicTag) ? limit * 3 : limit,
+        category,
+        scope: undefined,
+        sessionId: undefined,
+        allScopes: true,
+        graph,
+        includeArchived,
+        topicTag,
+        reconstruct,
+        validAt: validAt ? new Date(validAt).getTime() : undefined,
+        includeExpired: includeExpired ?? undefined,
+      }, {
+        operation: "search_memory",
+      }));
+    }
+
     // Explicit temporal filtering from after/before params
     if (after || before) {
       const constraint: TemporalConstraint = {

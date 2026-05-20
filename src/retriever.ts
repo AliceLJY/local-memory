@@ -705,6 +705,16 @@ export class MemoryRetriever {
       results = await this.hybridRetrieval(query, safeLimit, scopeFilter, category, includeArchived, trace, graph);
     }
 
+    // 0-hit fallback: minScore filter 把所有候选过滤光时，放宽阈值（=0）重试一次。
+    // 只在原 path 0 hit 触发；正常召回不受影响。
+    if (results.length === 0) {
+      if (this.config.mode === "vector" || !this.store.hasFtsSupport) {
+        results = await this.vectorOnlyRetrieval(query, safeLimit, scopeFilter, category, includeArchived, trace, 0);
+      } else {
+        results = await this.hybridRetrieval(query, safeLimit, scopeFilter, category, includeArchived, trace, graph, 0);
+      }
+    }
+
     // LME-2: Multi-hop retrieval — extract entities from first-pass results,
     // run focused follow-up queries, merge to improve cross-session coverage.
     const useMultiHop = context.multiHop ?? this.config.multiHop ?? false;
@@ -860,6 +870,7 @@ export class MemoryRetriever {
     category?: string,
     includeArchived?: boolean,
     trace?: TraceCollector,
+    minScoreOverride?: number,
   ): Promise<RetrievalResult[]> {
     // Temporal reasoning for vector-only mode
     const temporal = parseTemporalQuery(query);
@@ -867,11 +878,13 @@ export class MemoryRetriever {
 
     trace?.startStage("vector_search", 0);
     const queryVector = await this.embedder.embedQuery(searchQuery);
-    // P0.1: Lower minScore for short queries
+    // P0.1: Lower minScore for short queries; minScoreOverride 用于 0-hit fallback retry
     const shortQ = isShortQuery(searchQuery);
-    const vectorMinScore = shortQ
-      ? this.config.minScore * SHORT_QUERY_MIN_SCORE_FACTOR
-      : this.config.minScore;
+    const vectorMinScore = minScoreOverride !== undefined
+      ? minScoreOverride
+      : (shortQ
+          ? this.config.minScore * SHORT_QUERY_MIN_SCORE_FACTOR
+          : this.config.minScore);
     const results = await this.store.vectorSearch(queryVector, limit, vectorMinScore, scopeFilter);
     trace?.endStage(results.length, results.map(r => r.score));
 
@@ -957,7 +970,9 @@ export class MemoryRetriever {
     const rescored = [...afterSuppression].sort((a, b) => b.score - a.score);
 
     trace?.startStage("hard_min_score", rescored.length);
-    const hardFiltered = rescored.filter(r => r.score >= this.minScoreFor(r.entry.category, shortQ));
+    const hardFiltered = minScoreOverride !== undefined
+      ? rescored
+      : rescored.filter(r => r.score >= this.minScoreFor(r.entry.category, shortQ));
     trace?.endStage(hardFiltered.length, hardFiltered.map(r => r.score));
 
     // Evolution status filter: exclude superseded/archived/consolidated memories
@@ -1007,6 +1022,7 @@ export class MemoryRetriever {
     includeArchived?: boolean,
     trace?: TraceCollector,
     graph?: boolean,
+    minScoreOverride?: number,
   ): Promise<RetrievalResult[]> {
     // Adaptive pool: widen candidate pool for aggregation queries ("how many", "all the")
     const multiplier = (this.config.adaptivePoolMultiplier ?? 1) > 1 && isAggregationQuery(query)
@@ -1070,10 +1086,13 @@ export class MemoryRetriever {
 
     // Apply minimum score threshold
     trace?.startStage("min_score_filter", anchorBoosted.length);
-    // P0.1: Lower minScore for short queries to widen the candidate pool
-    const effectiveMinScore = isShortQuery(searchQuery)
-      ? this.config.minScore * SHORT_QUERY_MIN_SCORE_FACTOR
-      : this.config.minScore;
+    // P0.1: Lower minScore for short queries to widen the candidate pool;
+    // minScoreOverride 用于 retrieve() 顶层的 0-hit fallback retry。
+    const effectiveMinScore = minScoreOverride !== undefined
+      ? minScoreOverride
+      : (isShortQuery(searchQuery)
+          ? this.config.minScore * SHORT_QUERY_MIN_SCORE_FACTOR
+          : this.config.minScore);
     const filtered = anchorBoosted.filter(r => r.score >= effectiveMinScore);
     trace?.endStage(filtered.length, filtered.map(r => r.score));
 
@@ -1149,7 +1168,9 @@ export class MemoryRetriever {
     const rescored = [...frequencyBoosted].sort((a, b) => b.score - a.score);
 
     trace?.startStage("hard_min_score", rescored.length);
-    const hardFiltered = rescored.filter(r => r.score >= this.minScoreFor(r.entry.category, shortQ));
+    const hardFiltered = minScoreOverride !== undefined
+      ? rescored
+      : rescored.filter(r => r.score >= this.minScoreFor(r.entry.category, shortQ));
     trace?.endStage(hardFiltered.length, hardFiltered.map(r => r.score));
 
     // Evolution status filter: exclude superseded/archived/consolidated memories
