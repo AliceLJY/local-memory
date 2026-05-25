@@ -1027,9 +1027,14 @@ export async function ingestCodexSessions(
     errors: [],
   };
 
-  const baseDir = expandHome("~/.codex/sessions");
-  if (!existsSync(baseDir)) {
-    result.errors.push(`Codex sessions directory not found: ${baseDir}`);
+  // 同时扫 sessions（活跃）+ archived_sessions（App 内归档会把文件移到这里，否则会漏）
+  const baseDirs = [
+    expandHome("~/.codex/sessions"),
+    expandHome("~/.codex/archived_sessions"),
+  ];
+  const existingDirs = baseDirs.filter((d) => existsSync(d));
+  if (existingDirs.length === 0) {
+    result.errors.push(`Codex sessions directory not found: ${baseDirs.join(", ")}`);
     return result;
   }
 
@@ -1048,7 +1053,7 @@ export async function ingestCodexSessions(
       }
     }
   }
-  walk(baseDir);
+  for (const dir of existingDirs) walk(dir);
   allFiles.sort();
 
   // --recent: only keep files modified within N hours

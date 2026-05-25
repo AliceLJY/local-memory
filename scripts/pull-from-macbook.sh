@@ -60,6 +60,15 @@ rsync -avz --partial --timeout=120 \
   ~/.codex/sessions/ \
   >> "$ROTATING_LOG" 2>&1 || { EC=$?; log "❌ Codex rsync 失败 exit=$EC"; }
 
+# 3b. rsync Codex archived_sessions（App 内归档会把文件移到此目录，不拉会漏）
+log "→ rsync Codex archived_sessions"
+rsync -avz --partial --timeout=120 \
+  --include='*/' --include='*.jsonl' --exclude='*' \
+  -e "$SSH_OPTS" \
+  mac:~/.codex/archived_sessions/ \
+  ~/.codex/archived_sessions/ \
+  >> "$ROTATING_LOG" 2>&1 || { EC=$?; log "❌ Codex archived rsync 失败 exit=$EC"; }
+
 # 4. rsync Codex session_index（用于 mini 端合并双机索引）
 if ssh -o ConnectTimeout=5 mac 'test -f ~/.codex/session_index.jsonl' 2>/dev/null; then
   log "→ rsync Codex session_index"
