@@ -618,11 +618,19 @@ export class MemoryStore implements MemoryStorePort {
     if (isFullId) {
       candidates = await this.table!.query().where(`id = '${id}'`).limit(1).toArray();
     } else {
-      // Prefix match: fetch candidates and filter in app layer
-      const all = await this.table!.query().select(["id", "scope"]).limit(1000).toArray();
-      candidates = all.filter((r: any) => (r.id as string).startsWith(id));
+      // v2.5.2 (2026-05-27): Use SQL LIKE for prefix lookup instead of app-layer scan
+      // with limit(1000) — the old `.select().limit(1000).filter()` pattern silently
+      // missed entries beyond row 1000 in 90K+ libraries (Codex trio review finding,
+      // ref: ~/Desktop/codex-v2.5.1-fix-review-20260527.md, store.delete limit 漏洞).
+      // Now mirrors getById prefix behavior: LIKE with limit(2) detects ambiguity.
+      const safeId = escapeSqlLiteral(id);
+      candidates = await this.table!.query()
+        .select(["id", "scope"])
+        .where(`id LIKE '${safeId}%'`)
+        .limit(2)
+        .toArray();
       if (candidates.length > 1) {
-        throw new Error(`Ambiguous prefix "${id}" matches ${candidates.length} memories. Use a longer prefix or full ID.`);
+        throw new Error(`Ambiguous prefix "${id}" matches ${candidates.length}+ memories. Use a longer prefix or full ID.`);
       }
     }
     if (candidates.length === 0) {
