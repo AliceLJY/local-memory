@@ -235,7 +235,11 @@ export async function recordSkillOutcome(
     skill: nextSkill,
   });
 
-  const updated = await store.update(skillId, {
+  // Use entry.id (full UUID resolved by getById's prefix lookup) for update,
+  // not skillId (caller-provided, may be 8+ hex prefix). This avoids ambiguous-prefix
+  // mutation risk: if a prefix matched here, update would also need to do prefix
+  // resolution, doubling the chance of writing to the wrong entry.
+  const updated = await store.update(entry.id, {
     metadata: updatedMetadata,
   });
 

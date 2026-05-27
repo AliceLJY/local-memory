@@ -742,18 +742,35 @@ export class MemoryStore implements MemoryStorePort {
   }
 
   /**
-   * Get a single entry by exact ID without scope filtering.
-   * Lightweight read used by AccessTracker for metadata updates.
+   * Get a single entry by ID (full UUID) or 8+ hex prefix.
+   * Lightweight read used by AccessTracker for metadata updates and by skill-engine
+   * for outcome recording.
+   *
+   * v2.5.1 (2026-05-27) — 加 prefix lookup support：和 update() / delete() 行为对齐，
+   * 让 agent 拿到 short id（如 store_skill 返回的 8 位前缀、人类粘贴的截断 id）也能
+   * resolve 到完整 entry。歧义 prefix（匹配 >1 条）返回 null 让 caller 处理。
+   * 现有 caller 全部传完整 UUID，向后兼容。
    */
   async getById(id: string): Promise<MemoryEntry | null> {
     await this.ensureInitialized();
+
+    // Support both full UUID and 8+ hex prefix (same pattern as update() / delete()).
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const prefixRegex = /^[0-9a-f]{8,}$/i;
+    const isFullId = uuidRegex.test(id);
+    const isPrefix = !isFullId && prefixRegex.test(id);
+    if (!isFullId && !isPrefix) return null;
+
     const safeId = escapeSqlLiteral(id);
+    const whereClause = isFullId ? `id = '${safeId}'` : `id LIKE '${safeId}%'`;
+
     const rows = await this.table!.query()
       .select(["id", "text", "vector", "category", "scope", "importance", "timestamp", "metadata"])
-      .where(`id = '${safeId}'`)
-      .limit(1)
+      .where(whereClause)
+      .limit(2) // detect ambiguous prefix (matches >1)
       .toArray();
     if (rows.length === 0) return null;
+    if (isPrefix && rows.length > 1) return null; // ambiguous prefix
     const row = rows[0];
     return {
       id: row.id as string,

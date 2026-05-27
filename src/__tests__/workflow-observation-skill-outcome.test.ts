@@ -35,7 +35,18 @@ function createMockStore() {
         return entries[index];
       },
       async getById(id: string): Promise<MemoryEntry | null> {
-        return entries.find((e) => e.id === id) || null;
+        // Match real store.getById behavior: support full UUID + 8+ hex prefix,
+        // return null on ambiguous prefix (matches >1).
+        const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+        const prefixRegex = /^[0-9a-f]{8,}$/i;
+        const isFullId = uuidRegex.test(id);
+        const isPrefix = !isFullId && prefixRegex.test(id);
+        if (!isFullId && !isPrefix) return null;
+        if (isFullId) return entries.find((e) => e.id === id) || null;
+        const matches = entries.filter((e) => e.id.toLowerCase().startsWith(id.toLowerCase()));
+        if (matches.length === 0) return null;
+        if (matches.length > 1) return null; // ambiguous prefix
+        return matches[0];
       },
       async vectorSearch(): Promise<never[]> {
         return [];
@@ -178,6 +189,65 @@ describe("recordSkillOutcome outcome mapping", () => {
 // recordSkillOutcome — error handling
 // ---------------------------------------------------------------------------
 
+describe("recordSkillOutcome prefix lookup (v2.5.1)", () => {
+  it("resolves 8+ hex prefix to full UUID and bumps successCount", async () => {
+    const mock = createMockStore();
+    const embedder = createMockEmbedder();
+    const stored = await persistSkill(mock.store, embedder, validSkillInput({ name: "skill_prefix_ok" }));
+
+    // store_skill returns full UUID — agent might paste back only the 8-char short alias
+    // (as displayed in the legacy `Stored skill xxx` line). recordSkillOutcome must resolve.
+    const prefix = stored.id.slice(0, 8);
+    expect(prefix.length).toBe(8);
+    expect(prefix).not.toBe(stored.id); // sanity: prefix is shorter
+
+    const result = await recordSkillOutcome(mock.store, prefix, "success");
+
+    expect(result.updated).toBe(true);
+    if (!result.updated) throw new Error("guard");
+    expect(result.successCount).toBe(1);
+    expect(result.failureCount).toBe(0);
+
+    const skill = getSkillMeta(mock.entries[0]);
+    expect(skill.successCount).toBe(1);
+  });
+
+  it("returns skill_not_found for ambiguous prefix (matches >1 skill)", async () => {
+    const mock = createMockStore();
+    const embedder = createMockEmbedder();
+
+    // Force two skills with same 8-char prefix by injecting explicit collision into mock.
+    // We seed entries directly so we can control IDs.
+    mock.entries.push({
+      id: "deadbeef-aaaa-bbbb-cccc-000000000001",
+      text: "skill A",
+      vector: [1, 1, 0],
+      category: "patterns",
+      scope: "project:test",
+      importance: 0.85,
+      timestamp: 1_700_000_000_000,
+      metadata: JSON.stringify({ skill: { name: "skill_a", implementation: "...", successCount: 0, failureCount: 0 } }),
+    });
+    mock.entries.push({
+      id: "deadbeef-aaaa-bbbb-cccc-000000000002",
+      text: "skill B",
+      vector: [1, 1, 0],
+      category: "patterns",
+      scope: "project:test",
+      importance: 0.85,
+      timestamp: 1_700_000_000_001,
+      metadata: JSON.stringify({ skill: { name: "skill_b", implementation: "...", successCount: 0, failureCount: 0 } }),
+    });
+
+    const result = await recordSkillOutcome(mock.store, "deadbeef", "success");
+
+    // Ambiguous prefix → getById returns null → recordSkillOutcome returns skill_not_found
+    expect(result.updated).toBe(false);
+    if (result.updated) throw new Error("guard");
+    expect(result.reason).toBe("skill_not_found");
+  });
+});
+
 describe("recordSkillOutcome error handling", () => {
   it("returns skill_not_found when skillId does not exist (does not throw)", async () => {
     const mock = createMockStore();
@@ -189,8 +259,10 @@ describe("recordSkillOutcome error handling", () => {
 
   it("returns not_a_skill when entry exists but category is not 'patterns'", async () => {
     const mock = createMockStore();
+    // Use a valid UUID format — v2.5.1 getById rejects non-hex IDs (matches real store behavior).
+    const eventId = "aaaaaaaa-bbbb-cccc-dddd-000000000001";
     await mock.store.store({
-      id: "non-skill-entry",
+      id: eventId,
       text: "ordinary event memory",
       vector: [1, 2, 3],
       category: "events",
@@ -199,7 +271,7 @@ describe("recordSkillOutcome error handling", () => {
       metadata: JSON.stringify({ skill: { name: "ghost", implementation: "..." } }),
     });
 
-    const result = await recordSkillOutcome(mock.store, "non-skill-entry", "success");
+    const result = await recordSkillOutcome(mock.store, eventId, "success");
     expect(result.updated).toBe(false);
     if (result.updated) throw new Error("guard");
     expect(result.reason).toBe("not_a_skill");
@@ -207,8 +279,10 @@ describe("recordSkillOutcome error handling", () => {
 
   it("returns skill_metadata_missing when category is 'patterns' but skill metadata is absent", async () => {
     const mock = createMockStore();
+    // Use a valid UUID format — v2.5.1 getById rejects non-hex IDs.
+    const patternId = "bbbbbbbb-cccc-dddd-eeee-000000000002";
     await mock.store.store({
-      id: "patterns-without-skill-block",
+      id: patternId,
       text: "generic pattern",
       vector: [1, 2, 3],
       category: "patterns",
@@ -217,7 +291,7 @@ describe("recordSkillOutcome error handling", () => {
       metadata: JSON.stringify({ tags: ["generic"] }),
     });
 
-    const result = await recordSkillOutcome(mock.store, "patterns-without-skill-block", "success");
+    const result = await recordSkillOutcome(mock.store, patternId, "success");
     expect(result.updated).toBe(false);
     if (result.updated) throw new Error("guard");
     expect(result.reason).toBe("skill_metadata_missing");

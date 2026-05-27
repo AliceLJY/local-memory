@@ -1723,6 +1723,7 @@ registerTool(
         type: "text" as const,
         text: [
           `Stored skill ${stored.id.slice(0, 8)}`,
+          `Skill ID: ${stored.id}`,
           `Name: ${stored.name}`,
           `Type: ${stored.implementationType}`,
           `Scope: ${stored.scope}`,
@@ -1757,11 +1758,13 @@ registerTool(
 
     const formatted = results.map(({ skill, score }, index) => [
       `## ${index + 1}. ${skill.name} (score: ${score.toFixed(3)})`,
+      `**ID**: ${skill.id}`,
       `**Description**: ${skill.description}`,
       `**Trigger**: ${skill.triggerPattern}`,
       `**Type**: ${skill.implementationType}`,
       skill.verification ? `**Verification**: ${skill.verification}` : null,
       `**Tags**: ${skill.tags.join(", ") || "-"}`,
+      `**Outcome counts**: success=${skill.successCount} failure=${skill.failureCount}` + (skill.lastRefinedAt ? ` (last: ${skill.lastRefinedAt})` : ""),
       "",
       "```",
       skill.implementation,
