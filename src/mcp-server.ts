@@ -1690,13 +1690,13 @@ registerTool(
 
 registerTool(
   "store_skill",
-  "Store an executable skill with trigger conditions, implementation, and verification steps. Side effect: persists a new skill entry and indexes it. Use when you identify a reusable procedure worth automating across sessions.",
+  "Store an agent-readable skill runbook with trigger conditions, instruction content, and verification steps. Side effect: persists a new skill entry and indexes it. Use when you identify a reusable procedure worth surfacing across sessions. NOTE: RecallNest does NOT execute skills — `implementation` is a runbook agents read as context, not a script we run. (v2.5 收缩，2026-05-27)",
   {
     name: z.string().min(1).max(120).describe("Unique skill identifier, e.g. 'deploy_production' or 'run_migrations'"),
     description: z.string().min(1).max(500).describe("Natural language description of what the skill does (used for semantic retrieval matching)"),
     triggerPattern: z.string().min(1).max(300).describe("Natural language pattern describing when to suggest this skill, e.g. 'user asks to deploy to production'"),
-    implementationType: SkillImplementationTypeSchema.describe("Execution type: 'bash' for shell scripts, 'python' for Python code, 'mcp_tool_chain' for MCP sequences, 'instruction_sequence' for step-by-step instructions"),
-    implementation: z.string().min(1).max(5000).describe("Executable content: the actual script, code, or instruction steps to run"),
+    implementationType: SkillImplementationTypeSchema.describe("Skill runbook type. Currently only 'instruction_sequence' is supported — RecallNest stores runbooks for agents to read, does not execute them. (v2.5 schema 收缩，2026-05-27)"),
+    implementation: z.string().min(1).max(5000).describe("Agent-readable runbook content: markdown steps, natural language workflow, or structured procedure. RecallNest does NOT execute this — agents read it as context to follow."),
     inputSchema: z.record(z.string(), z.unknown()).optional().describe("JSON Schema defining the skill's input parameters, e.g. {\"env\": {\"type\": \"string\"}}"),
     verification: z.string().max(500).optional().describe("Steps to verify the skill executed correctly, e.g. 'check deployment URL returns 200'"),
     scope: z.string().min(1).max(160).describe("Scope to store the skill under, e.g. 'project:recallnest'"),

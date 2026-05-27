@@ -57,8 +57,8 @@ function validSkillInput(overrides: Record<string, unknown> = {}) {
     name: "deploy_production",
     description: "Deploy to production environment with safety checks",
     triggerPattern: "When user says 'deploy to prod' or 'release'",
-    implementationType: "bash" as const,
-    implementation: "#!/bin/bash\necho 'deploying...'",
+    implementationType: "instruction_sequence" as const,
+    implementation: "1. Confirm production target. 2. Run pre-deploy checks. 3. Tag release. 4. Notify channel.",
     scope: TEST_SCOPE,
     source: "agent" as const,
     tags: ["deploy", "production"],
@@ -241,7 +241,7 @@ describe("recordSkillOutcome metadata integrity", () => {
     expect(skill.name).toBe("skill_integrity");
     expect(skill.description).toBe(input.description);
     expect(skill.triggerPattern).toBe(input.triggerPattern);
-    expect(skill.implementationType).toBe("bash");
+    expect(skill.implementationType).toBe("instruction_sequence");
     expect(skill.implementation).toBe(input.implementation);
     expect(skill.verification).toBe("check exit code is 0");
   });

@@ -72,8 +72,8 @@ function validSkillInput(overrides: Record<string, unknown> = {}) {
     name: "deploy_production",
     description: "Deploy to production environment with safety checks",
     triggerPattern: "When user says 'deploy to prod' or 'release'",
-    implementationType: "bash" as const,
-    implementation: "#!/bin/bash\necho 'deploying...'",
+    implementationType: "instruction_sequence" as const,
+    implementation: "1. Confirm production target. 2. Run pre-deploy checks. 3. Tag release. 4. Notify channel.",
     scope: TEST_SCOPE,
     source: "agent" as const,
     tags: ["deploy", "production"],
@@ -90,7 +90,7 @@ describe("SkillInputSchema validation", () => {
     const input = validSkillInput();
     const parsed = SkillInputSchema.parse(input);
     expect(parsed.name).toBe("deploy_production");
-    expect(parsed.implementationType).toBe("bash");
+    expect(parsed.implementationType).toBe("instruction_sequence");
   });
 
   it("rejects empty name", () => {
@@ -124,10 +124,16 @@ describe("SkillInputSchema validation", () => {
     expect(() => SkillInputSchema.parse(validSkillInput({ implementationType: "ruby" }))).toThrow();
   });
 
-  it("accepts all valid implementationType values", () => {
-    for (const type of ["bash", "python", "mcp_tool_chain", "instruction_sequence"]) {
-      const parsed = SkillInputSchema.parse(validSkillInput({ implementationType: type }));
-      expect(parsed.implementationType).toBe(type);
+  it("accepts only instruction_sequence after v2.5 schema 收缩", () => {
+    const parsed = SkillInputSchema.parse(validSkillInput({ implementationType: "instruction_sequence" }));
+    expect(parsed.implementationType).toBe("instruction_sequence");
+  });
+
+  it("rejects pre-v2.5 implementationType values (bash/python/mcp_tool_chain)", () => {
+    // v2.5 (2026-05-27) schema 收缩——这些旧值不再被新写入接受
+    // 但 parseSkillFromEntry 仍能读出老 metadata 里的 bash/python（backward compat，见下面 retrieveSkills 测试）
+    for (const oldType of ["bash", "python", "mcp_tool_chain"]) {
+      expect(() => SkillInputSchema.parse(validSkillInput({ implementationType: oldType }))).toThrow();
     }
   });
 
@@ -177,7 +183,7 @@ describe("persistSkill", () => {
     const result = await persistSkill(store, embedder, validSkillInput());
 
     expect(result.name).toBe("deploy_production");
-    expect(result.implementationType).toBe("bash");
+    expect(result.implementationType).toBe("instruction_sequence");
     expect(result.scope).toBe(TEST_SCOPE);
     expect(result.id).toBeTruthy();
     expect(result.storedAt).toBeTruthy();
@@ -204,8 +210,8 @@ describe("persistSkill", () => {
     expect(text).toContain("Skill: deploy_production");
     expect(text).toContain("Description: Deploy to production environment");
     expect(text).toContain("Trigger: When user says");
-    expect(text).toContain("Type: bash");
-    expect(text).toContain("Implementation: #!/bin/bash");
+    expect(text).toContain("Type: instruction_sequence");
+    expect(text).toContain("Implementation: 1. Confirm production target");
   });
 
   it("includes skill metadata in entry", async () => {
@@ -216,7 +222,7 @@ describe("persistSkill", () => {
     const meta = JSON.parse(entries[0].metadata || "{}");
     expect(meta.skill).toBeDefined();
     expect(meta.skill.name).toBe("deploy_production");
-    expect(meta.skill.implementationType).toBe("bash");
+    expect(meta.skill.implementationType).toBe("instruction_sequence");
     expect(meta.capture).toBe("skill_schema_v1");
     expect(meta.boundary.layer).toBe("durable");
     expect(meta.evolution).toBeDefined();
