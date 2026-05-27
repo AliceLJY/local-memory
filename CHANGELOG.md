@@ -1,5 +1,76 @@
 # Changelog
 
+> **CHANGELOG gap notice**: v1.3.1 (2026-03-12) → v2.5.2 (2026-05-27) 中间有较长开发期未更新 CHANGELOG。v2.5+ 系列以下开始恢复跟踪。历史 v1.4 - v2.4 间的变更见 git log。
+
+## v2.5.2 — store.delete(prefix) bug fix (2026-05-27)
+
+Codex trio review (2026-05-27, ref `~/Desktop/codex-v2.5.1-fix-review-20260527.md`) 发现的独立非阻塞 bug。
+
+### Fixed
+
+- **`store.delete(prefix)` 在 90K+ 库下可能漏删** — 旧实现先 `.select(["id","scope"]).limit(1000).toArray()` 再 app-layer filter，若目标 entry 不在前 1000 行就漏查。现在改成和 `store.getById` 对齐的 SQL LIKE：`where("id LIKE 'prefix%'").limit(2)`，ambiguous prefix 通过 `limit(2)` 检测并 throw。**不影响 `forget_memory` 主路径**（`forget-engine` 走 `store.get(memoryId)` 解析成完整 entry.id 再 `store.delete(entry.id)`），是 direct prefix delete caller 的潜在风险修补。
+- 基线 1523 / 0 fail（修补未引入新 test，依赖 Codex 上轮 LanceDB LIKE 临时验证 + 全量回归测试不破坏）
+
+## v2.5.1 — P0 production path: API exposure surface fixes (2026-05-27)
+
+Fresh CC session 第一次真用 `store_skill → workflow_observe(skillId=prefix) → retrieve_skill` 链路就**死锁**——返回 `Skill 1d9420b2 → not updated (skill_not_found)`。诊断出 3 处 API 暴露面割裂。
+
+Codex trio 二审评分 **8.5/10**，子 agent production smoke 验证 successCount 0→1 真递增 ✅。
+
+### Fixed
+
+- **`store.getById` 加 8+ hex prefix lookup** — 之前只接完整 UUID，与 `store.update / store.delete` 行为不一致；现在通过 SQL `LIKE 'prefix%' limit(2)` 检测歧义并返回 null。现有 caller（access-tracker / persistSkill / capture-engine 等 13 处）全部传完整 UUID，向后兼容零隐患（Codex 全仓库 grep 验证）。
+- **`store_skill` MCP handler 返回加 `Skill ID: <full UUID>` 行** — 之前只显示 `Stored skill <8 hex prefix>` 截断到 8 位，agent 拿不到完整 UUID 后续没法传给 `workflow_observe`。保留 short prefix 显示给人看。
+- **`retrieve_skill` MCP handler markdown 加 `**ID**:` + `**Outcome counts**: success=N failure=M [(last: ISO)]`** — 之前不暴露 id / successCount / failureCount / lastRefinedAt，agent 看不到反馈循环效果。
+- **`recordSkillOutcome` 用 `entry.id` 调 `store.update`** — 之前用 caller-provided skillId（可能 prefix）直接调 store.update，ambiguous prefix 在写操作风险翻倍；改用 getById 已 disambiguated 的完整 entry.id。
+
+### Notes
+
+- **8-char prefix 全库碰撞数学**: 4.3 亿组合 vs 90K 条记录，生日悖论 P(any collision) ≈ 61%；但 P(specific prefix collides) ≈ 0.002% (1/47,722)。**首选 full UUID 输入**，8-char prefix 作为兼容；歧义时返回 `skill_not_found`，不会误更新。
+- **Codex 5 步 smoke troubleshooting**: 见 `~/Desktop/codex-v2.5.1-fix-review-20260527.md` line 186-192。
+
+### Tests
+
+- 基线 1521 → 1523 / 0 fail（+2 prefix lookup case：`resolves 8+ hex prefix to full UUID and bumps successCount` / `returns skill_not_found for ambiguous prefix`）
+
+## v2.5.0 — SkillImplementationType schema 收缩 (2026-05-27)
+
+brgsk《agent memory: an anatomy》借鉴审计 + Codex trio 二审建议 "P1 选收缩 / 删承诺，不接 evaluator"。
+
+### Changed (Breaking)
+
+- **`SkillImplementationTypeSchema` 收缩到 `["instruction_sequence"]` 唯一值** — 原 enum 含 `bash` / `python` / `mcp_tool_chain` / `instruction_sequence` 四种，但 `implementation` 字段**从未真执行**（无 evaluator，仅作 context 给 agent 读）——是 schema 撒谎暗示可执行。现在明确 skill 是 **agent-readable runbook** 而非可执行物。
+- **`implementation` 字段 describe**: `"Executable content"` → `"Agent-readable runbook content: markdown steps, natural language workflow, or structured procedure. RecallNest does NOT execute this — it stores runbooks for agents to read and follow as context."`
+- **`store_skill` MCP tool description** 更新强调 "agent-readable skill runbook" + "RecallNest does NOT execute skills"。
+
+### Migration
+
+- 新写入受新 schema 约束，`bash` / `python` / `mcp_tool_chain` 会被拒。
+- **`parseSkillFromEntry` 用 type cast 不走 schema 校验** — 历史 `bash` / `python` skill records 仍可 retrieve（backward-compat path）。
+- production 库 2026-05-27 实测**无真实 skill 数据**（3 条 category=skills 是历史抓取噪声），破坏面接近 zero。
+
+### Tests
+
+- 基线 1520 → 1521 / 0 fail（删 1 个 "accepts all 4 types"，加 2 个 "accepts only instruction_sequence" / "rejects pre-v2.5 implementationType values"）
+
+## v2.5.0-pre — workflow_observe ↔ skill outcome 绑定 (2026-05-27)
+
+P0 反馈闭环：让 skill 的 `successCount` / `failureCount` 真有真实使用回流。commit `09dec62`，后由 v2.5.0 schema 收缩 + v2.5.1 API 暴露面 + v2.5.2 store.delete 补丁一起构成完整 P0 工作。
+
+### New
+
+- **`WorkflowObservationInputSchema` 加可选 `skillId` 字段** — `workflow_observe` 带 skillId + outcome 时自动 bump skill 的 successCount/failureCount，回写 lastRefinedAt。
+- **`recordSkillOutcome()` 导出函数** — `skill-engine.ts`，二分映射：`success` → successCount +1；`failure` / `corrected` / `missed` → failureCount +1。返回结构化结果不抛错，skill_not_found / not_a_skill / metadata_missing 静默跳过。
+- **`mcp-server.ts workflow_observe` + `api-server.ts /v1/workflow-observe`** 接 recordSkillOutcome。
+
+### Deployment
+
+- **新增 `RECALLNEST_MCP_TIER=full` 环境变量需求** — `workflow_observe` 在 TOOL_TIERS 标 governance，需 full tier 才暴露给 MCP ToolSearch。MacBook + mini × CC + Codex 4 处 config 已加（args inline / [env] 段）。
+
+### Tests
+
+- 基线 1486 → 1520 / 0 fail（+13 新 case 覆盖 outcome 映射 + 错误路径 + 元数据完整性 + 时间戳；+1 顺手修 workflow-observation.test.ts dashboard 漏传 now 参数 pre-existing bug）
+
 ## v1.3.1 — Upstream Sync (2026-03-12)
 
 Synced with [CortexReach/memory-lancedb-pro](https://github.com/CortexReach/memory-lancedb-pro) master (v1.1.0-beta.6+).
