@@ -22,6 +22,7 @@ export const WorkflowObservationInputSchema = z.object({
   tags: normalizedStringListSchema("tags", 8, 40),
   tools: normalizedStringListSchema("tools", 6, 60),
   recordedAt: z.string().datetime().default(() => new Date().toISOString()),
+  skillId: optionalBoundedStringSchema(128),
 });
 
 export const WorkflowObservationRecordSchema = WorkflowObservationInputSchema.extend({

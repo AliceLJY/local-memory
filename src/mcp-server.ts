@@ -94,7 +94,7 @@ import { indexAsset, indexPinnedAsset } from "./asset-sync.js";
 import { createComponentResolver, loadConfig, loadDotEnv, resolveRecallMode } from "./runtime-config.js";
 import { DurableMemoryCategorySchema, StoreMemorySourceSchema, PrivacyTierSchema, isPredictiveMemoryEnabled } from "./memory-schema.js";
 import { persistCaseMemory, persistMemory, persistMemoryBatch, persistWorkflowPattern, promoteMemory } from "./capture-engine.js";
-import { persistSkill, retrieveSkills } from "./skill-engine.js";
+import { persistSkill, retrieveSkills, recordSkillOutcome } from "./skill-engine.js";
 import { SkillImplementationTypeSchema } from "./skill-schema.js";
 import { scanForPromotions, formatPromotionResult } from "./skill-promotion.js";
 import { autoCapture } from "./capture-heuristic.js";
@@ -231,7 +231,7 @@ function registerTool(name: string, description: string, schema: ToolSchema, han
 
 registerTool(
   "workflow_observe",
-  "Store an append-only workflow observation for self-evolution. Use this to record whether a continuity primitive or reusable workflow succeeded, failed, was corrected by the user, or was missed entirely.",
+  "Store an append-only workflow observation for self-evolution. Use this to record whether a continuity primitive or reusable workflow succeeded, failed, was corrected by the user, or was missed entirely. Optionally pass `skillId` to also bump that skill's successCount/failureCount — the canonical way to close the skill feedback loop.",
   {
     workflowId: z.string().min(1).max(120).describe("Workflow primitive id, such as resume_context or checkpoint_session"),
     outcome: WorkflowObservationOutcomeSchema.default("success").describe("success | failure | corrected | missed"),
@@ -242,8 +242,9 @@ registerTool(
     task: z.string().min(1).max(240).optional().describe("Optional related task"),
     tags: z.array(z.string().min(1).max(40)).max(8).default([]).describe("Optional tags"),
     tools: z.array(z.string().min(1).max(60)).max(6).default([]).describe("Optional tools involved"),
+    skillId: z.string().min(1).max(128).optional().describe("Optional skill id to bump. When present and outcome is success, the skill's successCount increments; otherwise failureCount increments. Missing/corrupt skills are skipped silently (does not block observation write)."),
   },
-  async ({ workflowId, outcome, summary, scope, source, signal, task, tags, tools }) => {
+  async ({ workflowId, outcome, summary, scope, source, signal, task, tags, tools, skillId }) => {
     const record = buildWorkflowObservationRecord({
       workflowId,
       outcome,
@@ -254,12 +255,31 @@ registerTool(
       task,
       tags,
       tools,
+      skillId,
     });
     const stored = await workflowObservationStore.save(record);
+
+    let skillOutcomeNote = "";
+    if (skillId) {
+      try {
+        const { store } = getComponents();
+        const result = await recordSkillOutcome(store, skillId, outcome);
+        if (result.updated) {
+          skillOutcomeNote = `\nSkill ${skillId.slice(0, 8)} → success=${result.successCount} failure=${result.failureCount}`;
+        } else {
+          console.warn(`[workflow_observe] skillId=${skillId} update skipped: ${result.reason}`);
+          skillOutcomeNote = `\nSkill ${skillId.slice(0, 8)} → not updated (${result.reason})`;
+        }
+      } catch (err) {
+        console.warn(`[workflow_observe] recordSkillOutcome threw for skillId=${skillId}:`, err);
+        skillOutcomeNote = `\nSkill ${skillId.slice(0, 8)} → update errored, observation still saved`;
+      }
+    }
+
     return {
       content: [{
         type: "text" as const,
-        text: formatWorkflowObservationSaved(stored),
+        text: formatWorkflowObservationSaved(stored) + skillOutcomeNote,
       }],
     };
   },

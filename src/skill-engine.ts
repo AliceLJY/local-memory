@@ -177,6 +177,80 @@ export async function persistSkill(
   };
 }
 
+type OutcomeDeps = Pick<MemoryStore, "getById" | "update">;
+
+export type SkillOutcomeUpdate =
+  | { updated: true; successCount: number; failureCount: number; lastRefinedAt: string }
+  | { updated: false; reason: "skill_not_found" | "not_a_skill" | "metadata_parse_error" | "skill_metadata_missing" | "store_update_failed" };
+
+/**
+ * Record a skill usage outcome by incrementing successCount/failureCount on the skill's metadata.
+ *
+ * Mapping: `success` → successCount +1; everything else (`failure`/`corrected`/`missed`) → failureCount +1.
+ * Returns `{ updated: false, reason }` for missing/corrupt skills without throwing — callers can log and continue.
+ */
+export async function recordSkillOutcome(
+  store: OutcomeDeps,
+  skillId: string,
+  outcome: "success" | "failure" | "corrected" | "missed",
+): Promise<SkillOutcomeUpdate> {
+  const entry = await store.getById(skillId);
+  if (!entry) {
+    return { updated: false, reason: "skill_not_found" };
+  }
+
+  if (entry.category !== SKILL_CATEGORY) {
+    return { updated: false, reason: "not_a_skill" };
+  }
+
+  let meta: Record<string, unknown>;
+  try {
+    meta = JSON.parse(entry.metadata || "{}");
+  } catch {
+    return { updated: false, reason: "metadata_parse_error" };
+  }
+
+  const skill = meta.skill;
+  if (!skill || typeof skill !== "object") {
+    return { updated: false, reason: "skill_metadata_missing" };
+  }
+
+  const s = skill as Record<string, unknown>;
+  const currentSuccess = typeof s.successCount === "number" ? s.successCount : 0;
+  const currentFailure = typeof s.failureCount === "number" ? s.failureCount : 0;
+
+  const nextSuccessCount = outcome === "success" ? currentSuccess + 1 : currentSuccess;
+  const nextFailureCount = outcome === "success" ? currentFailure : currentFailure + 1;
+  const nextLastRefinedAt = new Date().toISOString();
+
+  const nextSkill = {
+    ...s,
+    successCount: nextSuccessCount,
+    failureCount: nextFailureCount,
+    lastRefinedAt: nextLastRefinedAt,
+  };
+
+  const updatedMetadata = JSON.stringify({
+    ...meta,
+    skill: nextSkill,
+  });
+
+  const updated = await store.update(skillId, {
+    metadata: updatedMetadata,
+  });
+
+  if (!updated) {
+    return { updated: false, reason: "store_update_failed" };
+  }
+
+  return {
+    updated: true,
+    successCount: nextSuccessCount,
+    failureCount: nextFailureCount,
+    lastRefinedAt: nextLastRefinedAt,
+  };
+}
+
 export async function retrieveSkills(
   store: SearchDeps,
   embedder: EmbedDeps,

@@ -20,6 +20,7 @@ import { ConflictCandidateStore } from "./conflict-store.js";
 import { parseConflictAttention, summarizeConflictLifecycle } from "./conflict-lifecycle.js";
 import { buildConflictAuditSummary, clusterConflicts, summarizeConflictAdvice } from "./conflict-advisor.js";
 import { buildWorkflowEvidence, buildWorkflowObservationRecord, inspectWorkflowDashboard, inspectWorkflowHealth } from "./workflow-observation-engine.js";
+import { recordSkillOutcome } from "./skill-engine.js";
 import { WorkflowObservationStore } from "./workflow-observation-store.js";
 import { buildManagedCheckpointObservation, buildManagedResumeObservation } from "./workflow-observation-managed.js";
 import { runAutoRecall } from "./auto-recall.js";
@@ -455,13 +456,29 @@ async function handleCheckpoint(request: Request): Promise<Response> {
   }
 }
 
-/** POST /v1/workflow-observe — persist a workflow observation outside durable memory */
+/** POST /v1/workflow-observe — persist a workflow observation outside durable memory; bumps skill counters when `skillId` is present */
 async function handleWorkflowObserve(request: Request): Promise<Response> {
   const body = await readJson(request);
   try {
     const record = buildWorkflowObservationRecord(body);
     const stored = await workflowObservationStore.save(record);
-    return jsonResponse(stored, 201);
+
+    let skillOutcome: unknown = undefined;
+    if (record.skillId) {
+      try {
+        const { store } = getComponents();
+        const result = await recordSkillOutcome(store, record.skillId, record.outcome);
+        skillOutcome = result;
+        if (!result.updated) {
+          console.warn(`[api /v1/workflow-observe] skillId=${record.skillId} update skipped: ${result.reason}`);
+        }
+      } catch (err) {
+        console.warn(`[api /v1/workflow-observe] recordSkillOutcome threw for skillId=${record.skillId}:`, err);
+        skillOutcome = { updated: false, reason: "exception" };
+      }
+    }
+
+    return jsonResponse({ observation: stored, ...(skillOutcome !== undefined ? { skillOutcome } : {}) }, 201);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return errorResponse(400, message);

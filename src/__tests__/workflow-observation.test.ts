@@ -95,7 +95,7 @@ describe("workflow observation engine", () => {
 
       const dashboard = buildWorkflowHealthDashboard(
         await store.listRecent({ scope: "project:recallnest", limit: 50 }),
-        { scope: "project:recallnest" },
+        { scope: "project:recallnest", now: new Date("2026-03-17T12:00:00.000Z") },
       );
       expect(dashboard[0]?.workflowId).toBe("checkpoint_session");
       expect(dashboard[0]?.status).toBe("critical");
