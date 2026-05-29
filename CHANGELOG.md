@@ -2,6 +2,25 @@
 
 > **CHANGELOG gap notice**: v1.3.1 (2026-03-12) → v2.5.2 (2026-05-27) 中间有较长开发期未更新 CHANGELOG。v2.5+ 系列以下开始恢复跟踪。历史 v1.4 - v2.4 间的变更见 git log。
 
+## v2.5.3 — 诊断工具失明 + 失效功能 + score 显示 三批修复 (2026-05-29)
+
+一轮临床向审查(CC 多 agent + Codex trio 二审)发现的一组修复:诊断工具在生产给虚假健康信号、三个功能完全失效、检索 score 显示失去区分度。
+
+### Fixed
+
+- **三处让功能完全失效的 bug**:
+  - `distill_session` MCP tool 引用未声明的 `llmClient` → 调用必抛 ReferenceError、工具 100% 不可用(SDK 接住转错误响应,server 不崩但永远 distill 不了)。改用模块级已初始化的 `llm`。
+  - `ingest --no-llm` 空操作:commander 把 `--no-llm` 解析成 `options.llm=false`,代码却读 `options.noLlm`(恒 undefined)→ 想跳过 LLM 实际仍全程调用。改读 `options.llm===false`,Gemini/memory 两源同步遵守。
+  - `tool-output-compressor` 正则 lookahead 末项 `\z` 在 JS 中是字面字符 z(非锚点)→ 末尾工具输出漏压缩、在字面 z 处误截断。改为 `(?![\s\S])`。
+- **`memory_lint` / `data_checkup` 因空向量假报健康** — `store.list()` 为性能返回 `vector:[]`,而矛盾/去重/维度/干扰检查全靠向量算相似度 → cosine 恒 0 → 静默失效(实测 contradictions=0/duplicates=0、维度检查把"全 0 维"假报 OK)。现在经 `store.getVectors()`(已加分批)补回真实向量再检查;维度检查排除取不到向量的条目、空库才判 ok。真实库验证:矛盾 0→174、重复 0→1473。
+- **诊断扫描截断不透明** — `memory_lint`/`data_checkup` 只扫最近 10000 条(库 9 万+),新增 `scanLimited`/`totalAvailable` 截断披露。
+- **检索 score 显示失去区分度** — `memory-output` 的 search/brief/full 三处用 `toFixed(0)`/`round` 把 score 取整(0.996 与 1.0 都显示 100%),改为 `toFixed(1)`。`search_memory` MCP description 从 "by semantic similarity" 改为明确 "fused ranking score, NOT pure cosine similarity"。
+
+### Internal
+
+- 修测试 mock 失真:`memory-lint` / `data-checkup` / `source-heartbeat` 三个测试的 mock store 原本直接返回带向量 entry(与生产 `vector:[]` 不符,正是它放过了诊断哑火 bug),改为复刻真实行为(list 空向量 + getVectors 补回)。
+- 基线 1525 tests / 0 fail。
+
 ## v2.5.2 — store.delete(prefix) bug fix (2026-05-27)
 
 Codex trio review (2026-05-27, ref `~/Desktop/codex-v2.5.1-fix-review-20260527.md`) 发现的独立非阻塞 bug。
