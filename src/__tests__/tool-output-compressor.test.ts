@@ -130,4 +130,31 @@ FAIL src/main.test.ts
     expect(result).toContain("chars truncated");
     expect(result.length).toBeLessThan(text.length);
   });
+
+  // ========================================================================
+  // 回归：工具输出块位于字符串结尾（原 \z 锚点 bug）
+  // 旧实现 lookahead 末项是 \z（JS 无此锚点 → 当字面字符 z）：
+  //   - 块结尾无字面 z 时整块漏匹配 → 末尾大输出逃过截断
+  //   - 块含字面 z 时惰性匹配在第一个 z 处误截断
+  // 修复为 (?![\s\S])（字符串绝对结尾）后两种都应正确处理。
+  // ========================================================================
+
+  it("truncates a large tool output block that ends the string (no trailing marker)", () => {
+    // 末尾块、无字母 z、后面没有下一个命令/空行大写/## → 旧 \z 实现整块漏匹配
+    const largeOutput = Array.from({ length: 150 }, (_, i) => `line ${i}: detailed output here`).join("\n");
+    const text = `$ some-command\n${largeOutput}`;
+    const result = compressToolOutput(text);
+    expect(result).toContain("chars truncated");
+    expect(result.length).toBeLessThan(text.length);
+  });
+
+  it("does not cut a trailing tool output block at a literal 'z'", () => {
+    // 末尾大块含字母 z → 旧 \z 实现在第一个 z 处截断匹配，导致块太短逃过截断
+    const largeOutput = Array.from({ length: 150 }, (_, i) => `line ${i}: zebra output zone`).join("\n");
+    const text = `$ some-command\n${largeOutput}`;
+    const result = compressToolOutput(text);
+    expect(result).toContain("chars truncated");
+    // 截断尾部应保留块真正的结尾，而不是停在某个 z 之前
+    expect(result).toContain("zone");
+  });
 });

@@ -59,7 +59,9 @@ const RULES: CompressionRule[] = [
 
 // Patterns that identify tool output blocks in conversation text.
 // Claude Code / Codex format: command on one line, output follows.
-const TOOL_OUTPUT_BLOCK = /^(?:\$\s+|❯\s+|>\s+)(.+)\n([\s\S]*?)(?=\n(?:\$\s+|❯\s+|>\s+)|\n\n[A-Z]|\n##|\z)/gm;
+// 末项用 (?![\s\S]) 表示「字符串绝对结尾」。不能用 \z（JS 无此锚点，会被当字面字符 z →
+// 在输出里第一个 z 处误截断），也不能用 $（gm 模式下匹配每行尾，惰性 [\s\S]*? 会在第一行就停）。
+const TOOL_OUTPUT_BLOCK = /^(?:\$\s+|❯\s+|>\s+)(.+)\n([\s\S]*?)(?=\n(?:\$\s+|❯\s+|>\s+)|\n\n[A-Z]|\n##|(?![\s\S]))/gm;
 
 // Base64 image data (screenshots, etc.)
 const BASE64_BLOCK = /(?:data:image\/[^;]+;base64,)?[A-Za-z0-9+/]{500,}={0,2}/g;

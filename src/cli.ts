@@ -1361,8 +1361,10 @@ program
     console.log(`  ✅ ${config.embedding.model} (${testResult.dimensions}d)`);
 
     // LLM status — respect --no-llm flag
-    const effectiveLlm = options.noLlm ? null : llm;
-    if (options.noLlm) {
+    // commander 把 --no-llm 解析成 options.llm=false（不产生 options.noLlm），对齐 --no-dedup 的取反键写法
+    const noLlm = options.llm === false;
+    const effectiveLlm = noLlm ? null : llm;
+    if (noLlm) {
       console.log("  ⚠️  LLM: 已通过 --no-llm 禁用，原始对话将跳过不存入");
     } else if (llm) {
       const llmTest = await llm.test();
@@ -1427,7 +1429,7 @@ program
         limit,
         verbose,
         noDedup,
-        llm,
+        llm: effectiveLlm,
         recentHours,
       });
       results.push(r);
@@ -1460,7 +1462,7 @@ program
         const r = await ingestMarkdownFiles(store, embedder, memPath, "memory", {
           verbose,
           noDedup,
-          llm,
+          llm: effectiveLlm,
           recentHours,
         });
         results.push(r);

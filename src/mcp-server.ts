@@ -1962,7 +1962,7 @@ registerTool(
 
     const result = await distillSession(
       messages,
-      { llm: llmClient, store, embedder, conflictStore, kgExtractor },
+      { llm, store, embedder, conflictStore, kgExtractor },
       { scope, preserveRecent, keepRecentTools, persist },
     );
 
