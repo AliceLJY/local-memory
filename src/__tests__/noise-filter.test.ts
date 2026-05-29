@@ -42,7 +42,19 @@ describe("isNoise — CC bridge injected prompts", () => {
     expect(isNoise("## CC Reply Prompt\n\n你是 CC。")).toBe(true);
   });
 
+  it("filters the bridge prompt output-section fragment", () => {
+    expect(isNoise("## 你的输出\n\n直接回复 Alice。用双换行把回复切成自然段落。")).toBe(true);
+  });
+
+  it("filters the bridge prompt rhythm-section fragment", () => {
+    expect(isNoise("节奏要求：\n\n- 短话题 1-2 条；\n- 长话题 3-5 条；\n- 每条一两句话；")).toBe(true);
+  });
+
   // Guards: must NOT over-filter real conversation
+  it("keeps a real message that happens to use the words 节奏要求", () => {
+    expect(isNoise("这周节奏要求挺紧的，周五前要交稿，你帮我盯一下进度")).toBe(false);
+  });
+
   it("keeps a normal message that merely mentions CC", () => {
     expect(isNoise("CC 帮我看下这个 bug，promote-scan 跑出来全是噪声")).toBe(false);
   });

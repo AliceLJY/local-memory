@@ -88,6 +88,10 @@ const AGENT_PROMPT_PATTERNS = [
   /^#{1,3}\s*CC\s+(Reply|Self-Decision)\s+Prompt\b/im,
   /你不是\s*Alice\s*的数字分身/,
   /你是\s*CC[。.]?\s*(Alice\s*刚给你发了消息|现在你周期性醒来)/,
+  // Fixed sections of the bridge prompt that survive ingest as standalone chunks
+  // (the long prompt turn gets split, so the title/persona lines may be absent).
+  /你的输出\s*[\r\n]+\s*直接回复\s*Alice/,
+  /节奏要求[：:]\s*[\r\n]+\s*[-*]\s*短话题/,
 ];
 
 export interface NoiseFilterOptions {

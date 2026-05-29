@@ -297,4 +297,19 @@ describe("scanMemoryPromotions", () => {
     expect(result.candidates.length).toBe(0);
     expect(promoteCalls.length).toBe(0);
   });
+
+  it("excludes evidence whose text is a bridge-injected prompt (noise)", async () => {
+    const promptText = "# CC Reply Prompt\n\n你是 CC。你不是 Alice 的数字分身，也不是 E 化镜像。";
+    const entries = [
+      makeDowngradedEvent("preferences", { text: promptText }),
+      makeDowngradedEvent("preferences", { text: promptText }),
+      makeDowngradedEvent("preferences", { text: promptText }),
+    ];
+    const { deps, promoteCalls } = createScanDeps(entries, { defaultVector: [1, 0, 0] });
+
+    const result = await scanMemoryPromotions(deps, "cc:project:test", { dryRun: false });
+
+    expect(result.candidates.length).toBe(0);
+    expect(promoteCalls.length).toBe(0);
+  });
 });

@@ -16,6 +16,7 @@
 import type { MemoryEntry, MemoryStore } from "./store.js";
 import type { DurableMemoryCategory, StoredPromotedMemoryRecord } from "./memory-schema.js";
 import { isActiveMemory } from "./memory-evolution.js";
+import { isNoise } from "./noise-filter.js";
 import { extractBoundaryMetadata, parseMetadataObject } from "./memory-boundaries.js";
 import { greedyCluster } from "./skill-promotion.js";
 import { promoteMemory, type PersistMemoryDeps } from "./capture-engine.js";
@@ -125,6 +126,7 @@ export async function scanMemoryPromotions(
     (e) =>
       isActiveMemory(e.metadata) &&
       !hasPromotedToMarker(e.metadata) &&
+      !isNoise(e.text) &&
       resolveDowngrade(e) !== null,
   );
 
