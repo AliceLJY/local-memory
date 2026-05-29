@@ -9,7 +9,7 @@
  * Tool tiers:
  * - core: Always exposed (7 tools)
  * - advanced: Exposed by default, includes core (30 tools)
- * - full: All tools including governance (41 tools)
+ * - full: All tools including governance (42 tools)
  *
  * Control: RECALLNEST_MCP_TIER=core|advanced|full
  */

@@ -190,7 +190,7 @@ describe("MCP registry contract", () => {
       return Number(match![1]);
     };
 
-    expect(registeredTools).toHaveLength(41);
+    expect(registeredTools).toHaveLength(42);
     expect(missingTier).toEqual([]);
     expect(headerCount("core")).toBe(coreCount);
     expect(headerCount("advanced")).toBe(defaultCount);
