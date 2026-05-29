@@ -73,6 +73,19 @@ describe("memory boundaries", () => {
     })).toBe("preferences:我喜欢吃麦当劳的麦旋风-板烧鸡腿堡和麦辣鸡翅");
   });
 
+  it("builds distinct canonical keys for different implicit-usage preferences (#6 regression)", () => {
+    // 修复前 implicit-usage slot 无专属分支，落到 tool-choice 三元支、preferredTool/avoidedTool
+    // 均 undefined → 全部坍缩成 'preferences:implicit-usage:over'，不同隐式偏好在 latest-wins
+    // 下互相覆盖丢数据。现在用 slot.subject 区分。
+    const figma = buildDefaultCanonicalKey({ category: "preferences", text: "I use Figma for design" });
+    const python = buildDefaultCanonicalKey({ category: "preferences", text: "I use Python for scripting" });
+    const sony = buildDefaultCanonicalKey({ category: "preferences", text: "我有一台索尼相机" });
+
+    expect(figma).toBe("preferences:implicit-usage:figma");
+    expect(python).toBe("preferences:implicit-usage:python");
+    expect(new Set([figma, python, sony]).size).toBe(3);
+  });
+
   it("rejects transcript/evidence stable recall and keeps durable stable recall", () => {
     expect(shouldUseStableMemoryResult({
       category: "preferences",

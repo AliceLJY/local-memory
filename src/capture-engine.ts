@@ -1063,7 +1063,7 @@ export async function persistMemory(
     input.category !== "preferences" &&
     inferImplicitUsageSlot(input.text)
   ) {
-    const prefCanonicalKey = buildDefaultCanonicalKey("preferences", input.text);
+    const prefCanonicalKey = buildDefaultCanonicalKey({ category: "preferences", text: input.text });
     const prefSlot = inferImplicitUsageSlot(input.text);
     const prefMetadata = buildStructuredMetadata({
       source: input.source,

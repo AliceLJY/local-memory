@@ -71,6 +71,7 @@ const DEFAULT_DIMENSION_LABELS: Record<string, string> = {
   errors_and_fixes: "Errors and fix records",
   problem_solving: "Problem solving process",
   user_quotes: "User original quotes preserved",
+  user_profile: "Stable facts about the user: identity, role, background, long-term context",
   unfinished_tasks: "Unfinished tasks",
   current_state: "Current work state",
   next_steps: "Suggested next steps",
@@ -93,6 +94,9 @@ const DIMENSION_TO_MEMORY: Record<string, DimensionMapping> = {
   errors_and_fixes: { category: "cases", importance: 0.7 },
   problem_solving: { category: "patterns", importance: 0.8 },
   user_quotes: { category: "preferences", importance: 0.7 },
+  // user_profile → profile：让 distill 能沉淀"用户是谁"的稳定身份事实（不只是偏好）。
+  // distill 走 source=agent，不被 resolveIngestBoundary 降级，直接进 durable profile。
+  user_profile: { category: "profile", importance: 0.8 },
   // 2026-05-13 P1.2: 加 unfinished_tasks + next_steps 持久化映射
   // LLM 早在 DEFAULT_DIMENSION_LABELS 行 74/76 已产出这两条，但缺映射被丢弃
   // 都映射到 cases/patterns 走 tag 兜底（extractAndPersist 自动加 tags: ["session_distill", dimKey]）

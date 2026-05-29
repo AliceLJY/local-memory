@@ -135,7 +135,9 @@ export function buildDefaultCanonicalKey(params: {
           ? [params.category, slot.type, slot.brand, slot.item]
           : slot.type === "reply-style"
             ? [params.category, slot.type, ...slot.traits]
-            : [params.category, slot.type, slot.preferredTool, "over", slot.avoidedTool],
+            : slot.type === "implicit-usage"
+              ? [params.category, slot.type, slot.subject]
+              : [params.category, slot.type, slot.preferredTool, "over", slot.avoidedTool],
       );
     }
   }
