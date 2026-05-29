@@ -34,6 +34,7 @@ import {
 } from "./ingest.js";
 import { runDoctor, formatDoctorResults } from "./doctor.js";
 import { persistCaseMemory, persistMemory, persistWorkflowPattern } from "./capture-engine.js";
+import { scanMemoryPromotions, buildPromoteScanDeps, formatPromoteScanResult } from "./memory-promotion.js";
 import {
   CaseMemoryInputSchema,
   type CaseMemoryInput,
@@ -658,6 +659,28 @@ program
       `Archived    : ${archived}`,
       `Index rows  : ${deleted}`,
     ].join("\n"));
+  });
+
+program
+  .command("promote-scan")
+  .description("扫描 transcript 降级的 profile/preferences evidence，聚类高频高 importance 项晋升回 durable")
+  .requiredOption("--scope <scope>", "要扫描的 scope，如 cc:project:recallnest")
+  .option("--apply", "执行晋升；默认 dry-run 只预览")
+  .option("--min-occurrences <n>", "聚类最小成员数（默认 3）", "3")
+  .option("--min-importance <n>", "聚类最小平均 importance（默认 0.6）", "0.6")
+  .action(async (options) => {
+    const config = loadConfig();
+    const { store, embedder } = createComponents(config);
+    const conflictStore = new ConflictCandidateStore();
+    const deps = buildPromoteScanDeps({ store, embedder, conflictStore });
+    const minOccurrences = Number(options.minOccurrences);
+    const minImportance = Number(options.minImportance);
+    const result = await scanMemoryPromotions(deps, options.scope, {
+      dryRun: !options.apply,
+      ...(Number.isFinite(minOccurrences) ? { minOccurrences } : {}),
+      ...(Number.isFinite(minImportance) ? { minImportance } : {}),
+    });
+    console.log(formatPromoteScanResult(result));
   });
 
 program

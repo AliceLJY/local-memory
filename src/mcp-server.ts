@@ -59,6 +59,7 @@ const TOOL_TIERS: Record<string, ToolTier> = {
   import_conversations: "advanced",
   distill_session: "advanced",
   scan_skill_promotions: "governance",
+  promote_scan: "governance",
   forget_memory: "advanced",
 
   // Governance (CLI-only, not in MCP by default)
@@ -97,6 +98,7 @@ import { persistCaseMemory, persistMemory, persistMemoryBatch, persistWorkflowPa
 import { persistSkill, retrieveSkills, recordSkillOutcome } from "./skill-engine.js";
 import { SkillImplementationTypeSchema } from "./skill-schema.js";
 import { scanForPromotions, formatPromotionResult } from "./skill-promotion.js";
+import { scanMemoryPromotions, buildPromoteScanDeps, formatPromoteScanResult } from "./memory-promotion.js";
 import { autoCapture } from "./capture-heuristic.js";
 import { ConsolidationEngine, formatConsolidationResult } from "./consolidation-engine.js";
 import { renderMemories, type RenderMode } from "./context-renderer.js";
@@ -1798,6 +1800,30 @@ registerTool(
       content: [{
         type: "text" as const,
         text: formatPromotionResult(result),
+      }],
+    };
+  },
+);
+
+// --- Promote-scan: auto-promote transcript-downgraded profile/preferences evidence ---
+registerTool(
+  "promote_scan",
+  "Scan transcript-downgraded evidence (profile/preferences sunk to events) and auto-promote recurring high-importance facts back to durable memory. Default dry-run (no writes); when dryRun=false it creates durable entries (dedup is idempotent). Use to backfill sparse durable profile/preferences from accumulated transcript evidence.",
+  {
+    scope: z.string().min(1).max(160).describe("Scope to scan, e.g. cc:project:recallnest"),
+    dryRun: z.boolean().default(true).describe("When true (default), only report candidates without writing"),
+    minOccurrences: z.number().int().min(2).max(20).default(3).describe("Min cluster members before promoting"),
+    minImportance: z.number().min(0).max(1).default(0.6).describe("Min average cluster importance to promote"),
+  },
+  async ({ scope, dryRun, minOccurrences, minImportance }) => {
+    const { store, embedder } = getComponents();
+    const deps = buildPromoteScanDeps({ store, embedder, conflictStore, kgExtractor });
+    const result = await scanMemoryPromotions(deps, scope, { dryRun, minOccurrences, minImportance });
+
+    return {
+      content: [{
+        type: "text" as const,
+        text: formatPromoteScanResult(result),
       }],
     };
   },

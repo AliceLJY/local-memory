@@ -95,12 +95,12 @@ function extractSteps(text: string): string {
 // Greedy Clustering (same approach as consolidation-engine's C-2)
 // ---------------------------------------------------------------------------
 
-interface Cluster {
+export interface Cluster {
   seed: MemoryEntry;
   members: MemoryEntry[];
 }
 
-function greedyCluster(
+export function greedyCluster(
   entries: MemoryEntry[],
   threshold: number,
 ): Cluster[] {
