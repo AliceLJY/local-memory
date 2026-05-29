@@ -282,7 +282,7 @@ function buildSearchRow(index: number, query: string, result: RetrievalResult): 
   return [
     String(index + 1).padEnd(2),
     result.entry.id.slice(0, 8).padEnd(8),
-    `${(result.score * 100).toFixed(0)}%`.padEnd(5),
+    `${(result.score * 100).toFixed(1)}%`.padEnd(6),
     getCategoryLabel(result).padEnd(12),
     getTierLabel(result).padEnd(10),
     getSourceLabel(result).padEnd(7),
@@ -308,7 +308,7 @@ export function formatBriefResults(
   for (let i = 0; i < results.length; i++) {
     const r = results[i];
     const excerpt = extractBriefExcerpt(r);
-    lines.push(`#${i + 1} ${r.entry.id.slice(0, 8)} ${Math.round(r.score * 100)}% — ${excerpt}`);
+    lines.push(`#${i + 1} ${r.entry.id.slice(0, 8)} ${(r.score * 100).toFixed(1)}% — ${excerpt}`);
   }
   return lines.join("\n");
 }
@@ -398,7 +398,7 @@ export function formatExplainResults(
 
   for (let i = 0; i < results.length; i++) {
     const result = results[i];
-    const score = `${(result.score * 100).toFixed(0)}%`;
+    const score = `${(result.score * 100).toFixed(1)}%`;
     const retrieval = getRetrievalPath(result);
     const file = getFileLabel(result);
     const session = getSessionLabel(result);

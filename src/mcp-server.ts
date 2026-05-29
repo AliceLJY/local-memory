@@ -951,7 +951,7 @@ registerTool(
 // --- search_memory tool ---
 registerTool(
   "search_memory",
-  "Search indexed memories by semantic similarity and return ranked results with optional temporal filtering. Read-only, but may fire stored reminders as a side effect. Use proactively at the start of tasks, when debugging, writing, or when the user references past work.",
+  "Search indexed memories by hybrid relevance (vector + BM25 + reranking) and return ranked results with optional temporal filtering. The shown score is a fused ranking score (0-100%), NOT pure cosine similarity — read it as relative ranking within this result set, not as match confidence. Read-only, but may fire stored reminders as a side effect. Use proactively at the start of tasks, when debugging, writing, or when the user references past work.",
   {
     query: z.string().describe("Search query — natural language or keywords"),
     limit: z.number().min(1).max(20).default(5).describe("Max results to return"),

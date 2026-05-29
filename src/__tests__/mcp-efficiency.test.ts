@@ -180,8 +180,8 @@ describe("MCP-2: formatBriefResults", () => {
     const output = formatBriefResults(results, { query: "typescript" });
     expect(output).toContain("Query: typescript");
     expect(output).toContain("Hits: 2");
-    expect(output).toContain("#1 aabbccdd 92%");
-    expect(output).toContain("#2 11223344 78%");
+    expect(output).toContain("#1 aabbccdd 92.0%");
+    expect(output).toContain("#2 11223344 78.0%");
     expect(output).toContain("User prefers TypeScript");
   });
 
