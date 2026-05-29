@@ -81,6 +81,15 @@ const DIAGNOSTIC_ARTIFACT_PATTERNS = [
   /^只回复精确代号/i,
 ];
 
+// CC bridge injected agent prompts: the Telegram bridge writes CC's own system
+// prompts (reply / self-decision templates) as `user` turns, which transcript
+// ingest then mis-extracts as profile/preferences. They are never user content.
+const AGENT_PROMPT_PATTERNS = [
+  /^#{1,3}\s*CC\s+(Reply|Self-Decision)\s+Prompt\b/im,
+  /你不是\s*Alice\s*的数字分身/,
+  /你是\s*CC[。.]?\s*(Alice\s*刚给你发了消息|现在你周期性醒来)/,
+];
+
 export interface NoiseFilterOptions {
   /** Filter agent denial responses (default: true) */
   filterDenials?: boolean;
@@ -88,12 +97,15 @@ export interface NoiseFilterOptions {
   filterMetaQuestions?: boolean;
   /** Filter session boilerplate (default: true) */
   filterBoilerplate?: boolean;
+  /** Filter CC bridge injected agent prompts (default: true) */
+  filterAgentPrompts?: boolean;
 }
 
 const DEFAULT_OPTIONS: Required<NoiseFilterOptions> = {
   filterDenials: true,
   filterMetaQuestions: true,
   filterBoilerplate: true,
+  filterAgentPrompts: true,
 };
 
 /**
@@ -136,6 +148,11 @@ export function isNoise(text: string, options: NoiseFilterOptions = {}): boolean
   // Diagnostic artifact noise (synced from upstream v1.1.0-beta.3)
   if (DIAGNOSTIC_ARTIFACT_PATTERNS.some(p => p.test(trimmed))) {
     logInfo(`[INFO] noise-filter: diagnostic artifact filtered: "${trimmed.slice(0, 60)}..."`);
+    return true;
+  }
+  // CC bridge injected agent prompts (reply/self-decision templates leaked as user turns)
+  if (opts.filterAgentPrompts && AGENT_PROMPT_PATTERNS.some(p => p.test(trimmed))) {
+    logInfo(`[INFO] noise-filter: agent prompt filtered: "${trimmed.slice(0, 60)}..."`);
     return true;
   }
 
