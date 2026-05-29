@@ -34,10 +34,19 @@ function makeEntry(overrides: Partial<MemoryEntry> & { id: string }): MemoryEntr
   };
 }
 
-function createMockStore(entries: MemoryEntry[]): Pick<MemoryStore, "list"> {
+function createMockStore(entries: MemoryEntry[]): Pick<MemoryStore, "list" | "getVectors"> {
   return {
-    async list() { return entries; },
-  } as Pick<MemoryStore, "list">;
+    // 复刻真实 store:list() 为性能不返回向量(vector: []),lint 需经 getVectors 补回。
+    // 旧 mock 直接返回带向量的 entry,与生产行为不符,曾掩盖矛盾/去重在生产哑火的 bug。
+    async list() { return entries.map(e => ({ ...e, vector: [] })); },
+    async getVectors(ids: string[]) {
+      const map = new Map<string, number[]>();
+      for (const e of entries) {
+        if (ids.includes(e.id) && e.vector.length > 0) map.set(e.id, e.vector);
+      }
+      return map;
+    },
+  } as Pick<MemoryStore, "list" | "getVectors">;
 }
 
 // ---------------------------------------------------------------------------

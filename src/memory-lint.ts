@@ -37,6 +37,8 @@ export interface MemoryLintReport {
   findings: LintFinding[];
   healthScore: number;  // 0-100
   totalScanned: number;
+  /** True if the scan hit the 10000-entry cap (older entries were not analyzed). */
+  scanLimited: boolean;
   timestamp: string;
   summary: {
     contradictions: number;
@@ -48,7 +50,7 @@ export interface MemoryLintReport {
 }
 
 export interface LintDeps {
-  store: Pick<MemoryStore, "list">;
+  store: Pick<MemoryStore, "list" | "getVectors">;
   scope?: string;
   verbose?: boolean;
 }
@@ -395,10 +397,17 @@ export function computeHealthScore(
  */
 export async function runMemoryLint(deps: LintDeps): Promise<MemoryLintReport> {
   const scopeFilter = deps.scope ? [deps.scope] : undefined;
-  const allEntries = await deps.store.list(scopeFilter, undefined, 10000, 0);
+  const SCAN_LIMIT = 10000;
+  const allEntries = await deps.store.list(scopeFilter, undefined, SCAN_LIMIT, 0);
+  const scanLimited = allEntries.length >= SCAN_LIMIT;
 
   // Filter to active entries only
-  const entries = allEntries.filter(e => isActiveMemory(e.metadata));
+  const activeEntries = allEntries.filter(e => isActiveMemory(e.metadata));
+
+  // list() 为性能不返回向量(vector: []);矛盾/去重检查靠向量算相似度,否则恒为 0、
+  // 静默失效并给出虚假 all-clear。补回真实向量再检查(stale/orphan/weakLesson 不依赖向量)。
+  const vectorMap = await deps.store.getVectors(activeEntries.map(e => e.id));
+  const entries = activeEntries.map(e => ({ ...e, vector: vectorMap.get(e.id) ?? [] }));
 
   // Run all checks
   const contradictions = findContradictions(entries);
@@ -421,6 +430,7 @@ export async function runMemoryLint(deps: LintDeps): Promise<MemoryLintReport> {
     findings,
     healthScore: computeHealthScore(summary, entries.length),
     totalScanned: entries.length,
+    scanLimited,
     timestamp: new Date().toISOString(),
     summary,
   };
@@ -437,7 +447,7 @@ export function formatMemoryLintReport(report: MemoryLintReport): string {
   // All clear case
   if (report.findings.length === 0) {
     lines.push("Memory Lint: All Clear!");
-    lines.push(`Scanned: ${report.totalScanned} active memories`);
+    lines.push(`Scanned: ${report.totalScanned} active memories${report.scanLimited ? " (达扫描上限 10000，更早记忆未分析)" : ""}`);
     lines.push(`Health Score: ${report.healthScore}/100`);
     return lines.join("\n");
   }
@@ -445,7 +455,7 @@ export function formatMemoryLintReport(report: MemoryLintReport): string {
   // Header
   lines.push(`Memory Lint Report (${report.timestamp})`);
   lines.push("=".repeat(44));
-  lines.push(`Scanned: ${report.totalScanned} active memories`);
+  lines.push(`Scanned: ${report.totalScanned} active memories${report.scanLimited ? " (达扫描上限 10000，更早记忆未分析)" : ""}`);
   lines.push("");
 
   // Contradictions

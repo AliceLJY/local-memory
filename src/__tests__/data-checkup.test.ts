@@ -32,13 +32,22 @@ function makeEntry(overrides: Partial<MemoryEntry> & { id: string }): MemoryEntr
   };
 }
 
-function createMockStore(entries: MemoryEntry[]): Pick<MemoryStore, "list" | "stats"> {
+function createMockStore(entries: MemoryEntry[]): Pick<MemoryStore, "list" | "stats" | "getVectors"> {
   return {
-    async list() { return entries; },
+    // 复刻真实 store:list() 为性能不返回向量(vector: []),维度/干扰检查需经 getVectors 补回。
+    // 旧 mock 直接返回带向量的 entry,与生产行为不符,曾掩盖维度检查在生产假报健康的 bug。
+    async list() { return entries.map(e => ({ ...e, vector: [] })); },
     async stats() {
       return { totalCount: entries.length, scopeCounts: {}, categoryCounts: {} };
     },
-  } as Pick<MemoryStore, "list" | "stats">;
+    async getVectors(ids: string[]) {
+      const map = new Map<string, number[]>();
+      for (const e of entries) {
+        if (ids.includes(e.id) && e.vector.length > 0) map.set(e.id, e.vector);
+      }
+      return map;
+    },
+  } as Pick<MemoryStore, "list" | "stats" | "getVectors">;
 }
 
 // ---------------------------------------------------------------------------
@@ -212,6 +221,7 @@ describe("formatCheckupReport", () => {
         { name: "check_c", status: "error", detail: "big problem" },
       ],
       totalEntries: 100,
+      totalAvailable: 100,
       timestamp: "2026-04-03T12:00:00.000Z",
     };
 

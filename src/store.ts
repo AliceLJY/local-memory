@@ -799,19 +799,23 @@ export class MemoryStore implements MemoryStorePort {
    */
   async getVectors(ids: string[]): Promise<Map<string, number[]>> {
     await this.ensureInitialized();
-    if (ids.length === 0) return new Map();
-
-    const conditions = ids.map(id => `id = '${escapeSqlLiteral(id)}'`).join(" OR ");
-    const rows = await this.table!.query()
-      .select(["id", "vector"])
-      .where(conditions)
-      .limit(ids.length)
-      .toArray();
-
     const result = new Map<string, number[]>();
-    for (const row of rows) {
-      const vec = Array.from(row.vector as Iterable<number>);
-      if (vec.length > 0) result.set(row.id as string, vec);
+    if (ids.length === 0) return result;
+
+    // 分批:避免 id 很多时 OR 链过长（如 data-checkup/memory-lint 一次补几千条向量）。
+    const BATCH = 500;
+    for (let i = 0; i < ids.length; i += BATCH) {
+      const batch = ids.slice(i, i + BATCH);
+      const conditions = batch.map(id => `id = '${escapeSqlLiteral(id)}'`).join(" OR ");
+      const rows = await this.table!.query()
+        .select(["id", "vector"])
+        .where(conditions)
+        .limit(batch.length)
+        .toArray();
+      for (const row of rows) {
+        const vec = Array.from(row.vector as Iterable<number>);
+        if (vec.length > 0) result.set(row.id as string, vec);
+      }
     }
     return result;
   }

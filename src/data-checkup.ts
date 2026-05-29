@@ -30,6 +30,8 @@ export interface CheckResult {
 export interface CheckupReport {
   checks: CheckResult[];
   totalEntries: number;
+  /** Total entries in store; when > totalEntries, only the most recent were scanned. */
+  totalAvailable: number;
   timestamp: string;
 }
 
@@ -39,15 +41,33 @@ export interface CheckupReport {
 
 /** Check 1: All vectors should have the same dimension. */
 function checkVectorDimensions(entries: MemoryEntry[]): CheckResult {
+  // 只对真正取到向量的条目判维度一致性;取不到向量的(dim=0)单独计数后跳过——
+  // 否则会把"未补到向量"误报成"维度不一致",或把"全 0 维空向量"假报成健康。
   const dims = new Map<number, number>(); // dim → count
+  let missingVectors = 0;
   for (const e of entries) {
     const d = e.vector?.length ?? 0;
+    if (d === 0) { missingVectors++; continue; }
     dims.set(d, (dims.get(d) ?? 0) + 1);
   }
 
-  if (dims.size <= 1) {
+  const withVectors = entries.length - missingVectors;
+  if (entries.length === 0) {
+    return { name: "vector_dimensions", status: "ok", detail: "No entries to check" };
+  }
+  if (withVectors === 0) {
+    return {
+      name: "vector_dimensions",
+      status: "warning",
+      detail: `No retrievable vectors among ${entries.length} entries — dimension consistency not verified`,
+    };
+  }
+
+  const suffix = missingVectors > 0 ? ` (${missingVectors} without retrievable vector, skipped)` : "";
+
+  if (dims.size === 1) {
     const dim = dims.keys().next().value ?? 0;
-    return { name: "vector_dimensions", status: "ok", detail: `All ${entries.length} entries have dimension ${dim}` };
+    return { name: "vector_dimensions", status: "ok", detail: `All ${withVectors} vectors have dimension ${dim}${suffix}` };
   }
 
   const sorted = [...dims.entries()].sort((a, b) => b[1] - a[1]);
@@ -56,7 +76,7 @@ function checkVectorDimensions(entries: MemoryEntry[]): CheckResult {
   return {
     name: "vector_dimensions",
     status: "error",
-    detail: `${mismatched} entries have wrong dimension (expected ${expected}): ${sorted.map(([d, c]) => `dim=${d}: ${c}`).join(", ")}`,
+    detail: `${mismatched} entries have wrong dimension (expected ${expected}): ${sorted.map(([d, c]) => `dim=${d}: ${c}`).join(", ")}${suffix}`,
   };
 }
 
@@ -217,14 +237,23 @@ function checkInterferenceDensity(entries: MemoryEntry[]): CheckResult {
 // ---------------------------------------------------------------------------
 
 export interface CheckupDeps {
-  store: Pick<MemoryStore, "list" | "stats">;
+  store: Pick<MemoryStore, "list" | "stats" | "getVectors">;
   openConflictCount: number;
   /** Optional override path for source-heartbeat.json (used in tests). */
   heartbeatPath?: string;
 }
 
 export async function runDataCheckup(deps: CheckupDeps): Promise<CheckupReport> {
-  const entries = await deps.store.list(undefined, undefined, 10000, 0);
+  const SCAN_LIMIT = 10000;
+  const listed = await deps.store.list(undefined, undefined, SCAN_LIMIT, 0);
+
+  // list() 为性能不返回向量(vector: []);维度/干扰检查靠向量,否则把"全 0 维"
+  // 误判成健康、干扰分析永远"样本不足"。补回真实向量再检查。
+  const vectorMap = await deps.store.getVectors(listed.map(e => e.id));
+  const entries = listed.map(e => ({ ...e, vector: vectorMap.get(e.id) ?? [] }));
+
+  // 截断披露:库总量 > 已扫,说明只体检了最近 SCAN_LIMIT 条。
+  const totalAvailable = (await deps.store.stats()).totalCount;
 
   return {
     checks: [
@@ -237,14 +266,18 @@ export async function runDataCheckup(deps: CheckupDeps): Promise<CheckupReport> 
       checkInterferenceDensity(entries),
     ],
     totalEntries: entries.length,
+    totalAvailable,
     timestamp: new Date().toISOString(),
   };
 }
 
 export function formatCheckupReport(report: CheckupReport): string {
+  const truncationNote = report.totalAvailable > report.totalEntries
+    ? ` (of ${report.totalAvailable} total — only the most recent ${report.totalEntries} analyzed)`
+    : "";
   const lines = [
     `Data Checkup Report (${report.timestamp})`,
-    `Total entries scanned: ${report.totalEntries}`,
+    `Total entries scanned: ${report.totalEntries}${truncationNote}`,
     "",
   ];
 

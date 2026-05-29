@@ -48,13 +48,21 @@ function makeEntry(id: string): MemoryEntry {
   };
 }
 
-function createMockStore(entries: MemoryEntry[]): Pick<MemoryStore, "list" | "stats"> {
+function createMockStore(entries: MemoryEntry[]): Pick<MemoryStore, "list" | "stats" | "getVectors"> {
   return {
-    async list() { return entries; },
+    // 复刻真实 store:list() 为性能不返回向量,诊断检查经 getVectors 补回。
+    async list() { return entries.map(e => ({ ...e, vector: [] })); },
     async stats() {
       return { totalCount: entries.length, scopeCounts: {}, categoryCounts: {} };
     },
-  } as Pick<MemoryStore, "list" | "stats">;
+    async getVectors(ids: string[]) {
+      const map = new Map<string, number[]>();
+      for (const e of entries) {
+        if (ids.includes(e.id) && e.vector && e.vector.length > 0) map.set(e.id, e.vector);
+      }
+      return map;
+    },
+  } as Pick<MemoryStore, "list" | "stats" | "getVectors">;
 }
 
 // ---------------------------------------------------------------------------
