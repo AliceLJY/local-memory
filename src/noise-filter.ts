@@ -102,10 +102,15 @@ const AGENT_PROMPT_PATTERNS = [
 // alone (it may be real discussion); only orphaned field-lines (start as "key":
 // with no brace) and dangling structural tokens (leading , } ]) qualify.
 const CONTEXT_JSON_FRAGMENT_PATTERNS = [
-  // bridge/distill proprietary schema keys — never appear in human conversation
-  /"(?:next_check_hint|alice_interaction_stats(?:_7d)?|alice_last_cc_hours_ago|engagement_rate|seen_no_reply|distilled_at)"\s*:/,
-  // orphan field-line: whole chunk starts as  "key": value  with no { wrapper
-  /^"?[A-Za-z_][\w]*"\s*:\s*(?:["\d[{]|true\b|false\b|null\b)/,
+  // bridge/distill proprietary schema keys — ANCHORED to line start (^). These
+  // keys are also RecallNest's own schema fields, so a real memory may MENTION
+  // them inline (e.g. 我们讨论 "distilled_at": 要不要保留); anchoring ensures only
+  // an orphaned line that LEADS with the key is filtered, not such discussion.
+  /^"?(?:next_check_hint|alice_interaction_stats(?:_7d)?|alice_last_cc_hours_ago|engagement_rate|seen_no_reply|distilled_at)"\s*:/,
+  // orphan field-line: whole chunk starts as  "key": <scalar>  with no { wrapper.
+  // SCALAR values only (string/number/bool/null). A `{` or `[` value is left
+  // alone so real config / package.json chunks like `"scripts": {` survive.
+  /^"?[A-Za-z_][\w]*"\s*:\s*(?:"|\d|true\b|false\b|null\b)/,
   // severed JSON array/object element: a dangling , } ] then a NEWLINE into a
   // brace/quoted-key. Requiring the newline-then-JSON shape avoids real code
   // fragments like `} catch (e) {` or `});` (close-token followed by code on

@@ -148,4 +148,16 @@ describe("isNoise — bridge/distill context JSON fragments", () => {
   it("keeps a diff hunk that opens with a closing brace", () => {
     expect(isNoise(`}\n\n=== DIFF: src/cli.ts ===\n@@ -1361,8 +1361,10 @@`)).toBe(false);
   });
+
+  // Guards from Codex review: real memories that DISCUSS RecallNest's own JSON
+  // schema fields inline, or paste config with object-valued keys, must survive.
+  it("keeps a real memory that mentions a proprietary field name inline", () => {
+    expect(isNoise(`我们刚才讨论 "distilled_at": 这个字段要不要保留`)).toBe(false);
+  });
+  it("keeps a config chunk opening with an object-valued key", () => {
+    expect(isNoise(`"scripts": {`)).toBe(false);
+  });
+  it("still filters an orphan line that LEADS with a proprietary key", () => {
+    expect(isNoise(`"next_check_hint": "tomorrow_morning"`)).toBe(true);
+  });
 });
