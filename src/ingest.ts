@@ -860,7 +860,7 @@ function filterNoiseTurns(turns: ConversationTurn[]): ConversationTurn[] {
   return turns.filter((turn) => !isNoise(turn.text));
 }
 
-function groupTurnsIntoChunks(turns: ConversationTurn[]): Array<{
+export function groupTurnsIntoChunks(turns: ConversationTurn[]): Array<{
   text: string;
   timestamp: string;
   sessionId: string;
@@ -933,7 +933,10 @@ function groupTurnsIntoChunks(turns: ConversationTurn[]): Array<{
     }
   }
 
-  return chunks;
+  // P1 defence-in-depth: re-filter AFTER splitting. Long turns pass the
+  // turn-level filterNoiseTurns gate, but chunking can peel their tail into
+  // severed context-JSON fragments that the turn-level check never saw.
+  return chunks.filter((c) => !isNoise(c.text));
 }
 
 // ============================================================================

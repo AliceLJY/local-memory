@@ -94,6 +94,25 @@ const AGENT_PROMPT_PATTERNS = [
   /节奏要求[：:]\s*[\r\n]+\s*[-*]\s*短话题/,
 ];
 
+// CC bridge self-decision / RecallNest distill payloads embed structured JSON
+// (decision logs, conversation history, interaction stats). Long prompts get
+// split by transcript chunking, orphaning JSON field-lines that lost their
+// enclosing braces — these survive ingest looking like preferences. We match
+// the severed-fragment SHAPE, not JSON in general: a complete { } object is left
+// alone (it may be real discussion); only orphaned field-lines (start as "key":
+// with no brace) and dangling structural tokens (leading , } ]) qualify.
+const CONTEXT_JSON_FRAGMENT_PATTERNS = [
+  // bridge/distill proprietary schema keys — never appear in human conversation
+  /"(?:next_check_hint|alice_interaction_stats(?:_7d)?|alice_last_cc_hours_ago|engagement_rate|seen_no_reply|distilled_at)"\s*:/,
+  // orphan field-line: whole chunk starts as  "key": value  with no { wrapper
+  /^"?[A-Za-z_][\w]*"\s*:\s*(?:["\d[{]|true\b|false\b|null\b)/,
+  // severed JSON array/object element: a dangling , } ] then a NEWLINE into a
+  // brace/quoted-key. Requiring the newline-then-JSON shape avoids real code
+  // fragments like `} catch (e) {` or `});` (close-token followed by code on
+  // the same line, never a newline into a JSON key).
+  /^[,}\]]+[ \t]*\r?\n\s*[{[]?\s*"[A-Za-z_]/,
+];
+
 export interface NoiseFilterOptions {
   /** Filter agent denial responses (default: true) */
   filterDenials?: boolean;
@@ -157,6 +176,11 @@ export function isNoise(text: string, options: NoiseFilterOptions = {}): boolean
   // CC bridge injected agent prompts (reply/self-decision templates leaked as user turns)
   if (opts.filterAgentPrompts && AGENT_PROMPT_PATTERNS.some(p => p.test(trimmed))) {
     logInfo(`[INFO] noise-filter: agent prompt filtered: "${trimmed.slice(0, 60)}..."`);
+    return true;
+  }
+  // Severed bridge/distill context-JSON fragments (orphaned field-lines from chunking)
+  if (opts.filterAgentPrompts && CONTEXT_JSON_FRAGMENT_PATTERNS.some(p => p.test(trimmed))) {
+    logInfo(`[INFO] noise-filter: context JSON fragment filtered: "${trimmed.slice(0, 60)}..."`);
     return true;
   }
 

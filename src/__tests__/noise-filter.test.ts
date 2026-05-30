@@ -71,3 +71,81 @@ describe("isNoise — CC bridge injected prompts", () => {
     expect(isNoise(CC_REPLY_PROMPT, { filterAgentPrompts: false })).toBe(false);
   });
 });
+
+// Real samples drawn from the promote-scan --min-occurrences 2 candidate dump:
+// long bridge self-decision / distill payloads embed structured JSON (decision
+// logs, conversation history, stats). Transcript chunking splits them, so a
+// JSON field-line survives as a standalone chunk after losing its { } wrapper —
+// it then looks like a preference. The defining trait is an orphaned field-line
+// (starts as "key":, no brace) or a severed structural token (leading , } ]).
+describe("isNoise — bridge/distill context JSON fragments", () => {
+  it("filters an orphan self-decision action field-line", () => {
+    expect(isNoise(`"action": "silent",`)).toBe(true);
+  });
+  it("filters an orphan reasoning field-line", () => {
+    expect(isNoise(`"reasoning": "现在是凌晨4点，在静默窗口内。她应该在睡觉。",`)).toBe(true);
+  });
+  it("filters an orphan conversation-history role field-line", () => {
+    expect(isNoise(`"role": "assistant",`)).toBe(true);
+  });
+  it("filters a field-line whose leading quote was severed by chunking", () => {
+    expect(isNoise(`content": "头发乱一点，比我那张更随意，有点文艺感。",`)).toBe(true);
+  });
+  it("filters an isolated ISO-timestamp field-line", () => {
+    expect(isNoise(`"time": "2026-05-21T15:42:03.796Z"`)).toBe(true);
+  });
+  it("filters the bridge proprietary next_check_hint key", () => {
+    expect(isNoise(`"next_check_hint": "tomorrow_morning"`)).toBe(true);
+  });
+  it("filters the distill proprietary distilled_at key", () => {
+    expect(isNoise(`"distilled_at": "2026-05-22T05:12:13.309Z"`)).toBe(true);
+  });
+  it("filters the bridge proprietary alice_interaction_stats key", () => {
+    expect(isNoise(`"alice_interaction_stats_7d": {`)).toBe(true);
+  });
+  it("filters a fragment that starts with a dangling comma (severed mid-object)", () => {
+    expect(
+      isNoise(`,\n  {\n    "role": "user",\n    "content": "对，就是看这个",\n    "time": "2026-05-22T12:46:19.937Z"`),
+    ).toBe(true);
+  });
+  it("filters a multi-line self-decision JSON block", () => {
+    expect(
+      isNoise(`"action": "silent",\n    "message": "",\n    "reasoning": "凌晨2点，静默窗口，她在睡觉。",\n    "next_check_hint": "tomorrow_morning"`),
+    ).toBe(true);
+  });
+
+  // Guards: must NOT over-filter real conversation or legitimate JSON discussion
+  it("keeps a real message discussing JSON inline", () => {
+    expect(isNoise(`这个配置 {"action": "silent"} 你看对不对？`)).toBe(false);
+  });
+  it("keeps a complete brace-wrapped JSON object as possible real discussion", () => {
+    expect(isNoise(`{"action": "silent", "reasoning": "test"}`)).toBe(false);
+  });
+  it("keeps natural language that merely mentions a json-ish word", () => {
+    expect(isNoise(`我觉得 time 管理这块你得帮我盯紧一点`)).toBe(false);
+  });
+  it("keeps a message that opens with an English quoted phrase", () => {
+    expect(isNoise(`"hello world" 是我们的开场白，你记一下`)).toBe(false);
+  });
+  it("keeps a real reply that opens with a Chinese quote", () => {
+    expect(isNoise(`"去上班，乖" 这句你昨天说过，我记得`)).toBe(false);
+  });
+
+  // Guards against over-filtering real code discussion — the cc bot reviews
+  // code, so split chunks routinely open with closing braces/brackets.
+  it("keeps a code fragment opening with a closing brace", () => {
+    expect(isNoise(`} catch (e) {\n  console.error(e);\n}`)).toBe(false);
+  });
+  it("keeps a code fragment opening with });", () => {
+    expect(isNoise(`});\n\nfunction next() { return 1; }`)).toBe(false);
+  });
+  it("keeps a code fragment opening with a closing bracket", () => {
+    expect(isNoise(`]\n  return result;`)).toBe(false);
+  });
+  it("keeps an unquoted-key object/type line (no JSON string key)", () => {
+    expect(isNoise(`name: string; // 字段定义`)).toBe(false);
+  });
+  it("keeps a diff hunk that opens with a closing brace", () => {
+    expect(isNoise(`}\n\n=== DIFF: src/cli.ts ===\n@@ -1361,8 +1361,10 @@`)).toBe(false);
+  });
+});
