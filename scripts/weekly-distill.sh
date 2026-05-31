@@ -42,8 +42,8 @@ for attempt in 1 2 3; do
   STATUS_LINE=$(grep -aoE '\[\[DISTILL_STATUS\]\] (ok|blocked)' "$DISTILL_OUT" 2>/dev/null | tail -1)
   [ "$STATUS_LINE" = "[[DISTILL_STATUS]] ok" ] && break
   if [ "$attempt" -lt 3 ] && grep -qaiE "403|Failed to authenticate|Request not allowed|Not logged in" "$DISTILL_OUT" 2>/dev/null; then
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] 冷启动鉴权失败，退避 10s 后重试..."
-    sleep 10
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] 冷启动鉴权失败，退避 60s 后重试..."
+    sleep 60
   else
     break
   fi
