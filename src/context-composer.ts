@@ -32,6 +32,8 @@ type ResumeCategory = "profile" | "preferences" | "entities" | "patterns" | "cas
 
 interface ResumeRetriever {
   retrieve(context: RetrievalContext): Promise<RetrievalResult[]>;
+  /** Optional: 影子记录 resume reconstruction 引用的记忆（injection-vs-use）。未实现则 no-op。 */
+  recordReconstructionUsage?(citedIds: string[]): Promise<void>;
 }
 
 interface CheckpointLookup {
@@ -488,6 +490,10 @@ export async function composeResumeContext(
         }
         if (recon.contradictions.length > 0) {
           reconstructionContradictions = recon.contradictions;
+        }
+        // Shadow usage：resume reconstruction 真正引用的记忆记 use 计数（不动 ranking/forget）。
+        if (recon.sources.length > 0) {
+          await deps.retriever.recordReconstructionUsage?.(recon.sources.map(s => s.id));
         }
       } catch { /* silent fallback */ }
     }

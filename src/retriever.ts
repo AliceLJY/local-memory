@@ -42,6 +42,7 @@ import { parseNarrative, isNarrativeModeEnabled } from "./narrative-schema.js";
 import type { EmotionMetadata } from "./memory-schema.js";
 import { detectEmotion } from "./emotion-detector.js";
 import { shouldReconstruct, reconstruct as runReconstruction } from "./context-reconstructor.js";
+import { recordReconstructionUsage as runUsageShadow } from "./usage-tracker.js";
 import type {
   ReconstructionLLMClient,
   ReconstructionOutput,
@@ -669,6 +670,16 @@ export class MemoryRetriever {
     this.llmClient = client;
   }
 
+  /**
+   * Shadow-record which memories a reconstruction actually cited via [src:ID].
+   * 影子统计：写 metadata.usage（injection-vs-use 双计数），第一阶段不参与 ranking/forget。
+   * best-effort：不传 scope（影子写入不做权限过滤，避免跨 scope 扩展候选触发越权 throw）；
+   * 内部 allSettled 不抛错，绝不阻断主检索/resume 流程。
+   */
+  async recordReconstructionUsage(citedIds: string[]): Promise<void> {
+    await runUsageShadow(this.store, citedIds);
+  }
+
   /** Suppress a memory ID for the current session (score × 0.3). */
   suppressForSession(id: string): void {
     this.sessionSuppressed.add(id);
@@ -805,6 +816,8 @@ export class MemoryRetriever {
           expansionDeps,
         );
         resultSet.reconstruction = reconstruction;
+        // Shadow usage：记录被 reconstruction 真正引用的记忆（use 信号），不动 ranking/forget。
+        await this.recordReconstructionUsage(reconstruction.sources.map(s => s.id));
       } catch {
         // Silent degradation — return raw results
       }
