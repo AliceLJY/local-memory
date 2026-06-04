@@ -12,8 +12,8 @@ A local-first memory system backed by LanceDB that turns scattered conversation 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Runtime](https://img.shields.io/badge/Runtime-Bun_|_Node.js_18+-f9f1e1?logo=bun)](https://bun.sh)
 [![LanceDB](https://img.shields.io/badge/LanceDB-Vector+FTS-orange)](https://lancedb.com)
-[![MCP](https://img.shields.io/badge/MCP-41_tools-blue)](https://modelcontextprotocol.io)
-[![Tests](https://img.shields.io/badge/Tests-1486_pass-brightgreen)](https://github.com/AliceLJY/recallnest)
+[![MCP](https://img.shields.io/badge/MCP-42_tools-blue)](https://modelcontextprotocol.io)
+[![Tests](https://img.shields.io/badge/Tests-1573_pass-brightgreen)](https://github.com/AliceLJY/recallnest)
 [![CC Plugin](https://img.shields.io/badge/Claude_Code-Plugin-blueviolet)](https://github.com/AliceLJY/recallnest)
 
 **English** | [简体中文](README_CN.md) | [Roadmap](ROADMAP.md)
@@ -26,22 +26,8 @@ A local-first memory system backed by LanceDB that turns scattered conversation 
 
 Coding agents forget everything between windows. Your context — project configs, debugging decisions, entity mappings — is scattered across Claude Code, Codex, and Gemini CLI with no shared memory.
 
-RecallNest solves this: **a single LanceDB-backed memory layer that all three terminals read and write**. Context stored in one window is auto-recalled in another. Sessions checkpoint on exit and resume on start. Memory decays, evolves, and self-organizes — not just raw log storage.
+RecallNest solves this: **a single LanceDB-backed memory layer that your coding agents read and write**. Context stored in one window is auto-recalled in another. Sessions checkpoint on exit and resume on start. Memory decays, evolves, and self-organizes — not just raw log storage.
 
-### Benchmark: LongMemEval (ICLR 2025)
-
-Evaluated on 500 questions across 6 memory abilities ([methodology](https://arxiv.org/abs/2407.15168)):
-
-| | RecallNest | Vector-only baseline | Delta |
-|---|---|---|---|
-| Overall Accuracy | **29.6%** | 24.2% | **+5.4pp** |
-| User Facts | **64.3%** | 52.9% | +11.4pp |
-| Knowledge Update | **43.6%** | 42.3% | +1.3pp |
-| Abstention Rate | **55.6%** | 67.8% | **-12.2pp** |
-
-Wins or ties in **all 6 categories**, with no regression. The hybrid retrieval pipeline (BM25 + vector + recency + RIF dedup) surfaces 12.2% more relevant context than vector-only search.
-
----
 
 ## Quick Start
 
@@ -326,7 +312,7 @@ Examples live in [`integrations/examples/`](integrations/examples/):
 ---
 
 <details>
-<summary><strong>MCP Tools (41 tools)</strong></summary>
+<summary><strong>MCP Tools (42 tools)</strong></summary>
 
 | Tool | Description |
 |------|-------------|
@@ -337,6 +323,7 @@ Examples live in [`integrations/examples/`](integrations/examples/):
 | `store_workflow_pattern` | Store a reusable workflow as durable `patterns` memory |
 | `store_case` | Store a reusable problem-solution pair as durable `cases` memory |
 | `promote_memory` | Explicitly promote evidence into durable memory |
+| `promote_scan` | Scan recent evidence and auto-promote qualifying memories into durable storage |
 | `list_conflicts` | List or inspect promotion conflict candidates |
 | `audit_conflicts` | Summarize stale/escalated conflict priorities |
 | `escalate_conflicts` | Preview or apply conflict escalation metadata |
