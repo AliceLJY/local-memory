@@ -19,6 +19,7 @@
 import type { MemoryEntry, MemoryStore } from "./store.js";
 import { cosineSimilarity } from "./multi-vector.js";
 import { parseEvolution, isActiveMemory } from "./memory-evolution.js";
+import { deriveUsageStatus } from "./usage-tracker.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -46,6 +47,8 @@ export interface MemoryLintReport {
     staleMemories: number;
     orphans: number;
     weakLessons: number;
+    /** P0 B-1: cold 记忆数(被反复 surface 却从未被引用)。 */
+    coldMemories: number;
   };
 }
 
@@ -347,6 +350,46 @@ function findWeakLessons(entries: MemoryEntry[]): LintFinding[] {
   return findings;
 }
 
+/**
+ * Check 6 (P0 B-1 观察): cold memories — 被反复 surface(accessCount ≥ 6)却
+ * 从未被 reconstruction [src:ID] 引用的记忆,召回位污染信号。
+ *
+ * 聚合为单条 finding(cold 可能有几千条,逐条 finding 会淹没报告);
+ * memoryIds 取 injection 最高的前 20 条供抽查。severity 永远是 info:
+ * B-1 是纯观察阶段,降权/归档要等观察数据校准后的 B-2。
+ */
+function findColdMemories(entries: MemoryEntry[]): { findings: LintFinding[]; coldCount: number } {
+  const cold: Array<{ id: string; injection: number }> = [];
+
+  for (const entry of entries) {
+    if (deriveUsageStatus(entry) !== "cold") continue;
+    let injection = 0;
+    try {
+      const meta = JSON.parse(entry.metadata || "{}") as Record<string, unknown>;
+      injection = typeof meta.accessCount === "number" ? meta.accessCount : 0;
+    } catch { /* keep 0 */ }
+    cold.push({ id: entry.id, injection });
+  }
+
+  if (cold.length === 0) return { findings: [], coldCount: 0 };
+
+  const pct = entries.length > 0 ? ((cold.length / entries.length) * 100).toFixed(1) : "0";
+  const topIds = cold
+    .sort((a, b) => b.injection - a.injection)
+    .slice(0, 20)
+    .map(c => c.id);
+
+  return {
+    coldCount: cold.length,
+    findings: [{
+      check: "coldMemory",
+      severity: "info",
+      detail: `${cold.length} cold memories (${pct}% of scanned): repeatedly surfaced (accessCount >= 6) but never cited by reconstruction. Top-20 by injection in memoryIds. Observation only (B-1) — no action taken.`,
+      memoryIds: topIds,
+    }],
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Health Score
 // ---------------------------------------------------------------------------
@@ -360,9 +403,13 @@ function findWeakLessons(entries: MemoryEntry[]): LintFinding[] {
  * - Stale: -0.5 each (minor, many are expected)
  * - Orphans: -3 each (moderate, broken references)
  * - Weak lessons: -2 each (pattern lacks action verbs, reuse-unfriendly)
+ * - Cold memories (P0 B-1): 按占比而非条数 — 超过 10% 的部分每个百分点 -1,
+ *   封顶 -10。cold 是反复 surface 零引用的召回污染信号,量大但单条危害小,
+ *   按条扣会瞬间扣穿。纯观察反馈,不触发任何动作。
  *
- * `weakLessons` is optional on the input type for backward compatibility —
- * callers constructing `summary` without this field still get a correct score.
+ * `weakLessons`/`coldMemories` are optional on the input type for backward
+ * compatibility — callers constructing `summary` without them still get a
+ * correct score.
  */
 export function computeHealthScore(
   summary: {
@@ -371,15 +418,20 @@ export function computeHealthScore(
     staleMemories: number;
     orphans: number;
     weakLessons?: number;
+    coldMemories?: number;
   },
-  _total: number,
+  total: number,
 ): number {
+  const coldPct = total > 0 ? ((summary.coldMemories ?? 0) / total) * 100 : 0;
+  const coldPenalty = Math.min(10, Math.max(0, Math.floor(coldPct - 10)));
+
   const penalty =
     summary.contradictions * 10 +
     summary.duplicates * 5 +
     Math.floor(summary.staleMemories * 0.5) +
     summary.orphans * 3 +
-    (summary.weakLessons ?? 0) * 2;
+    (summary.weakLessons ?? 0) * 2 +
+    coldPenalty;
 
   return Math.max(0, Math.min(100, 100 - penalty));
 }
@@ -415,8 +467,9 @@ export async function runMemoryLint(deps: LintDeps): Promise<MemoryLintReport> {
   const stale = findStaleMemories(entries);
   const orphans = findOrphans(entries);
   const weakLessons = findWeakLessons(entries);
+  const coldResult = findColdMemories(entries);
 
-  const findings = [...contradictions, ...duplicates, ...stale, ...orphans, ...weakLessons];
+  const findings = [...contradictions, ...duplicates, ...stale, ...orphans, ...weakLessons, ...coldResult.findings];
 
   const summary = {
     contradictions: contradictions.length,
@@ -424,6 +477,7 @@ export async function runMemoryLint(deps: LintDeps): Promise<MemoryLintReport> {
     staleMemories: stale.length,
     orphans: orphans.length,
     weakLessons: weakLessons.length,
+    coldMemories: coldResult.coldCount,
   };
 
   return {
@@ -521,6 +575,17 @@ export function formatMemoryLintReport(report: MemoryLintReport): string {
       }
     } else {
       lines.push(`  - ${items.length} patterns without action verbs (consider rewriting or promoting)`);
+    }
+    lines.push("");
+  }
+
+  // Cold Memories (P0 B-1 observation)
+  if (report.summary.coldMemories > 0) {
+    const item = report.findings.find(f => f.check === "coldMemory");
+    lines.push(`Cold Memories (${report.summary.coldMemories}):`);
+    if (item) {
+      lines.push(`  - ${item.detail}`);
+      lines.push(`  - top by injection: ${item.memoryIds.map(id => id.slice(0, 8)).join(", ")}`);
     }
     lines.push("");
   }

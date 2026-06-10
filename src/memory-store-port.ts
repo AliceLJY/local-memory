@@ -32,5 +32,12 @@ export interface MemoryStorePort {
   getById(id: string): Promise<MemoryEntry | null>;
   store(entry: Omit<MemoryEntry, "id" | "timestamp"> & { id?: string }): Promise<MemoryEntry>;
   update(id: string, updates: MemoryStoreUpdate, scopeFilter?: string[]): Promise<MemoryEntry | null>;
+  /** metadata 读改写的单写通道(per-id 串行队列)。新代码改 metadata 一律走这里,
+   *  不要 getById+update 裸 RMW(并发覆盖)。 */
+  patchMetadata(
+    id: string,
+    patchFn: (meta: Record<string, unknown>, entry: MemoryEntry) => Record<string, unknown>,
+    scopeFilter?: string[],
+  ): Promise<MemoryEntry | null>;
   vectorSearch(vector: number[], limit?: number, minScore?: number, scopeFilter?: string[]): Promise<MemorySearchResult[]>;
 }

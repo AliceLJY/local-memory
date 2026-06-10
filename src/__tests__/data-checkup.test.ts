@@ -67,9 +67,33 @@ describe("runDataCheckup", () => {
       openConflictCount: 0,
     });
 
-    expect(report.checks.length).toBe(7);
+    expect(report.checks.length).toBe(8);
     expect(report.checks.every(c => c.status === "ok")).toBe(true);
     expect(report.totalEntries).toBe(3);
+  });
+
+  it("reports usage distribution with cold top list (P0 B-1)", async () => {
+    const coldMeta = JSON.stringify({
+      accessCount: 10, // injection >= 6, no usage.useCount -> cold
+      evolution: { status: "active", version: 1 },
+    });
+    const entries = [
+      makeEntry({ id: "cold-1", metadata: coldMeta }),
+      makeEntry({ id: "ok-1" }),
+      makeEntry({ id: "ok-2" }),
+    ];
+
+    const report = await runDataCheckup({
+      store: createMockStore(entries),
+      openConflictCount: 0,
+    });
+
+    const usage = report.checks.find(c => c.name === "usage_distribution");
+    expect(usage).toBeTruthy();
+    expect(usage!.detail).toContain("cold=1");
+    expect(usage!.detail).toContain("cold-1".slice(0, 6)); // top list shows the id prefix
+    // 1/3 = 33% cold > 10% -> warning
+    expect(usage!.status).toBe("warning");
   });
 
   it("detects vector dimension inconsistency", async () => {

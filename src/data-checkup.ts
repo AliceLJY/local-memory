@@ -16,6 +16,7 @@ import type { MemoryEntry, MemoryStore } from "./store.js";
 import { resolveTier, type MemoryTier } from "./decay-engine.js";
 import { measureInterferenceDensity } from "./interference-detector.js";
 import { readHeartbeats, checkSourceStaleness, formatAge } from "./source-heartbeat.js";
+import { deriveUsageStatus, type UsageStatus } from "./usage-tracker.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -236,6 +237,50 @@ function checkInterferenceDensity(entries: MemoryEntry[]): CheckResult {
 // Main
 // ---------------------------------------------------------------------------
 
+/** Check 8 (P0 B-1 观察): usage 四档分布 — injection-vs-use 影子统计的离线观察口。
+ *  纯报告,不接任何决策;cold = 被反复 surface(accessCount≥6)却从未被
+ *  reconstruction 引用,是第二阶段 decay 联动前要先观察校准的核心对象。 */
+function checkUsageDistribution(entries: MemoryEntry[]): CheckResult {
+  const counts: Record<UsageStatus, number> = { unused: 0, cold: 0, warm: 0, hot: 0 };
+  const coldSamples: Array<{ id: string; injection: number; ageDays: number; scope: string }> = [];
+  const now = Date.now();
+
+  for (const e of entries) {
+    const status = deriveUsageStatus(e);
+    counts[status]++;
+    if (status === "cold") {
+      let injection = 0;
+      try {
+        const meta = JSON.parse(e.metadata || "{}") as Record<string, unknown>;
+        injection = typeof meta.accessCount === "number" ? meta.accessCount : 0;
+      } catch { /* keep 0 */ }
+      coldSamples.push({
+        id: e.id.slice(0, 8),
+        injection,
+        ageDays: Math.floor((now - e.timestamp) / 86_400_000),
+        scope: e.scope || "(none)",
+      });
+    }
+  }
+
+  const total = entries.length;
+  const coldPct = total > 0 ? (counts.cold / total) * 100 : 0;
+  const top = coldSamples
+    .sort((a, b) => b.injection - a.injection)
+    .slice(0, 20)
+    .map(s => `${s.id}(inj=${s.injection}, ${s.ageDays}d, ${s.scope})`)
+    .join(", ");
+
+  return {
+    name: "usage_distribution",
+    status: coldPct > 10 ? "warning" : "ok",
+    detail:
+      `unused=${counts.unused} cold=${counts.cold} (${coldPct.toFixed(1)}%) ` +
+      `warm=${counts.warm} hot=${counts.hot}` +
+      (coldSamples.length > 0 ? `; cold top-${Math.min(20, coldSamples.length)}: ${top}` : ""),
+  };
+}
+
 export interface CheckupDeps {
   store: Pick<MemoryStore, "list" | "stats" | "getVectors">;
   openConflictCount: number;
@@ -264,6 +309,7 @@ export async function runDataCheckup(deps: CheckupDeps): Promise<CheckupReport> 
       checkVersionGroups(entries),
       checkSourceHealth(deps.heartbeatPath),
       checkInterferenceDensity(entries),
+      checkUsageDistribution(entries),
     ],
     totalEntries: entries.length,
     totalAvailable,

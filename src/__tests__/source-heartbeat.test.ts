@@ -206,7 +206,7 @@ describe("data_checkup with source_health", () => {
     } catch { /* ignore */ }
   });
 
-  it("includes source_health check (7 checks total)", async () => {
+  it("includes source_health check (8 checks total)", async () => {
     const entries = [makeEntry("a"), makeEntry("b")];
     const report = await runDataCheckup({
       store: createMockStore(entries),
@@ -214,7 +214,7 @@ describe("data_checkup with source_health", () => {
       heartbeatPath: tmpPath,
     });
 
-    expect(report.checks.length).toBe(7);
+    expect(report.checks.length).toBe(8);
     const sourceCheck = report.checks.find((c) => c.name === "source_health");
     expect(sourceCheck).toBeTruthy();
     expect(sourceCheck!.status).toBe("ok");

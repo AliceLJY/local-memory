@@ -70,6 +70,26 @@ function createMockStore(entries: MemoryEntry[]): MemoryStore {
     async getById(id: string) {
       return stored.find(e => e.id === id) || null;
     },
+    // 模拟 store.patchMetadata 单写通道:读最新 metadata → patchFn → 写回。
+    async patchMetadata(
+      id: string,
+      patchFn: (meta: Record<string, unknown>, entry: MemoryEntry) => Record<string, unknown>,
+      _scopeFilter?: string[],
+    ) {
+      const entry = stored.find(e => e.id === id);
+      if (!entry) return null;
+      let meta: Record<string, unknown>;
+      try {
+        const parsed: unknown = JSON.parse(entry.metadata || "{}");
+        meta = parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
+          ? (parsed as Record<string, unknown>)
+          : {};
+      } catch {
+        meta = {};
+      }
+      entry.metadata = JSON.stringify(patchFn(meta, entry));
+      return entry;
+    },
     async vectorSearch(_vec: number[], limit: number, _threshold: number, _scopes?: string[]) {
       return stored.slice(0, limit).map(e => ({ entry: e, score: 0.85 }));
     },
@@ -113,6 +133,34 @@ describe("runDream", () => {
     expect(result.reason).toContain("insufficient_writes");
     expect(result.phases.length).toBe(1);
     expect(result.phases[0].phase).toBe("orient");
+  });
+
+  it("persists usageStatus snapshots during gather (P0 B-1)", async () => {
+    const coldMeta = JSON.stringify({
+      accessCount: 8, // injection >= 6, useCount 0 -> cold
+      evolution: { status: "active", version: 1 },
+    });
+    const entries = [
+      makeEntry({ id: "cold-1", metadata: coldMeta }),
+      makeEntry({ id: "fresh-1" }), // unused 默认态:不写快照,防全库写放大
+    ];
+    const store = createMockStore(entries);
+
+    const result = await runDream({
+      store,
+      llm: createMockLLM(),
+      embedder: createMockEmbedder(),
+      scope: "project:test",
+      force: true,
+    });
+
+    expect(result.ran).toBe(true);
+    const cold = await store.getById("cold-1");
+    expect(JSON.parse(cold!.metadata!).usage.usageStatus).toBe("cold");
+    const fresh = await store.getById("fresh-1");
+    expect(JSON.parse(fresh!.metadata!).usage).toBeUndefined();
+    const gather = result.phases.find(p => p.phase === "gather");
+    expect(gather!.detail).toContain("usage snapshot: 1");
   });
 
   it("runs when forced despite low write count", async () => {

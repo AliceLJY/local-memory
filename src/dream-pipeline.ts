@@ -20,6 +20,7 @@ import type { Embedder } from "./embedder.js";
 import { ConsolidationEngine, clusterAndConsolidate, DEFAULT_CONSOLIDATION_CONFIG } from "./consolidation-engine.js";
 import { maybeRunGc, type GcResult, type AutoGcConfig, DEFAULT_AUTO_GC_CONFIG } from "./auto-gc.js";
 import { getWriteCount, resetWriteCount } from "./activity-counter.js";
+import { deriveUsageStatus, getUsageMetadata } from "./usage-tracker.js";
 import { isActiveMemory } from "./memory-evolution.js";
 
 // ---------------------------------------------------------------------------
@@ -132,9 +133,34 @@ export async function runDream(params: {
   const active = entries.filter(e => isActiveMemory(e.metadata));
   stats.activeMemories = active.length;
 
+  // P0 B-1 观察:离线持久化 usageStatus 快照。写入路径不写 status(写入时
+  // useCount 必 >0,永远写不出 cold),所以 cold 只能由离线批量 derive 产生。
+  // 持久化值仅供 data_checkup/RIF 等观察视图——任何决策路径必须现场
+  // deriveUsageStatus(快照会 stale:之后 useCount/accessCount 继续变化)。
+  // best-effort:走 patchMetadata 单写通道,失败不阻断 dream。
+  let usageSnapshots = 0;
+  for (const entry of active) {
+    const status = deriveUsageStatus(entry);
+    const current = getUsageMetadata(entry).usageStatus;
+    if (status === current) continue;
+    // 默认态(unused 且从无 usage 对象)不写,避免给全库无谓写放大
+    if (status === "unused" && current === undefined) continue;
+    try {
+      await store.patchMetadata(entry.id, meta => {
+        const usage = meta.usage && typeof meta.usage === "object" && !Array.isArray(meta.usage)
+          ? (meta.usage as Record<string, unknown>)
+          : {};
+        meta.usage = { ...usage, usageStatus: status };
+        return meta;
+      });
+      usageSnapshots++;
+    } catch { /* observation snapshot must never block dream */ }
+  }
+
   phases.push({
     phase: "gather",
-    detail: `${active.length} active entries gathered from ${entries.length} total`,
+    detail: `${active.length} active entries gathered from ${entries.length} total`
+      + (usageSnapshots > 0 ? `; usage snapshot: ${usageSnapshots} statuses persisted` : ""),
   });
 
   if (active.length < config.minClusterSize) {

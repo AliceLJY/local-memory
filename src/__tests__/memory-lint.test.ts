@@ -50,6 +50,48 @@ function createMockStore(entries: MemoryEntry[]): Pick<MemoryStore, "list" | "ge
 }
 
 // ---------------------------------------------------------------------------
+// Cold memories (P0 B-1 observation)
+// ---------------------------------------------------------------------------
+
+describe("cold memory lint (P0 B-1)", () => {
+  it("aggregates cold memories into a single info finding with top ids", async () => {
+    const coldMeta = (n: number) => JSON.stringify({
+      accessCount: n,
+      evolution: { status: "active", version: 1 },
+    });
+    // 向量彼此正交、文本不同,避免触发 duplicate/contradiction 干扰
+    const entries = [
+      makeEntry({ id: "cold-a", text: "alpha topic", vector: [1, 0, 0, 0, 0], metadata: coldMeta(12) }),
+      makeEntry({ id: "cold-b", text: "beta topic", vector: [0, 1, 0, 0, 0], metadata: coldMeta(7) }),
+      makeEntry({ id: "warm-c", text: "gamma topic", vector: [0, 0, 1, 0, 0], metadata: JSON.stringify({ accessCount: 9, usage: { useCount: 2 }, evolution: { status: "active", version: 1 } }) }),
+    ];
+
+    const report = await runMemoryLint({ store: createMockStore(entries) as MemoryStore });
+
+    expect(report.summary.coldMemories).toBe(2);
+    const finding = report.findings.find(f => f.check === "coldMemory");
+    expect(finding).toBeTruthy();
+    expect(finding!.severity).toBe("info");
+    // top ids sorted by injection desc
+    expect(finding!.memoryIds[0]).toBe("cold-a");
+    expect(finding!.memoryIds).toContain("cold-b");
+    expect(formatMemoryLintReport(report)).toContain("Cold Memories (2)");
+  });
+
+  it("health score dents only when cold share exceeds 10%, capped at 10", () => {
+    const base = { contradictions: 0, duplicates: 0, staleMemories: 0, orphans: 0, weakLessons: 0 };
+    // 5% cold -> no penalty
+    expect(computeHealthScore({ ...base, coldMemories: 5 }, 100)).toBe(100);
+    // 15% cold -> floor(15-10)=5 penalty
+    expect(computeHealthScore({ ...base, coldMemories: 15 }, 100)).toBe(95);
+    // 60% cold -> capped at 10
+    expect(computeHealthScore({ ...base, coldMemories: 60 }, 100)).toBe(90);
+    // backward compat: summary without coldMemories
+    expect(computeHealthScore(base, 100)).toBe(100);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // runMemoryLint
 // ---------------------------------------------------------------------------
 
