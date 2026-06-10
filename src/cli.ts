@@ -64,6 +64,7 @@ import {
 } from "./workflow-observation-scope-review.js";
 import { collectScopeInventory, formatScopeInventoryReport } from "./scope-inventory.js";
 import { buildRetrievalContext, resolveScopeSelection } from "./scope-policy.js";
+import { createScopeSuggester } from "./scope-suggester.js";
 
 /**
  * Auto-detect Claude Code transcript directories.
@@ -164,7 +165,7 @@ async function runRetrievalView(
   },
 ) {
   const config = loadConfig();
-  const { retriever, profile } = createComponents(config, options.profile);
+  const { retriever, profile, store } = createComponents(config, options.profile);
 
   const limit = parseLimitOption(options.limit, 5, 1, 20);
 
@@ -223,6 +224,17 @@ async function runRetrievalView(
       : formatSearchResults(results, context);
 
   console.log(rendered);
+
+  // P1-A: 显式 scope 0 命中 → 相近 scope 提示打到 stderr(不污染 stdout)
+  if (results.length === 0 && options.scope) {
+    try {
+      const suggest = createScopeSuggester(async () => (await store.stats()).scopeCounts);
+      const suggestions = (await suggest(options.scope)).filter(s => s !== options.scope);
+      if (suggestions.length > 0) {
+        console.error(`⚠️ scope '${options.scope}' 命中 0 条,相近 scope: [${suggestions.join(", ")}]`);
+      }
+    } catch { /* best-effort */ }
+  }
 }
 
 function parseLimitOption(value: string | undefined, fallback: number, min = 1, max = 50): number {

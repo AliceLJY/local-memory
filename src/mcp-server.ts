@@ -90,6 +90,7 @@ import type { RetrievalResult } from "./retriever.js";
 import type { MemoryStore } from "./store.js";
 import type { LLMClient } from "./llm-client.js";
 import { distillResults, formatExplainResults, formatSearchResults, formatBriefResults, formatFullResults, selectBriefSeedResults, summarizeResults } from "./memory-output.js";
+import { createScopeSuggester } from "./scope-suggester.js";
 import { archiveDirtyBriefAsset, assetSummaryLine, buildBriefAsset, buildPinAsset, listDirtyBriefAssets, listMemoryAssets, listPinAssets, saveBriefAsset, savePinAsset, writeExportArtifact } from "./memory-assets.js";
 import { indexAsset, indexPinnedAsset } from "./asset-sync.js";
 import { createComponentResolver, loadConfig, loadDotEnv, resolveRecallMode } from "./runtime-config.js";
@@ -168,6 +169,8 @@ const getComponents = createComponentResolver(config);
 // factory (runtime-config.ts), so deferring to first tool call is free.
 let store!: MemoryStore;
 let llm: LLMClient | null = null;
+/** P1-A: 60s 缓存的 scope 建议器,首次 0-hit 搜索时惰性初始化。 */
+let scopeSuggestFn: ((input: string) => Promise<string[]>) | null = null;
 const checkpointStore = new SessionCheckpointStore();
 const conflictStore = new ConflictCandidateStore();
 const workflowObservationStore = new WorkflowObservationStore();
@@ -1003,7 +1006,11 @@ registerTool(
 
     // Scope 0-hit fallback: 用户给的 scope 太严返回 0 hit 时，自动 allScopes=true 重试一次。
     // 仅在 !allScopes 时触发，避免重复跨 scope 搜。
+    // P1-A: fallback 不再静默——输出段会披露"结果来自跨 scope 重试"并附相近 scope 建议,
+    // 否则拼错 scope 的调用方拿到跨 scope 结果却以为 scope 过滤生效了。
+    let scopeFallbackUsed = false;
     if (results.length === 0 && !allScopes) {
+      scopeFallbackUsed = true;
       results = await retriever.retrieve(buildRetrievalContext({
         query,
         limit: (after || before || topicTag) ? limit * 3 : limit,
@@ -1114,6 +1121,22 @@ registerTool(
       body = formatSearchResults(results, { query, profile: profile.name });
     }
     sections.push(body);
+
+    // P1-A: 显式 scope 0 命中 → 相近 scope 提示(拼写漂移最常见;只提示不改写)
+    if (scope && (scopeFallbackUsed || results.length === 0)) {
+      try {
+        scopeSuggestFn ??= createScopeSuggester(async () => (await getComponents().store.stats()).scopeCounts);
+        const suggestions = (await scopeSuggestFn(scope)).filter(s => s !== scope);
+        const notes: string[] = [];
+        if (scopeFallbackUsed && results.length > 0) {
+          notes.push(`⚠️ scope '${scope}' 命中 0 条,以上结果来自自动跨 scope 重试(allScopes)。`);
+        }
+        if (suggestions.length > 0) {
+          notes.push(`相近 scope: [${suggestions.join(", ")}]`);
+        }
+        if (notes.length > 0) sections.push(notes.join("\n"));
+      } catch { /* suggestion is best-effort, never blocks search output */ }
+    }
 
     return {
       content: [{
