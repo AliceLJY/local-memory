@@ -111,7 +111,19 @@ interface Patch {
 const patches: Patch[] = [];
 let unchanged = 0;
 let emptyText = 0;
+// The table can contain duplicate-id rows (legacy delete+add era).
+// mergeInsert refuses a batch where two source rows hit the same target id
+// ("ambiguous merge insert"), so dedupe patches by id — one source row
+// updates ALL target rows sharing that id, which is what we want anyway.
+const seenIds = new Set<string>();
+let dupSourceRows = 0;
 for (const r of rows) {
+  const id = r.id as string;
+  if (seenIds.has(id)) {
+    dupSourceRows++;
+    continue;
+  }
+  seenIds.add(id);
   const text = (r.text as string) ?? "";
   if (!text) {
     emptyText++;
@@ -123,11 +135,16 @@ for (const r of rows) {
     unchanged++;
     continue;
   }
-  patches.push({ id: r.id as string, fts_text, language });
+  patches.push({ id, fts_text, language });
 }
 console.log(
-  `[reindex] to update: ${patches.length} | already current: ${unchanged} | empty text: ${emptyText}`
+  `[reindex] to update: ${patches.length} | already current: ${unchanged} | empty text: ${emptyText} | duplicate-id rows skipped: ${dupSourceRows}`
 );
+if (dupSourceRows > 0) {
+  console.log(
+    `[reindex] NOTE: table contains ${dupSourceRows} duplicate-id rows — a data-quality issue worth a separate cleanup pass`
+  );
+}
 
 if (DRY_RUN) {
   console.log("\n[dry-run] sample of changes:");
