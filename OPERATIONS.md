@@ -2,6 +2,19 @@
 
 This file is the short operator memo for common actions.
 
+## Release Checklist
+
+After a version bump (or whenever tools/ROADMAP change), refresh the
+self-capability digest so RN can answer "你有哪些工具/能力":
+
+```bash
+cd $HOME/recallnest
+bun run scripts/seed-capability-digest.ts          # canonicalKey upsert,重跑即覆盖
+bun run scripts/seed-capability-digest.ts --dry-run  # 只预览
+```
+
+Digests land in scope `recallnest:self` (4 entries: core/advanced/governance/overview).
+
 ## Open The UI
 
 ### Manual
