@@ -333,6 +333,25 @@ describe("scanForPromotions", () => {
     expect(result.candidates.length).toBeGreaterThanOrEqual(1);
   });
 
+  it("does not starve the patterns budget when cases hit maxScanEntries", async () => {
+    // 首次生产 dry-run 实测回归:共享预算下 20000 cases 拉满 → patterns scanned=0。
+    const entries = [
+      ...Array.from({ length: 5 }, (_, i) =>
+        makeEntry({ text: `Deploy case ${i}`, vector: similarVector(0.95 - i * 0.01) }),
+      ),
+      makeEntry({
+        category: "patterns",
+        text: "Deploy Pattern\n\nSteps:\n1. Preflight\n2. Ship",
+        vector: [1, 0, 0],
+      }),
+    ];
+    const store = createMockStore(entries);
+    const result = await scanForPromotions(store, "project:test", { maxScanEntries: 5 });
+
+    expect(result.scannedCases).toBe(5);
+    expect(result.scannedPatterns).toBe(1);
+  });
+
   it("clusters within topicTag buckets and discloses bucket-cap truncation", async () => {
     const tagged = (tag: string, text: string, vec: number[]) =>
       makeEntry({

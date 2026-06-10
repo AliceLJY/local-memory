@@ -44,12 +44,15 @@ export interface PromotionConfig {
   caseSimilarityThreshold: number;
   /** Max candidates to return (default: 5) */
   maxCandidates: number;
-  /** 全量扫描总上限(防 OOM,default: 20000)。超出部分不扫并计入披露。 */
+  /** 全量扫描上限(防 OOM,default: 20000)。cases/patterns 各自独立适用。 */
   maxScanEntries: number;
   /** 单桶聚类上限(default: 2000)。桶内按 recency 保留,截断量计入 truncatedCases。 */
   maxBucketSize: number;
   /** listPage 翻页大小 (default: 1000)。 */
   pageSize: number;
+  /** pattern_to_skill 通道最多探测的 structured patterns 数(每个一次 vectorSearch,
+   *  default: 1000,按 recency 优先)。 */
+  maxPatternProbes: number;
 }
 
 const DEFAULT_CONFIG: PromotionConfig = {
@@ -59,6 +62,7 @@ const DEFAULT_CONFIG: PromotionConfig = {
   maxScanEntries: 20_000,
   maxBucketSize: 2_000,
   pageSize: 1_000,
+  maxPatternProbes: 1_000,
 };
 
 // ---------------------------------------------------------------------------
@@ -81,17 +85,27 @@ async function listAllByCategory(
   category: string,
   maxEntries: number,
   pageSize: number,
+  truncateTextTo?: number,
 ): Promise<MemoryEntry[]> {
   const out: MemoryEntry[] = [];
   for (let offset = 0; out.length < maxEntries; offset += pageSize) {
+    const requested = Math.min(pageSize, maxEntries - out.length);
     const page = await store.listPage({
       scopeFilter: [scope],
       category,
-      limit: Math.min(pageSize, maxEntries - out.length),
+      limit: requested,
       offset,
     });
-    out.push(...page);
-    if (page.length < pageSize) break;
+    for (const e of page) {
+      // 扫描只用 text 的头部(extractName 首行 / summarize 前 80 字 / 聚类靠向量),
+      // bridge 对话 case 全文很长,2 万条常驻能到 GB 级——截断防内存膨胀。
+      out.push(
+        truncateTextTo !== undefined && e.text.length > truncateTextTo
+          ? { ...e, text: e.text.slice(0, truncateTextTo) }
+          : e,
+      );
+    }
+    if (page.length < requested) break;
   }
   return out;
 }
@@ -248,9 +262,11 @@ export async function scanForPromotions(
   //    旧实现 store.list([scope], undefined, 500, 0) 双重失效:① limit=500 在
   //    34K+ 库上覆盖率 ~1.4%;② list() 性能优化恒返回 vector:[],聚类全部跳过,
   //    管线产出恒为零(单测 mock 带向量所以从未暴露)。
-  const rawCases = await listAllByCategory(store, scope, "cases", cfg.maxScanEntries, cfg.pageSize);
-  const patternBudget = Math.max(0, cfg.maxScanEntries - rawCases.length);
-  const rawPatterns = await listAllByCategory(store, scope, "patterns", patternBudget, cfg.pageSize);
+  // cases/patterns 各自独立预算——共享预算时大库的 cases 会把 patterns 饿死
+  // (首次生产 dry-run 实测:20000 cases 拉满后 patterns scanned=0,
+  // pattern_to_skill 通道整个没跑)。
+  const rawCases = await listAllByCategory(store, scope, "cases", cfg.maxScanEntries, cfg.pageSize, 2_000);
+  const rawPatterns = await listAllByCategory(store, scope, "patterns", cfg.maxScanEntries, cfg.pageSize);
 
   const cases = rawCases.filter(isActive);
   const patterns = rawPatterns.filter(isActive);
@@ -266,13 +282,17 @@ export async function scanForPromotions(
   // 2. Cluster cases bucket-by-bucket (topicTag, untagged fallback)。
   //    向量按桶回填、桶毕即释,全库向量绝不常驻;分桶同时把 greedyCluster 的
   //    最坏 O(n²) 限制在 maxBucketSize 内。
+  //    配额 per-channel:case 通道最多产 maxCandidates 个,pattern 通道同;
+  //    最后合并按 confidence 排序截断——否则 case 候选多的库会让
+  //    pattern_to_skill 通道在全局 break 处永远轮空(首次生产 dry-run 实测)。
+  let caseCandidates = 0;
   if (cases.length >= cfg.minCaseOccurrences) {
     const { buckets, truncated } = bucketByTopic(cases, cfg.maxBucketSize);
     result.truncatedCases = truncated;
 
     for (const bucket of buckets.values()) {
       if (bucket.length < cfg.minCaseOccurrences) continue;
-      if (result.candidates.length >= cfg.maxCandidates) break;
+      if (caseCandidates >= cfg.maxCandidates) break;
 
       const vectorMap = await store.getVectors(bucket.map(e => e.id));
       const withVectors = bucket
@@ -285,11 +305,12 @@ export async function scanForPromotions(
 
       for (const cluster of clusters) {
         if (cluster.members.length < cfg.minCaseOccurrences) continue;
-        if (result.candidates.length >= cfg.maxCandidates) break;
+        if (caseCandidates >= cfg.maxCandidates) break;
 
         // Compute average intra-cluster similarity for scoring
         const avgSim = computeAverageIntraClusterSimilarity(cluster.members);
 
+        caseCandidates++;
         result.candidates.push({
           type: "case_to_pattern",
           sourceEntries: cluster.members.map(m => ({
@@ -311,14 +332,18 @@ export async function scanForPromotions(
   //    vectorSearch score = 1/(1+cosineDistance) = 1/(2-cosineSim) is monotonic in
   //    cosineSim, so minScore = 1/(2-threshold) filters EXACTLY the same set as
   //    `cosineSim >= threshold`; per-hit cosine 反算 = 2 - 1/score.
-  const structuredPatterns = patterns.filter(p => hasStructuredSteps(p.text));
+  const structuredPatterns = patterns
+    .filter(p => hasStructuredSteps(p.text))
+    .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0))
+    .slice(0, cfg.maxPatternProbes);
   const patternVectors = structuredPatterns.length > 0
     ? await store.getVectors(structuredPatterns.map(p => p.id))
     : new Map<string, number[]>();
   const minSearchScore = 1 / (2 - cfg.caseSimilarityThreshold);
 
+  let patternCandidates = 0;
   for (const pattern of structuredPatterns) {
-    if (result.candidates.length >= cfg.maxCandidates) break;
+    if (patternCandidates >= cfg.maxCandidates) break;
     const vec = patternVectors.get(pattern.id);
     if (!vec || vec.length === 0) {
       result.vectorlessSkipped++;
@@ -332,6 +357,7 @@ export async function scanForPromotions(
 
     if (similarCases.length < 2) continue;
 
+    patternCandidates++;
     result.candidates.push({
       type: "pattern_to_skill",
       sourceEntries: [
