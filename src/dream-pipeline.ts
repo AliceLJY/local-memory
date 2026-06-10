@@ -20,7 +20,7 @@ import type { Embedder } from "./embedder.js";
 import { ConsolidationEngine, clusterAndConsolidate, DEFAULT_CONSOLIDATION_CONFIG } from "./consolidation-engine.js";
 import { maybeRunGc, type GcResult, type AutoGcConfig, DEFAULT_AUTO_GC_CONFIG } from "./auto-gc.js";
 import { getWriteCount, resetWriteCount } from "./activity-counter.js";
-import { deriveUsageStatus, getUsageMetadata } from "./usage-tracker.js";
+import { deriveUsageStatus, getUsageMetadata, isUsageSignalActive } from "./usage-tracker.js";
 import { isActiveMemory } from "./memory-evolution.js";
 
 // ---------------------------------------------------------------------------
@@ -138,8 +138,9 @@ export async function runDream(params: {
   // 持久化值仅供 data_checkup/RIF 等观察视图——任何决策路径必须现场
   // deriveUsageStatus(快照会 stale:之后 useCount/accessCount 继续变化)。
   // best-effort:走 patchMetadata 单写通道,失败不阻断 dream。
+  // use 信号未采集时整段跳过——否则持久化的全是假 cold(useCount 恒零)。
   let usageSnapshots = 0;
-  for (const entry of active) {
+  for (const entry of isUsageSignalActive() ? active : []) {
     const status = deriveUsageStatus(entry);
     const current = getUsageMetadata(entry).usageStatus;
     if (status === current) continue;

@@ -35,6 +35,7 @@ import {
 import { runDoctor, formatDoctorResults } from "./doctor.js";
 import { persistCaseMemory, persistMemory, persistWorkflowPattern } from "./capture-engine.js";
 import { scanMemoryPromotions, buildPromoteScanDeps, formatPromoteScanResult } from "./memory-promotion.js";
+import { runDream, formatDreamResult } from "./dream-pipeline.js";
 import {
   CaseMemoryInputSchema,
   type CaseMemoryInput,
@@ -1561,6 +1562,40 @@ program
       `  总计: ${totalChunks} chunks 已索引, ${totalDeduped} chunks 去重 (hard:${totalDedupReasons.hard}, exact:${totalDedupReasons.exact}, llm-skip:${totalDedupReasons["llm-skip"]}, llm-merge:${totalDedupReasons["llm-merge"]}), ${totalErrors} errors`,
     );
     console.log();
+  });
+
+// ─── dream ───────────────────────────────────────────────────────────────────
+// P3 调度化入口:launchd 经 scripts/dream-consolidation.sh 调用本命令,
+// 输出 [[DREAM_STATUS]] ok|skip|blocked 标记供脚本判定(同 weekly-distill 的
+// [[DISTILL_STATUS]] 模式)。dream 是 auto-gc / usageStatus 快照 / consolidation
+// 的唯一生产触发点——没有它们整条维护链就是死代码(2026-06-11 临床重审实锤)。
+
+program
+  .command("dream")
+  .description("运行 dream 离线整固管线 (Orient/Gather/Consolidate/Prune)")
+  .option("--scope <scope>", "目标 scope(前缀或精确)", "cc")
+  .option("--force", "跳过 min-writes 门槛强制运行")
+  .action(async (options: { scope: string; force?: boolean }) => {
+    const config = loadConfig();
+    const { store, embedder, llm } = createComponents(config);
+
+    try {
+      const result = await runDream({
+        store,
+        llm,
+        embedder,
+        scope: options.scope,
+        force: Boolean(options.force),
+      });
+
+      console.log(formatDreamResult(result));
+      console.log(result.ran ? "[[DREAM_STATUS]] ok" : "[[DREAM_STATUS]] skip");
+      process.exit(0);
+    } catch (err) {
+      console.error(`dream failed: ${err instanceof Error ? err.message : String(err)}`);
+      console.log("[[DREAM_STATUS]] blocked");
+      process.exit(1);
+    }
   });
 
 // ─── stats ───────────────────────────────────────────────────────────────────

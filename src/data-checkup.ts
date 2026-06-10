@@ -16,7 +16,7 @@ import type { MemoryEntry, MemoryStore } from "./store.js";
 import { resolveTier, type MemoryTier } from "./decay-engine.js";
 import { measureInterferenceDensity } from "./interference-detector.js";
 import { readHeartbeats, checkSourceStaleness, formatAge } from "./source-heartbeat.js";
-import { deriveUsageStatus, type UsageStatus } from "./usage-tracker.js";
+import { deriveUsageStatus, isUsageSignalActive, type UsageStatus } from "./usage-tracker.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -241,6 +241,16 @@ function checkInterferenceDensity(entries: MemoryEntry[]): CheckResult {
  *  纯报告,不接任何决策;cold = 被反复 surface(accessCount≥6)却从未被
  *  reconstruction 引用,是第二阶段 decay 联动前要先观察校准的核心对象。 */
 function checkUsageDistribution(entries: MemoryEntry[]): CheckResult {
+  // use 信号未采集时(reconstruction flag 关),useCount 恒零 → "cold" 全是假阳性。
+  // 如实报告信号缺失,不输出不可解释的判定。
+  if (!isUsageSignalActive()) {
+    return {
+      name: "usage_distribution",
+      status: "ok",
+      detail: "use signal inactive (RECALLNEST_CONSTRUCTIVE_RETRIEVAL off) — useCount 无写入路径,cold/warm/hot 不可判,统计跳过。该 flag 因合成召回缺失被 Alice 主动关闭(2026-06-11),usage 线搁置中。",
+    };
+  }
+
   const counts: Record<UsageStatus, number> = { unused: 0, cold: 0, warm: 0, hot: 0 };
   const coldSamples: Array<{ id: string; injection: number; ageDays: number; scope: string }> = [];
   const now = Date.now();

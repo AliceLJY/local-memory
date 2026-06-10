@@ -135,7 +135,9 @@ describe("runDream", () => {
     expect(result.phases[0].phase).toBe("orient");
   });
 
-  it("persists usageStatus snapshots during gather (P0 B-1)", async () => {
+  it("persists usageStatus snapshots during gather (P0 B-1, flag on)", async () => {
+    process.env.RECALLNEST_CONSTRUCTIVE_RETRIEVAL = "true";
+    try {
     const coldMeta = JSON.stringify({
       accessCount: 8, // injection >= 6, useCount 0 -> cold
       evolution: { status: "active", version: 1 },
@@ -161,6 +163,30 @@ describe("runDream", () => {
     expect(JSON.parse(fresh!.metadata!).usage).toBeUndefined();
     const gather = result.phases.find(p => p.phase === "gather");
     expect(gather!.detail).toContain("usage snapshot: 1");
+    } finally {
+      delete process.env.RECALLNEST_CONSTRUCTIVE_RETRIEVAL;
+    }
+  });
+
+  it("skips usageStatus snapshots when use signal is inactive (flag off)", async () => {
+    delete process.env.RECALLNEST_CONSTRUCTIVE_RETRIEVAL;
+    const coldMeta = JSON.stringify({
+      accessCount: 8,
+      evolution: { status: "active", version: 1 },
+    });
+    const store = createMockStore([makeEntry({ id: "cold-1", metadata: coldMeta })]);
+    const result = await runDream({
+      store,
+      llm: createMockLLM(),
+      embedder: createMockEmbedder(),
+      scope: "project:test",
+      force: true,
+    });
+    expect(result.ran).toBe(true);
+    const cold = await store.getById("cold-1");
+    expect(JSON.parse(cold!.metadata!).usage).toBeUndefined();
+    const gather = result.phases.find(p => p.phase === "gather");
+    expect(gather!.detail).not.toContain("usage snapshot");
   });
 
   it("runs when forced despite low write count", async () => {

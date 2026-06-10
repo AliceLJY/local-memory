@@ -72,7 +72,9 @@ describe("runDataCheckup", () => {
     expect(report.totalEntries).toBe(3);
   });
 
-  it("reports usage distribution with cold top list (P0 B-1)", async () => {
+  it("reports usage distribution with cold top list (P0 B-1, flag on)", async () => {
+    process.env.RECALLNEST_CONSTRUCTIVE_RETRIEVAL = "true";
+    try {
     const coldMeta = JSON.stringify({
       accessCount: 10, // injection >= 6, no usage.useCount -> cold
       evolution: { status: "active", version: 1 },
@@ -94,6 +96,21 @@ describe("runDataCheckup", () => {
     expect(usage!.detail).toContain("cold-1".slice(0, 6)); // top list shows the id prefix
     // 1/3 = 33% cold > 10% -> warning
     expect(usage!.status).toBe("warning");
+    } finally {
+      delete process.env.RECALLNEST_CONSTRUCTIVE_RETRIEVAL;
+    }
+  });
+
+  it("reports use-signal-inactive instead of fake cold when flag is off", async () => {
+    delete process.env.RECALLNEST_CONSTRUCTIVE_RETRIEVAL;
+    const coldishMeta = JSON.stringify({ accessCount: 10, evolution: { status: "active", version: 1 } });
+    const report = await runDataCheckup({
+      store: createMockStore([makeEntry({ id: "a", metadata: coldishMeta })]),
+      openConflictCount: 0,
+    });
+    const usage = report.checks.find(c => c.name === "usage_distribution");
+    expect(usage!.status).toBe("ok");
+    expect(usage!.detail).toContain("use signal inactive");
   });
 
   it("detects vector dimension inconsistency", async () => {

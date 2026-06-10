@@ -119,6 +119,20 @@ function readInjectionCount(meta: Record<string, unknown>): number {
   return typeof meta.accessCount === "number" ? meta.accessCount : 0;
 }
 
+/**
+ * use 信号采集是否在生产路径上活跃。
+ * useCount 唯一的写入路径是 reconstruction 的 [src:ID] 引用,而 reconstruction
+ * 由 RECALLNEST_CONSTRUCTIVE_RETRIEVAL 控制——flag 关闭时 useCount 恒零,
+ * "cold"(access 高 + use 零)退化为"access 高",不可解释。
+ * 观察口(data_checkup / memory_lint / dream 快照)必须先查本开关:信号未采集时
+ * 如实标注并跳过判定,否则输出的是统计学完美、临床无意义的假 cold。
+ * (2026-06-11 临床重审:Alice 曾开过此 flag,因合成"召回缺失"主动关闭——
+ * 病史见 memory canonicalKey=constructive-retrieval-flag-clinical-history)
+ */
+export function isUsageSignalActive(): boolean {
+  return process.env.RECALLNEST_CONSTRUCTIVE_RETRIEVAL === "true";
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------

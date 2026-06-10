@@ -54,7 +54,9 @@ function createMockStore(entries: MemoryEntry[]): Pick<MemoryStore, "list" | "ge
 // ---------------------------------------------------------------------------
 
 describe("cold memory lint (P0 B-1)", () => {
-  it("aggregates cold memories into a single info finding with top ids", async () => {
+  it("aggregates cold memories into a single info finding with top ids (flag on)", async () => {
+    process.env.RECALLNEST_CONSTRUCTIVE_RETRIEVAL = "true";
+    try {
     const coldMeta = (n: number) => JSON.stringify({
       accessCount: n,
       evolution: { status: "active", version: 1 },
@@ -76,6 +78,19 @@ describe("cold memory lint (P0 B-1)", () => {
     expect(finding!.memoryIds[0]).toBe("cold-a");
     expect(finding!.memoryIds).toContain("cold-b");
     expect(formatMemoryLintReport(report)).toContain("Cold Memories (2)");
+    } finally {
+      delete process.env.RECALLNEST_CONSTRUCTIVE_RETRIEVAL;
+    }
+  });
+
+  it("skips cold detection entirely when use signal is inactive (flag off)", async () => {
+    delete process.env.RECALLNEST_CONSTRUCTIVE_RETRIEVAL;
+    const coldishMeta = JSON.stringify({ accessCount: 12, evolution: { status: "active", version: 1 } });
+    const report = await runMemoryLint({
+      store: createMockStore([makeEntry({ id: "a", text: "alpha", metadata: coldishMeta })]) as MemoryStore,
+    });
+    expect(report.summary.coldMemories).toBe(0);
+    expect(report.findings.find(f => f.check === "coldMemory")).toBeUndefined();
   });
 
   it("health score dents only when cold share exceeds 10%, capped at 10", () => {

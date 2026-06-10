@@ -19,7 +19,7 @@
 import type { MemoryEntry, MemoryStore } from "./store.js";
 import { cosineSimilarity } from "./multi-vector.js";
 import { parseEvolution, isActiveMemory } from "./memory-evolution.js";
-import { deriveUsageStatus } from "./usage-tracker.js";
+import { deriveUsageStatus, isUsageSignalActive } from "./usage-tracker.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -359,6 +359,11 @@ function findWeakLessons(entries: MemoryEntry[]): LintFinding[] {
  * B-1 是纯观察阶段,降权/归档要等观察数据校准后的 B-2。
  */
 function findColdMemories(entries: MemoryEntry[]): { findings: LintFinding[]; coldCount: number } {
+  // use 信号未采集(reconstruction flag 关)→ cold 全是假阳性,跳过且不扣健康分。
+  if (!isUsageSignalActive()) {
+    return { findings: [], coldCount: 0 };
+  }
+
   const cold: Array<{ id: string; injection: number }> = [];
 
   for (const entry of entries) {
