@@ -44,15 +44,37 @@ function similarVector(sim: number): number[] {
   return [sim, complement, 0];
 }
 
+/**
+ * Mock 复刻生产 MemoryStore 的真实语义——这是 Bug B 的直接教训:旧 mock 的
+ * list 返回带向量的行,而生产 list/listPage 恒返回 vector:[],导致聚类在生产
+ * 全部跳过、测试却全绿。任何与生产行为不一致的 mock 简化都可能掩盖同类 bug:
+ * - listPage 永远返回 vector: [](轻列语义)
+ * - 向量只能通过 getVectors 回填
+ * - vectorSearch 的 score = 1/(1+cosineDistance) = 1/(2-cosSim),不是 cosine
+ */
 function createMockStore(entries: MemoryEntry[]) {
+  const calls = { listPage: 0 };
   return {
-    async list(
-      _scopeFilter?: string[],
-      _category?: string,
-      _limit?: number,
-      _offset?: number,
-    ): Promise<MemoryEntry[]> {
-      return entries;
+    calls,
+    async listPage(opts: {
+      scopeFilter?: string[];
+      category?: string;
+      limit?: number;
+      offset?: number;
+      includeVector?: boolean;
+    } = {}): Promise<MemoryEntry[]> {
+      calls.listPage++;
+      const { category, limit = 1000, offset = 0 } = opts;
+      const filtered = category ? entries.filter(e => e.category === category) : entries;
+      return filtered.slice(offset, offset + limit).map(e => ({ ...e, vector: [] }));
+    },
+    async getVectors(ids: string[]): Promise<Map<string, number[]>> {
+      const m = new Map<string, number[]>();
+      for (const id of ids) {
+        const e = entries.find(x => x.id === id);
+        if (e && e.vector && e.vector.length > 0) m.set(id, e.vector);
+      }
+      return m;
     },
     async vectorSearch(
       vector: number[],
@@ -60,7 +82,6 @@ function createMockStore(entries: MemoryEntry[]) {
       minScore = 0.3,
       _scopeFilter?: string[],
     ): Promise<MemorySearchResult[]> {
-      // Simple mock: return entries sorted by cosine similarity to vector
       const scored = entries
         .filter(e => e.vector?.length > 0)
         .map(e => {
@@ -70,14 +91,14 @@ function createMockStore(entries: MemoryEntry[]) {
             normA += vector[i] * vector[i];
             normB += (e.vector[i] ?? 0) * (e.vector[i] ?? 0);
           }
-          const score = (normA > 0 && normB > 0)
+          const cos = (normA > 0 && normB > 0)
             ? dot / (Math.sqrt(normA) * Math.sqrt(normB))
             : 0;
-          return { entry: e, score };
+          return { entry: e, score: 1 / (2 - cos) };
         })
         .filter(r => r.score >= minScore)
         .sort((a, b) => b.score - a.score)
-        .slice(0, limit);
+        .slice(0, Math.min(limit, 20));
       return scored;
     },
   };
@@ -259,7 +280,8 @@ describe("scanForPromotions", () => {
     expect(result.scannedCases).toBe(1);
   });
 
-  it("skips entries without vectors", async () => {
+  it("skips entries whose vectors are missing from the store, with disclosure", async () => {
+    // getVectors has nothing for these ids (vector: [] in the source data)
     const entries = [
       makeEntry({ text: "No vector case A", vector: [] }),
       makeEntry({ text: "No vector case B", vector: [] }),
@@ -269,6 +291,73 @@ describe("scanForPromotions", () => {
     const result = await scanForPromotions(store, "project:test");
 
     expect(result.candidates).toHaveLength(0);
+    expect(result.vectorlessSkipped).toBe(3);
+  });
+
+  it("Bug B regression: clusters vectorless list rows via getVectors backfill", async () => {
+    // listPage 永远返回 vector:[](生产语义)——候选必须依赖 getVectors 回填产生。
+    // 修复前:聚类直接读 list 行的 vector → 全部 continue → 产出恒为零。
+    const entries = [
+      makeEntry({ text: "Deploy error: missing env var", vector: [1, 0, 0] }),
+      makeEntry({ text: "Deploy failure: env variable not set", vector: similarVector(0.95) }),
+      makeEntry({ text: "Deploy issue: environment config missing", vector: similarVector(0.9) }),
+    ];
+    const store = createMockStore(entries);
+
+    // 防御:确认 mock 的 listPage 确实是 vectorless(防 mock 又静默回到带向量)
+    const rows = await store.listPage({ category: "cases" });
+    expect(rows.every(r => r.vector.length === 0)).toBe(true);
+
+    const result = await scanForPromotions(store, "project:test", {
+      minCaseOccurrences: 3,
+      caseSimilarityThreshold: 0.75,
+    });
+    expect(result.candidates.length).toBeGreaterThanOrEqual(1);
+    expect(result.vectorlessSkipped).toBe(0);
+  });
+
+  it("paginates the full corpus instead of a single fixed-limit page", async () => {
+    // 7 cases with pageSize 2 → at least 4 listPage calls for the cases category
+    const entries = Array.from({ length: 7 }, (_, i) =>
+      makeEntry({ text: `Deploy error variant ${i}`, vector: similarVector(0.95 - i * 0.01) }),
+    );
+    const store = createMockStore(entries);
+    const result = await scanForPromotions(store, "project:test", {
+      minCaseOccurrences: 3,
+      caseSimilarityThreshold: 0.75,
+      pageSize: 2,
+    });
+
+    expect(store.calls.listPage).toBeGreaterThanOrEqual(4);
+    expect(result.scannedCases).toBe(7);
+    expect(result.candidates.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("clusters within topicTag buckets and discloses bucket-cap truncation", async () => {
+    const tagged = (tag: string, text: string, vec: number[]) =>
+      makeEntry({
+        text,
+        vector: vec,
+        metadata: JSON.stringify({ topicTag: tag, evolution: { status: "active" } }),
+      });
+    const entries = [
+      tagged("deploy", "Deploy err 1", [1, 0, 0]),
+      tagged("deploy", "Deploy err 2", similarVector(0.95)),
+      tagged("deploy", "Deploy err 3", similarVector(0.92)),
+      tagged("deploy", "Deploy err 4", similarVector(0.9)),
+    ];
+    const store = createMockStore(entries);
+    const result = await scanForPromotions(store, "project:test", {
+      minCaseOccurrences: 3,
+      caseSimilarityThreshold: 0.75,
+      maxBucketSize: 3,
+    });
+
+    // 4 cases in one bucket, cap 3 → 1 truncated (most recent 3 kept, still clusters)
+    expect(result.truncatedCases).toBe(1);
+    expect(result.candidates.length).toBeGreaterThanOrEqual(1);
+    const text = formatPromotionResult(result);
+    expect(text).toContain("truncated by bucket cap");
   });
 
   it("candidates are sorted by confidence descending", async () => {
@@ -304,6 +393,8 @@ describe("formatPromotionResult", () => {
       candidates: [],
       scannedCases: 5,
       scannedPatterns: 2,
+      truncatedCases: 0,
+      vectorlessSkipped: 0,
     };
     const text = formatPromotionResult(result);
     expect(text).toContain("5 cases");
@@ -322,6 +413,8 @@ describe("formatPromotionResult", () => {
       }],
       scannedCases: 3,
       scannedPatterns: 1,
+      truncatedCases: 0,
+      vectorlessSkipped: 0,
     };
     const text = formatPromotionResult(result);
     expect(text).toContain("case_to_pattern");
@@ -341,6 +434,8 @@ describe("formatPromotionResult", () => {
       }],
       scannedCases: 2,
       scannedPatterns: 1,
+      truncatedCases: 0,
+      vectorlessSkipped: 0,
     };
     const text = formatPromotionResult(result);
     expect(text).toContain("1. Check env");

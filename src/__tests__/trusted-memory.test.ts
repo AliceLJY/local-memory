@@ -507,6 +507,10 @@ describe("F-2 integration: retention policy + auto-gc", () => {
       store: {
         stats: async () => ({ totalCount: data.size, scopeCounts: {}, categoryCounts: {} }),
         list: async () => Array.from(data.values()),
+        listPage: async (opts: { limit?: number; offset?: number } = {}) => {
+          const { limit = 1000, offset = 0 } = opts;
+          return Array.from(data.values()).slice(offset, offset + limit);
+        },
         update: async (id: string, patch: { metadata: string }) => {
           updates.push({ id, metadata: patch.metadata });
           const entry = data.get(id);
@@ -806,9 +810,14 @@ describe("F-1 integration: audit logger", () => {
     const oldTs = now - 120 * 86_400_000;
     const activeMeta = JSON.stringify({ evolution: { status: "active", version: 1, accessCount: 0, lastAccessedAt: null, validFrom: oldTs, validUntil: null } });
 
+    const rows = [{ id: "gc-1", text: "old", importance: 0.1, timestamp: oldTs, metadata: activeMeta, category: "events", scope: "project:test" }];
     const store = {
       async stats() { return { totalCount: 100, scopeCounts: {}, categoryCounts: {} }; },
-      async list() { return [{ id: "gc-1", text: "old", importance: 0.1, timestamp: oldTs, metadata: activeMeta, category: "events", scope: "project:test" }]; },
+      async list() { return rows; },
+      async listPage(opts: { limit?: number; offset?: number } = {}) {
+        const { limit = 1000, offset = 0 } = opts;
+        return rows.slice(offset, offset + limit);
+      },
       async update(id: string, upd: Record<string, unknown>) { return { id, ...upd }; },
     };
 

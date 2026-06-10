@@ -31,6 +31,10 @@ export interface PromotionScanResult {
   candidates: PromotionCandidate[];
   scannedCases: number;
   scannedPatterns: number;
+  /** No-silent-caps 披露:被桶上限截断、未参与聚类的 case 数。 */
+  truncatedCases: number;
+  /** 向量回填失败(库中无向量)而被跳过的条目数。 */
+  vectorlessSkipped: number;
 }
 
 export interface PromotionConfig {
@@ -40,22 +44,97 @@ export interface PromotionConfig {
   caseSimilarityThreshold: number;
   /** Max candidates to return (default: 5) */
   maxCandidates: number;
+  /** 全量扫描总上限(防 OOM,default: 20000)。超出部分不扫并计入披露。 */
+  maxScanEntries: number;
+  /** 单桶聚类上限(default: 2000)。桶内按 recency 保留,截断量计入 truncatedCases。 */
+  maxBucketSize: number;
+  /** listPage 翻页大小 (default: 1000)。 */
+  pageSize: number;
 }
 
 const DEFAULT_CONFIG: PromotionConfig = {
   minCaseOccurrences: 3,
   caseSimilarityThreshold: 0.75,
   maxCandidates: 5,
+  maxScanEntries: 20_000,
+  maxBucketSize: 2_000,
+  pageSize: 1_000,
 };
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-type PromotionStore = Pick<MemoryStore, "list" | "vectorSearch">;
+type PromotionStore = Pick<MemoryStore, "listPage" | "getVectors" | "vectorSearch">;
 
 function isActive(entry: MemoryEntry): boolean {
   return isActiveMemory(entry.metadata);
+}
+
+/**
+ * 翻页拉取一个 category 的全部条目(轻列,不含向量)。
+ * listPage 在 DB 层下推 where/limit/offset,不会像 list() 那样每页全表拉取。
+ */
+async function listAllByCategory(
+  store: PromotionStore,
+  scope: string,
+  category: string,
+  maxEntries: number,
+  pageSize: number,
+): Promise<MemoryEntry[]> {
+  const out: MemoryEntry[] = [];
+  for (let offset = 0; out.length < maxEntries; offset += pageSize) {
+    const page = await store.listPage({
+      scopeFilter: [scope],
+      category,
+      limit: Math.min(pageSize, maxEntries - out.length),
+      offset,
+    });
+    out.push(...page);
+    if (page.length < pageSize) break;
+  }
+  return out;
+}
+
+/** 从 metadata JSON 读 topicTag(缺失/解析失败 → undefined)。 */
+function readTopicTag(entry: MemoryEntry): string | undefined {
+  try {
+    const parsed: unknown = JSON.parse(entry.metadata || "{}");
+    if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+      const tag = (parsed as Record<string, unknown>).topicTag;
+      return typeof tag === "string" && tag.length > 0 ? tag : undefined;
+    }
+  } catch { /* fallthrough */ }
+  return undefined;
+}
+
+/**
+ * 按 topicTag 分桶(无 tag → "untagged" 桶),桶内按 recency 保留 maxBucketSize 条。
+ * 分桶把 greedyCluster 的 O(n²) 最坏复杂度限制在桶内,同时避免全库向量常驻。
+ */
+function bucketByTopic(
+  entries: MemoryEntry[],
+  maxBucketSize: number,
+): { buckets: Map<string, MemoryEntry[]>; truncated: number } {
+  const buckets = new Map<string, MemoryEntry[]>();
+  for (const e of entries) {
+    const key = readTopicTag(e) ?? "untagged";
+    let bucket = buckets.get(key);
+    if (!bucket) {
+      bucket = [];
+      buckets.set(key, bucket);
+    }
+    bucket.push(e);
+  }
+  let truncated = 0;
+  for (const [key, bucket] of buckets) {
+    if (bucket.length > maxBucketSize) {
+      bucket.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+      truncated += bucket.length - maxBucketSize;
+      buckets.set(key, bucket.slice(0, maxBucketSize));
+    }
+  }
+  return { buckets, truncated };
 }
 
 /** Extract a short name from the first case's text (first line or first ~60 chars). */
@@ -165,56 +244,91 @@ export async function scanForPromotions(
 ): Promise<PromotionScanResult> {
   const cfg: PromotionConfig = { ...DEFAULT_CONFIG, ...config };
 
-  // 1. Load all entries in scope (high limit to get everything meaningful)
-  const entries = await store.list([scope], undefined, 500, 0);
-  const active = entries.filter(isActive);
+  // 1. Paged full scan, category pushed down to the DB layer.
+  //    旧实现 store.list([scope], undefined, 500, 0) 双重失效:① limit=500 在
+  //    34K+ 库上覆盖率 ~1.4%;② list() 性能优化恒返回 vector:[],聚类全部跳过,
+  //    管线产出恒为零(单测 mock 带向量所以从未暴露)。
+  const rawCases = await listAllByCategory(store, scope, "cases", cfg.maxScanEntries, cfg.pageSize);
+  const patternBudget = Math.max(0, cfg.maxScanEntries - rawCases.length);
+  const rawPatterns = await listAllByCategory(store, scope, "patterns", patternBudget, cfg.pageSize);
 
-  const cases = active.filter(e => e.category === "cases");
-  const patterns = active.filter(e => e.category === "patterns");
+  const cases = rawCases.filter(isActive);
+  const patterns = rawPatterns.filter(isActive);
 
   const result: PromotionScanResult = {
     candidates: [],
     scannedCases: cases.length,
     scannedPatterns: patterns.length,
+    truncatedCases: 0,
+    vectorlessSkipped: 0,
   };
 
-  // 2. Cluster cases by vector similarity
+  // 2. Cluster cases bucket-by-bucket (topicTag, untagged fallback)。
+  //    向量按桶回填、桶毕即释,全库向量绝不常驻;分桶同时把 greedyCluster 的
+  //    最坏 O(n²) 限制在 maxBucketSize 内。
   if (cases.length >= cfg.minCaseOccurrences) {
-    const clusters = greedyCluster(cases, cfg.caseSimilarityThreshold);
+    const { buckets, truncated } = bucketByTopic(cases, cfg.maxBucketSize);
+    result.truncatedCases = truncated;
 
-    for (const cluster of clusters) {
-      if (cluster.members.length < cfg.minCaseOccurrences) continue;
+    for (const bucket of buckets.values()) {
+      if (bucket.length < cfg.minCaseOccurrences) continue;
       if (result.candidates.length >= cfg.maxCandidates) break;
 
-      // Compute average intra-cluster similarity for scoring
-      const avgSim = computeAverageIntraClusterSimilarity(cluster.members);
+      const vectorMap = await store.getVectors(bucket.map(e => e.id));
+      const withVectors = bucket
+        .map(e => ({ ...e, vector: vectorMap.get(e.id) ?? [] }))
+        .filter(e => e.vector.length > 0);
+      result.vectorlessSkipped += bucket.length - withVectors.length;
+      if (withVectors.length < cfg.minCaseOccurrences) continue;
 
-      result.candidates.push({
-        type: "case_to_pattern",
-        sourceEntries: cluster.members.map(m => ({
-          id: m.id,
-          text: m.text,
-          score: avgSim,
-        })),
-        suggestedName: extractName(cluster.seed.text),
-        suggestedDescription: summarizeCluster(cluster.members),
-        confidence: cluster.members.length / (cluster.members.length + 2), // Bayesian smoothing
-      });
+      const clusters = greedyCluster(withVectors, cfg.caseSimilarityThreshold);
+
+      for (const cluster of clusters) {
+        if (cluster.members.length < cfg.minCaseOccurrences) continue;
+        if (result.candidates.length >= cfg.maxCandidates) break;
+
+        // Compute average intra-cluster similarity for scoring
+        const avgSim = computeAverageIntraClusterSimilarity(cluster.members);
+
+        result.candidates.push({
+          type: "case_to_pattern",
+          sourceEntries: cluster.members.map(m => ({
+            id: m.id,
+            text: m.text,
+            score: avgSim,
+          })),
+          suggestedName: extractName(cluster.seed.text),
+          suggestedDescription: summarizeCluster(cluster.members),
+          confidence: cluster.members.length / (cluster.members.length + 2), // Bayesian smoothing
+        });
+      }
     }
   }
 
-  // 3. Detect pattern_to_skill candidates
-  for (const pattern of patterns) {
-    if (result.candidates.length >= cfg.maxCandidates) break;
-    if (!hasStructuredSteps(pattern.text)) continue;
-    if (!pattern.vector?.length) continue;
+  // 3. Detect pattern_to_skill candidates — similarity search pushed down to the
+  //    vector index (one vectorSearch per structured pattern) instead of pairwise
+  //    cosine against the full in-memory case corpus.
+  //    vectorSearch score = 1/(1+cosineDistance) = 1/(2-cosineSim) is monotonic in
+  //    cosineSim, so minScore = 1/(2-threshold) filters EXACTLY the same set as
+  //    `cosineSim >= threshold`; per-hit cosine 反算 = 2 - 1/score.
+  const structuredPatterns = patterns.filter(p => hasStructuredSteps(p.text));
+  const patternVectors = structuredPatterns.length > 0
+    ? await store.getVectors(structuredPatterns.map(p => p.id))
+    : new Map<string, number[]>();
+  const minSearchScore = 1 / (2 - cfg.caseSimilarityThreshold);
 
-    // Find cases similar to this pattern
-    const similarCases = cases.filter(c => {
-      if (!c.vector?.length) return false;
-      const sim = cosineSimilarity(pattern.vector, c.vector);
-      return sim >= cfg.caseSimilarityThreshold;
-    });
+  for (const pattern of structuredPatterns) {
+    if (result.candidates.length >= cfg.maxCandidates) break;
+    const vec = patternVectors.get(pattern.id);
+    if (!vec || vec.length === 0) {
+      result.vectorlessSkipped++;
+      continue;
+    }
+
+    const hits = await store.vectorSearch(vec, 20, minSearchScore, [scope]);
+    const similarCases = hits.filter(
+      h => h.entry.category === "cases" && h.entry.id !== pattern.id && isActive(h.entry),
+    );
 
     if (similarCases.length < 2) continue;
 
@@ -222,10 +336,10 @@ export async function scanForPromotions(
       type: "pattern_to_skill",
       sourceEntries: [
         { id: pattern.id, text: pattern.text, score: 1.0 },
-        ...similarCases.map(c => ({
-          id: c.id,
-          text: c.text,
-          score: cosineSimilarity(pattern.vector, c.vector),
+        ...similarCases.map(h => ({
+          id: h.entry.id,
+          text: h.entry.text,
+          score: 2 - 1 / h.score, // back-convert to cosine similarity
         })),
       ],
       suggestedName: extractName(pattern.text),
@@ -251,6 +365,14 @@ export function formatPromotionResult(result: PromotionScanResult): string {
   const lines = [
     `Promotion scan: ${result.scannedCases} cases, ${result.scannedPatterns} patterns scanned.`,
   ];
+
+  // No-silent-caps:截断与向量缺失必须可见,否则"0 候选"会被误读成"扫全了没东西"。
+  if (result.truncatedCases > 0) {
+    lines.push(`⚠️ ${result.truncatedCases} cases truncated by bucket cap (kept most recent per topic bucket).`);
+  }
+  if (result.vectorlessSkipped > 0) {
+    lines.push(`⚠️ ${result.vectorlessSkipped} entries skipped (no vector in store).`);
+  }
 
   if (result.candidates.length === 0) {
     lines.push("No promotion candidates found.");

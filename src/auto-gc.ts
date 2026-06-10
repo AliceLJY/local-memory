@@ -99,22 +99,29 @@ export async function maybeRunGc(
   let archivedCount = 0;
   let totalChecked = 0;
 
-  // Scan memories by listing them
-  const entries = await store.list(undefined, undefined, 5000, 0);
-  totalChecked = entries.length;
+  // Full-corpus scan, page by page. The previous implementation listed only
+  // the newest 5000 rows (list() sorts by timestamp desc before slicing) —
+  // old low-value memories, the very target of GC, never entered the scan
+  // window on a 99K+ corpus. Two passes keep memory at one page instead of
+  // the whole corpus; pass 2 mutates rows (archive), which may shift fragment
+  // scan order — a row missed this run is caught by the next one.
+  const GC_PAGE_SIZE = 2000;
 
-  // Pre-compute per-scope active memory counts and cache retention policies.
-  // This avoids repeated file reads inside the loop.
+  // Pass 1: per-scope active memory counts for retention policies.
   const activeCounts = new Map<string, number>();
   const policyCache = new Map<string, RetentionPolicy>();
   const scopesSeen = new Set<string>();
 
-  for (const entry of entries) {
-    const scope = entry.scope ?? "";
-    scopesSeen.add(scope);
-    if (isActiveMemory(entry.metadata)) {
-      activeCounts.set(scope, (activeCounts.get(scope) ?? 0) + 1);
+  for (let offset = 0; ; offset += GC_PAGE_SIZE) {
+    const page = await store.listPage({ limit: GC_PAGE_SIZE, offset });
+    for (const entry of page) {
+      const scope = entry.scope ?? "";
+      scopesSeen.add(scope);
+      if (isActiveMemory(entry.metadata)) {
+        activeCounts.set(scope, (activeCounts.get(scope) ?? 0) + 1);
+      }
     }
+    if (page.length < GC_PAGE_SIZE) break;
   }
 
   // Batch-load retention policies for all scopes (one file read per scope)
@@ -122,8 +129,14 @@ export async function maybeRunGc(
     policyCache.set(scope, loadRetentionPolicy(scope, retentionConfigDir));
   }
 
-  for (const entry of entries) {
-    if (archivedCount >= config.maxArchivePerRun) break;
+  // Pass 2: archive sweep.
+  outer:
+  for (let offset = 0; ; offset += GC_PAGE_SIZE) {
+    const page = await store.listPage({ limit: GC_PAGE_SIZE, offset });
+    totalChecked += page.length;
+
+  for (const entry of page) {
+    if (archivedCount >= config.maxArchivePerRun) break outer;
 
     // Only archive active memories
     if (!isActiveMemory(entry.metadata)) continue;
@@ -180,6 +193,9 @@ export async function maybeRunGc(
         activeCounts.set(scope, prev - 1);
       }
     }
+  }
+
+    if (page.length < GC_PAGE_SIZE) break;
   }
 
   return { triggered: true, archivedCount, totalChecked };
