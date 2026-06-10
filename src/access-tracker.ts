@@ -163,43 +163,49 @@ export class AccessTracker {
 
     for (const [id, delta] of batch) {
       try {
-        const entry = await this.store.getById(id);
-        if (!entry) continue;
+        // Read-modify-write goes through the store's per-id patch queue so a
+        // concurrent usage/confidence patch can't overwrite this delta (or
+        // vice versa). patchFn stays pure — logging happens after settle.
+        let tierChange: { from: MemoryTier; to: MemoryTier; newCount: number } | null = null;
+        const result = await this.store.patchMetadata(id, (meta, entry) => {
+          const prevCount = typeof meta.accessCount === "number" ? meta.accessCount : 0;
+          const newCount = prevCount + delta;
+          const importance = entry.importance ?? 0.6;
+          const lastAccessedAt = now;
 
-        const meta = safeParseMetadata(entry.metadata);
-        const prevCount = typeof meta.accessCount === "number" ? meta.accessCount : 0;
-        const newCount = prevCount + delta;
-        const importance = entry.importance ?? 0.6;
-        const lastAccessedAt = now;
+          const currentTier = resolveTier(entry.metadata);
+          const newTier = evaluateTierChange(
+            currentTier,
+            newCount,
+            importance,
+            lastAccessedAt,
+          );
+          tierChange = newTier !== currentTier
+            ? { from: currentTier, to: newTier, newCount }
+            : null;
 
-        // Evaluate tier change
-        const currentTier = resolveTier(entry.metadata);
-        const newTier = evaluateTierChange(
-          currentTier,
-          newCount,
-          importance,
-          lastAccessedAt,
-        );
+          return {
+            ...meta,
+            accessCount: newCount,
+            lastAccessedAt,
+            ...(tierChange ? { tier: tierChange.to } : {}),
+          };
+        });
 
-        const tierChanged = newTier !== currentTier;
-        if (tierChanged) {
-          if (TIER_ORDER[newTier] > TIER_ORDER[currentTier]) {
+        // Entry vanished mid-flight → drop the delta (same as the old
+        // getById-null path). A patch failure throws and is re-queued below.
+        if (!result) continue;
+
+        if (tierChange !== null) {
+          const change: { from: MemoryTier; to: MemoryTier; newCount: number } = tierChange;
+          if (TIER_ORDER[change.to] > TIER_ORDER[change.from]) {
             promotions++;
-            logInfo(`[INFO] Tier promotion: ${id.slice(0, 8)} ${currentTier} → ${newTier} (access=${newCount})`);
+            logInfo(`[INFO] Tier promotion: ${id.slice(0, 8)} ${change.from} → ${change.to} (access=${change.newCount})`);
           } else {
             demotions++;
-            logInfo(`[INFO] Tier demotion: ${id.slice(0, 8)} ${currentTier} → ${newTier}`);
+            logInfo(`[INFO] Tier demotion: ${id.slice(0, 8)} ${change.from} → ${change.to}`);
           }
         }
-
-        const updatedMeta = {
-          ...meta,
-          accessCount: newCount,
-          lastAccessedAt,
-          ...(tierChanged ? { tier: newTier } : {}),
-        };
-
-        await this.store.update(id, { metadata: JSON.stringify(updatedMeta) });
       } catch {
         // Re-queue failed entries for next flush
         this.pending.set(id, (this.pending.get(id) || 0) + delta);

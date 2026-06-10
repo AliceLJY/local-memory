@@ -217,6 +217,8 @@ export class MemoryStore implements MemoryStorePort {
   private table: LanceDB.Table | null = null;
   private initPromise: Promise<void> | null = null;
   private ftsIndexCreated = false;
+  /** Per-id serial queues for patchMetadata; entries self-remove on settle. */
+  private readonly metadataPatchQueues = new Map<string, Promise<void>>();
 
   constructor(private readonly config: StoreConfig) {}
 
@@ -697,6 +699,72 @@ export class MemoryStore implements MemoryStorePort {
       .slice(offset, offset + limit);
   }
 
+  /**
+   * True DB-level pagination — where/limit/offset are pushed down to LanceDB,
+   * so unlike list() this never materializes the full match set in JS. Use for
+   * full-corpus maintenance sweeps (auto-gc, promotion scan, lint/checkup).
+   *
+   * Caveats:
+   * - No orderBy support in the LanceDB query API: rows come back in fragment
+   *   scan order, NOT timestamp order. Stable across pages for a read-only
+   *   sweep, but concurrent writes rewrite fragments and may shift rows
+   *   between pages (a missed row is picked up by the next sweep). Do not use
+   *   for user-facing ordered listings — that's what list() is for.
+   * - includeVector loads the embedding column; only request it when the
+   *   consumer actually needs vectors (they dominate row size).
+   */
+  async listPage(opts: {
+    scopeFilter?: string[];
+    category?: string;
+    limit?: number;
+    offset?: number;
+    includeVector?: boolean;
+  } = {}): Promise<MemoryEntry[]> {
+    await this.ensureInitialized();
+    const { scopeFilter, category, limit = 1000, offset = 0, includeVector = false } = opts;
+
+    let query = this.table!.query();
+
+    const conditions: string[] = [];
+    if (scopeFilter && scopeFilter.length > 0) {
+      const scopeConditions = scopeFilter
+        .map(scope => {
+          const safe = escapeSqlLiteral(scope);
+          return scope.includes(":")
+            ? `scope = '${safe}'`
+            : `scope LIKE '${safe}%'`;
+        })
+        .join(" OR ");
+      conditions.push(`((${scopeConditions}))`);
+    }
+    if (category) {
+      conditions.push(`category = '${escapeSqlLiteral(category)}'`);
+    }
+    if (conditions.length > 0) {
+      query = query.where(conditions.join(" AND "));
+    }
+
+    const columns = ["id", "text", "category", "scope", "importance", "timestamp", "metadata"];
+    if (includeVector) columns.push("vector");
+
+    const results = await query
+      .select(columns)
+      .limit(limit)
+      .offset(offset)
+      .toArray();
+
+    return results.map((row): MemoryEntry => ({
+      id: row.id as string,
+      text: row.text as string,
+      vector: includeVector ? Array.from(row.vector as Iterable<number>) : [],
+      category: row.category as MemoryEntry["category"],
+      scope: (row.scope as string | undefined) ?? "",
+      importance: Number(row.importance),
+      timestamp: Number(row.timestamp),
+      metadata: (row.metadata as string) || "{}",
+    }));
+  }
+
   async get(id: string, scopeFilter?: string[]): Promise<MemoryEntry | null> {
     await this.ensureInitialized();
 
@@ -962,12 +1030,92 @@ export class MemoryStore implements MemoryStorePort {
       }
     }
 
-    // LanceDB doesn't support in-place update; delete + re-add
-    const resolvedId = escapeSqlLiteral(row.id as string);
-    await this.table!.delete(`id = '${resolvedId}'`);
-    await this.table!.add([updated]);
+    // Atomic upsert via mergeInsert — replaces the previous delete+add two-step,
+    // which could lose the row entirely on a crash between steps and exposed a
+    // window where concurrent reads saw the id momentarily vanish.
+    await this.table!
+      .mergeInsert("id")
+      .whenMatchedUpdateAll()
+      .whenNotMatchedInsertAll()
+      .execute([updated]);
 
     return updated;
+  }
+
+  /**
+   * Serialized read-modify-write for the metadata column.
+   *
+   * Every direct `getById → mutate metadata → update` round-trip can lose
+   * concurrent increments (last write wins). This method funnels metadata
+   * patches for the same id through a per-id promise queue so each patch
+   * reads the result of the previous one.
+   *
+   * patchFn receives the parsed metadata object plus the freshly-read entry
+   * (for callers that need importance/timestamp context) and returns the new
+   * metadata object. A throwing patchFn abandons that patch — the error
+   * propagates to the caller, later queued patches still run.
+   *
+   * Scope of guarantee: in-process only. Cross-process writers (multiple
+   * mcp-server instances) and the remaining direct update() callers
+   * (consolidation/capture/forget/prospective/conflict engines, auto-gc)
+   * are NOT serialized by this queue. Long-term direction: make this the
+   * only legal metadata write path.
+   */
+  async patchMetadata(
+    id: string,
+    patchFn: (meta: Record<string, unknown>, entry: MemoryEntry) => Record<string, unknown>,
+    scopeFilter?: string[],
+  ): Promise<MemoryEntry | null> {
+    await this.ensureInitialized();
+
+    // Queue key must be the resolved full UUID — otherwise a prefix caller and
+    // a full-id caller targeting the same row would race on separate queues.
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    let fullId: string;
+    if (uuidRegex.test(id)) {
+      fullId = id;
+    } else {
+      const resolved = await this.getById(id);
+      if (!resolved) return null;
+      fullId = resolved.id;
+    }
+
+    const run = async (): Promise<MemoryEntry | null> => {
+      const entry = await this.getById(fullId);
+      if (!entry) return null;
+      let meta: Record<string, unknown>;
+      try {
+        const parsed: unknown = JSON.parse(entry.metadata || "{}");
+        meta = parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
+          ? (parsed as Record<string, unknown>)
+          : {};
+      } catch {
+        meta = {};
+      }
+      const patched = patchFn(meta, entry);
+      return this.update(fullId, { metadata: JSON.stringify(patched) }, scopeFilter);
+    };
+
+    const prev = this.metadataPatchQueues.get(fullId) ?? Promise.resolve();
+    // Isolate prior failures so one rejected patch can't wedge the queue.
+    const result = prev.then(run, run);
+    // The stored tail settles regardless of outcome; the caller keeps the real
+    // rejection via `result`. Only the current tail removes itself.
+    const tail = result.then(
+      () => undefined,
+      () => undefined,
+    ).then(() => {
+      if (this.metadataPatchQueues.get(fullId) === tail) {
+        this.metadataPatchQueues.delete(fullId);
+      }
+    });
+    this.metadataPatchQueues.set(fullId, tail);
+    return result;
+  }
+
+  /** Number of ids with in-flight metadata patches (test/diagnostic hook). */
+  get pendingMetadataPatchCount(): number {
+    return this.metadataPatchQueues.size;
   }
 
   async bulkDelete(scopeFilter: string[], beforeTimestamp?: number): Promise<number> {

@@ -39,15 +39,23 @@ function createMockStore(entries: MemoryEntry[]): {
 } {
   const data = new Map(entries.map(e => [e.id, { ...e }]));
   const updates: Array<{ id: string; metadata: string }> = [];
+  // 模拟 store.patchMetadata 的真实语义:读最新 metadata → patchFn → 写回。
   const store: UsageStorePort = {
-    async getById(id: string) {
-      return data.get(id) ?? null;
-    },
-    async update(id: string, upd: { metadata: string }, _scopeFilter?: string[]) {
+    async patchMetadata(id, patchFn, _scopeFilter) {
       const entry = data.get(id);
       if (!entry) return null;
-      entry.metadata = upd.metadata;
-      updates.push({ id, metadata: upd.metadata });
+      let meta: Record<string, unknown>;
+      try {
+        const parsed: unknown = JSON.parse(entry.metadata || "{}");
+        meta = parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
+          ? (parsed as Record<string, unknown>)
+          : {};
+      } catch {
+        meta = {};
+      }
+      const patched = patchFn(meta, entry);
+      entry.metadata = JSON.stringify(patched);
+      updates.push({ id, metadata: entry.metadata });
       return entry;
     },
   };
@@ -227,14 +235,13 @@ describe("usage-tracker", () => {
       expect(res2!.newUseCount).toBe(2);
     });
 
-    it("passes scope through to store.update when provided", async () => {
+    it("passes scope through to store.patchMetadata when provided", async () => {
       const captured: Array<string[] | undefined> = [];
       const base = createMockStore([makeEntry(ID)]);
       const store: UsageStorePort = {
-        getById: base.store.getById,
-        async update(id: string, upd: { metadata: string }, scopeFilter?: string[]) {
+        async patchMetadata(id, patchFn, scopeFilter) {
           captured.push(scopeFilter);
-          return base.store.update(id, upd, scopeFilter);
+          return base.store.patchMetadata(id, patchFn, scopeFilter);
         },
       };
       await recordMemoryUsage(store, ID, 100, "project:test");
@@ -267,11 +274,10 @@ describe("usage-tracker", () => {
     it("one failing id does not block others (allSettled, no throw)", async () => {
       const base = createMockStore([makeEntry(ID)]);
       const store: UsageStorePort = {
-        async getById(id: string) {
+        async patchMetadata(id, patchFn, scopeFilter) {
           if (id === "bad") throw new Error("boom");
-          return base.data.get(id) ?? null;
+          return base.store.patchMetadata(id, patchFn, scopeFilter);
         },
-        update: base.store.update,
       };
       await recordReconstructionUsage(store, ["bad", ID], 100);
       const good = JSON.parse(base.data.get(ID)!.metadata ?? "{}") as Record<string, unknown>;

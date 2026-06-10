@@ -261,50 +261,68 @@ export function buildContradictPatch(
 // Convenience wrappers (for callers who DO have a store)
 // ---------------------------------------------------------------------------
 
+/** 单写通道端口：读改写经 store.patchMetadata per-id 队列，防并发覆盖。 */
+type ConfidenceStorePort = {
+  patchMetadata(
+    id: string,
+    patchFn: (meta: Record<string, unknown>, entry: MemoryEntry) => Record<string, unknown>,
+    scopeFilter?: string[],
+  ): Promise<MemoryEntry | null>;
+};
+
+function applyConfidencePatch(
+  store: ConfidenceStorePort,
+  entryId: string,
+  scope: string,
+  build: (entry: MemoryEntry) => ConfidencePatch | null,
+): Promise<ConfidenceUpdate | null> {
+  let update: ConfidenceUpdate | null = null;
+  return store
+    .patchMetadata(
+      entryId,
+      (meta, entry) => {
+        const patch = build(entry);
+        if (!patch) return meta;
+        update = patch.update;
+        return patch.metadata;
+      },
+      [scope],
+    )
+    .then(result => (result === null ? null : update));
+}
+
 /**
  * Confirm a memory and write back to store. Convenience wrapper.
  */
 export async function confirmMemory(
-  store: { getById(id: string): Promise<MemoryEntry | null>; update(id: string, data: { metadata: string }, scopes: string[]): Promise<void> },
+  store: ConfidenceStorePort,
   entryId: string,
   scope: string,
 ): Promise<ConfidenceUpdate | null> {
-  const entry = await store.getById(entryId);
-  const patch = buildConfirmPatch(entry);
-  if (!patch) return null;
-  await store.update(entryId, { metadata: JSON.stringify(patch.metadata) }, [scope]);
-  return patch.update;
+  return applyConfidencePatch(store, entryId, scope, entry => buildConfirmPatch(entry));
 }
 
 /**
  * Correct a memory and write back to store. Convenience wrapper.
  */
 export async function correctMemory(
-  store: { getById(id: string): Promise<MemoryEntry | null>; update(id: string, data: { metadata: string }, scopes: string[]): Promise<void> },
+  store: ConfidenceStorePort,
   entryId: string,
   scope: string,
   correctedById?: string,
 ): Promise<ConfidenceUpdate | null> {
-  const entry = await store.getById(entryId);
-  const patch = buildCorrectPatch(entry, correctedById);
-  if (!patch) return null;
-  await store.update(entryId, { metadata: JSON.stringify(patch.metadata) }, [scope]);
-  return patch.update;
+  return applyConfidencePatch(store, entryId, scope, entry => buildCorrectPatch(entry, correctedById));
 }
 
 /**
  * Contradict a memory and write back to store. Convenience wrapper.
  */
 export async function contradictMemory(
-  store: { getById(id: string): Promise<MemoryEntry | null>; update(id: string, data: { metadata: string }, scopes: string[]): Promise<void> },
+  store: ConfidenceStorePort,
   entryId: string,
   scope: string,
 ): Promise<ConfidenceUpdate | null> {
-  const entry = await store.getById(entryId);
-  const patch = buildContradictPatch(entry);
-  if (!patch) return null;
-  await store.update(entryId, { metadata: JSON.stringify(patch.metadata) }, [scope]);
-  return patch.update;
+  return applyConfidencePatch(store, entryId, scope, entry => buildContradictPatch(entry));
 }
 
 // ---------------------------------------------------------------------------

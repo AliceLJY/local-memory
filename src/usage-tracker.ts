@@ -69,14 +69,15 @@ export interface UsagePatch {
   update: UsageUpdate;
 }
 
-/** 有 store 的 caller 用的最小端口（结构化类型，便于测试 mock）。 */
+/** 有 store 的 caller 用的最小端口（结构化类型，便于测试 mock）。
+ *  第二阶段起走 store.patchMetadata 单写通道：读改写在 per-id 队列内完成，
+ *  不再各自 getById+update（那是并发覆盖的根源）。 */
 export interface UsageStorePort {
-  getById(id: string): Promise<MemoryEntry | null>;
-  update(
+  patchMetadata(
     id: string,
-    updates: { metadata: string },
+    patchFn: (meta: Record<string, unknown>, entry: MemoryEntry) => Record<string, unknown>,
     scopeFilter?: string[],
-  ): Promise<unknown>;
+  ): Promise<MemoryEntry | null>;
 }
 
 // ---------------------------------------------------------------------------
@@ -183,7 +184,7 @@ export function buildUsagePatch(entry: MemoryEntry | null, now: number): UsagePa
 }
 
 /**
- * Convenience wrapper：读 entry → 构 patch → 写回 store。
+ * Convenience wrapper：经 store.patchMetadata 队列做读改写（防并发覆盖）。
  * 影子写入；entry 未找到 → 返回 null（no-op）。
  * 失败由 caller 决定是否 try/catch（影子统计不应阻断主流程）。
  */
@@ -193,15 +194,20 @@ export async function recordMemoryUsage(
   now: number = Date.now(),
   scope?: string,
 ): Promise<UsageUpdate | null> {
-  const entry = await store.getById(entryId);
-  const patch = buildUsagePatch(entry, now);
-  if (!patch) return null;
-  await store.update(
+  let update: UsageUpdate | null = null;
+  const result = await store.patchMetadata(
     entryId,
-    { metadata: JSON.stringify(patch.metadata) },
+    (_meta, entry) => {
+      // buildUsagePatch 读的是队列内最新一次读出的 entry，与 _meta 同源。
+      const patch = buildUsagePatch(entry, now);
+      // entry 在队列内非 null，patch 必非 null；防御性兜底保持类型干净。
+      if (!patch) return _meta;
+      update = patch.update;
+      return patch.metadata;
+    },
     scope ? [scope] : undefined,
   );
-  return patch.update;
+  return result === null ? null : update;
 }
 
 /**

@@ -34,19 +34,29 @@ function createMockStore(entries: MemoryEntry[]) {
   const data = new Map(entries.map(e => [e.id, { ...e }]));
   const updates: Array<{ id: string; metadata?: string }> = [];
 
+  // 模拟 store.patchMetadata 单写通道:读最新 metadata → patchFn → 写回。
   return {
     updates,
     data,
-    async getById(id: string) {
-      return data.get(id) ?? null;
-    },
-    async update(id: string, upd: { metadata?: string }) {
+    async patchMetadata(
+      id: string,
+      patchFn: (meta: Record<string, unknown>, entry: MemoryEntry) => Record<string, unknown>,
+      _scopeFilter?: string[],
+    ) {
       const entry = data.get(id);
       if (!entry) return null;
-      if (upd.metadata) {
-        entry.metadata = upd.metadata;
-        updates.push({ id, metadata: upd.metadata });
+      let meta: Record<string, unknown>;
+      try {
+        const parsed: unknown = JSON.parse(entry.metadata || "{}");
+        meta = parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
+          ? (parsed as Record<string, unknown>)
+          : {};
+      } catch {
+        meta = {};
       }
+      const patched = patchFn(meta, entry);
+      entry.metadata = JSON.stringify(patched);
+      updates.push({ id, metadata: entry.metadata });
       return entry;
     },
   };
