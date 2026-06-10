@@ -50,8 +50,16 @@ if (VERIFY_MERGE) {
 
   const sample = await table.query().limit(50).toArray();
   if (sample.length === 0) fail("no rows to sample");
-  const clean = sample.map((r) => ({ ...r }));
-  const test = await db.createTable(TEST_TABLE, clean);
+  // rows from toArray() carry Arrow vector objects that defeat schema
+  // inference — rebuild plain rows and create the table with the source
+  // table's explicit schema instead
+  const clean = sample.map((r) => ({
+    ...r,
+    vector: Array.from((r.vector ?? []) as Iterable<number>),
+  }));
+  const schema = await table.schema();
+  const test = await db.createEmptyTable(TEST_TABLE, schema);
+  await test.add(clean);
 
   const half = clean.slice(0, 25).map((r) => ({
     id: r.id,
