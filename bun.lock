@@ -13,7 +13,7 @@
         "zod": "^3.25.76",
       },
       "optionalDependencies": {
-        "babel-memory": "^2.1.0",
+        "babel-memory": ">=1.0.0",
       },
     },
   },
