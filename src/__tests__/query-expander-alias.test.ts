@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { expandQuery, setAliasMapPath, resetAliasMapCache } from "../query-expander.js";
+import { expandQuery, setAliasMapPath, resetAliasMapCache, upsertUserAlias, removeUserAlias, listUserAliases, explainUserAliases } from "../query-expander.js";
+import { expandQueryWithAliases, ALIAS_QUERY_MAX_LENGTH } from "../aliases.js";
 import { writeFileSync, unlinkSync, existsSync, mkdirSync } from "fs";
 import { join } from "path";
 
@@ -85,5 +86,61 @@ describe("expandQuery with alias-map", () => {
     // Built-in synonyms + alias expansions, but capped at MAX_EXPANSION_TERMS (5)
     const addedTerms = expanded.replace("测试", "").trim().split(/\s+/);
     expect(addedTerms.length).toBeLessThanOrEqual(5);
+  });
+});
+
+describe("manage_alias backend (P1-B)", () => {
+  beforeEach(() => {
+    if (!existsSync(TEST_DIR)) mkdirSync(TEST_DIR, { recursive: true });
+    cleanup();
+    setAliasMapPath(TEST_ALIAS);
+    resetAliasMapCache();
+  });
+  afterEach(() => {
+    cleanup();
+    resetAliasMapCache();
+  });
+
+  it("upserts, lists, expands, and removes a user alias", () => {
+    const added = upsertUserAlias("我的桥", ["telegram-ai-bridge", "tg-bridge-channel"]);
+    expect(added.ok).toBe(true);
+    expect(listUserAliases()).toHaveLength(1);
+
+    // 写完即生效(缓存失效),BM25 通道扩展可见
+    const expanded = expandQuery("我的桥怎么挂了");
+    expect(expanded).toContain("telegram-ai-bridge");
+
+    // update 路径
+    const updated = upsertUserAlias("我的桥", ["telegram-ai-bridge"]);
+    expect(updated.ok && updated.action === "updated").toBe(true);
+    expect(listUserAliases()[0].expansions).toEqual(["telegram-ai-bridge"]);
+
+    expect(explainUserAliases("我的桥呢")).toHaveLength(1);
+    expect(removeUserAlias("我的桥")).toBe(true);
+    expect(removeUserAlias("我的桥")).toBe(false);
+    expect(listUserAliases()).toHaveLength(0);
+  });
+
+  it("rejects invalid rules with reasons", () => {
+    const tooShort = upsertUserAlias("桥", ["x-bridge"]);
+    expect(tooShort.ok).toBe(false);
+
+    const tooMany = upsertUserAlias("我的桥", ["a1", "a2", "a3", "a4", "a5", "a6", "a7", "a8", "a9"]);
+    expect(tooMany.ok).toBe(false);
+
+    const selfRef = upsertUserAlias("我的桥", ["我的桥"]);
+    expect(selfRef.ok).toBe(false);
+
+    const empty = upsertUserAlias("我的桥", ["  "]);
+    expect(empty.ok).toBe(false);
+  });
+});
+
+describe("expandQueryWithAliases length gate (P1-B)", () => {
+  it("skips expansion for queries beyond ALIAS_QUERY_MAX_LENGTH", () => {
+    const longQuery = "我的记忆项目".padEnd(ALIAS_QUERY_MAX_LENGTH + 10, "字");
+    expect(expandQueryWithAliases(longQuery)).toBe(longQuery);
+    // 短 query 照常扩展
+    expect(expandQueryWithAliases("我的记忆项目")).toContain("recallnest");
   });
 });

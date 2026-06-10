@@ -9,7 +9,7 @@
  * Tool tiers:
  * - core: Always exposed (7 tools)
  * - advanced: Exposed by default, includes core (30 tools)
- * - full: All tools including governance (42 tools)
+ * - full: All tools including governance (43 tools)
  *
  * Control: RECALLNEST_MCP_TIER=core|advanced|full
  */
@@ -60,6 +60,7 @@ const TOOL_TIERS: Record<string, ToolTier> = {
   distill_session: "advanced",
   scan_skill_promotions: "governance",
   promote_scan: "governance",
+  manage_alias: "governance",
   forget_memory: "advanced",
 
   // Governance (CLI-only, not in MCP by default)
@@ -91,6 +92,8 @@ import type { MemoryStore } from "./store.js";
 import type { LLMClient } from "./llm-client.js";
 import { distillResults, formatExplainResults, formatSearchResults, formatBriefResults, formatFullResults, selectBriefSeedResults, summarizeResults } from "./memory-output.js";
 import { createScopeSuggester } from "./scope-suggester.js";
+import { ALIAS_RULES, expandQueryWithAliases, explainAliasExpansion } from "./aliases.js";
+import { aliasMapFilePath, expandQuery, explainUserAliases, listUserAliases, removeUserAlias, upsertUserAlias } from "./query-expander.js";
 import { archiveDirtyBriefAsset, assetSummaryLine, buildBriefAsset, buildPinAsset, listDirtyBriefAssets, listMemoryAssets, listPinAssets, saveBriefAsset, savePinAsset, writeExportArtifact } from "./memory-assets.js";
 import { indexAsset, indexPinnedAsset } from "./asset-sync.js";
 import { createComponentResolver, loadConfig, loadDotEnv, resolveRecallMode } from "./runtime-config.js";
@@ -1825,6 +1828,63 @@ registerTool(
         text: formatPromotionResult(result),
       }],
     };
+  },
+);
+
+// --- P1-B: manage_alias — 用户级查询别名规则管理 ---
+registerTool(
+  "manage_alias",
+  "Manage user-level query alias rules (data/alias-map.json). Matching aliases append canonical tokens to the query in the BM25 channel only ('我的桥' → '+telegram-ai-bridge') — they deliberately do NOT alter the vector embedding, so casual aliases cannot cause semantic drift. Actions: add/remove/list, plus explain to debug which rules (builtin full-channel + user BM25-only) fire for a query. Use when a colloquial entity name fails to recall its canonical project/tool.",
+  {
+    action: z.enum(["add", "remove", "list", "explain"]).describe("add: upsert a rule; remove: delete by trigger; list: all rules (builtin + user); explain: show which rules match a query"),
+    trigger: z.string().min(1).max(60).optional().describe("Alias literal to match in queries, case-insensitive inclusion (required for add/remove)"),
+    expansions: z.array(z.string().min(1).max(60)).max(8).optional().describe("Canonical tokens to append (required for add, max 8)"),
+    query: z.string().min(1).max(500).optional().describe("Query to explain (required for explain)"),
+  },
+  async ({ action, trigger, expansions, query }) => {
+    const text = (() => {
+      switch (action) {
+        case "add": {
+          if (!trigger || !expansions?.length) return "add 需要 trigger 与 expansions。";
+          const result = upsertUserAlias(trigger, expansions);
+          return result.ok
+            ? `${result.action}: "${result.entry.trigger}" → [${result.entry.expansions.join(", ")}](写入 ${aliasMapFilePath()},BM25 通道立即生效)`
+            : `拒绝: ${result.reason}`;
+        }
+        case "remove": {
+          if (!trigger) return "remove 需要 trigger。";
+          return removeUserAlias(trigger)
+            ? `removed: "${trigger}"`
+            : `未找到 trigger "${trigger}"(只能删用户规则;builtin 规则在 src/aliases.ts)`;
+        }
+        case "list": {
+          const user = listUserAliases();
+          return [
+            `Builtin rules (${ALIAS_RULES.length}, read-only, full-channel vector+BM25):`,
+            ...ALIAS_RULES.map(r => `  /${r.pattern.source}/ → ${r.expansion}${r.comment ? ` (${r.comment})` : ""}`),
+            ``,
+            `User rules (${user.length}, BM25-only, ${aliasMapFilePath()}):`,
+            ...(user.length ? user.map(r => `  "${r.trigger}" → [${r.expansions.join(", ")}]`) : ["  (none)"]),
+          ].join("\n");
+        }
+        case "explain": {
+          if (!query) return "explain 需要 query。";
+          const builtinMatched = explainAliasExpansion(query);
+          const userMatched = explainUserAliases(query);
+          return [
+            `Query: ${query}`,
+            `Full-channel expanded (builtin): ${expandQueryWithAliases(query) === query ? "(unchanged)" : expandQueryWithAliases(query)}`,
+            `BM25-channel expanded (builtin synonyms + user aliases): ${expandQuery(query) === query ? "(unchanged)" : expandQuery(query)}`,
+            `Matched builtin rules (${builtinMatched.length}):`,
+            ...builtinMatched.map(m => `  /${m.pattern}/ → ${m.expansion}`),
+            `Matched user aliases (${userMatched.length}):`,
+            ...userMatched.map(m => `  "${m.trigger}" → [${m.expansions.join(", ")}]`),
+          ].join("\n");
+        }
+      }
+    })();
+
+    return { content: [{ type: "text" as const, text }] };
   },
 );
 

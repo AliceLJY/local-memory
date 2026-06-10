@@ -10,8 +10,8 @@
  * v1.3: P0.3 — User-level alias-map (data/alias-map.json) for short query expansion.
  */
 
-import { existsSync, readFileSync } from "fs";
-import { join } from "path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { dirname, join } from "path";
 import { resolveQueryEntities } from "./entity-resolver.js";
 
 interface SynonymEntry {
@@ -89,9 +89,14 @@ export function resetAliasMapCache(): void {
   aliasMapCache = null;
 }
 
+/** Resolve the alias-map file path currently in effect. */
+export function aliasMapFilePath(): string {
+  return aliasMapPath ?? join(process.cwd(), "data", "alias-map.json");
+}
+
 function loadAliasMap(): AliasEntry[] {
   if (aliasMapCache !== null) return aliasMapCache;
-  const filePath = aliasMapPath ?? join(process.cwd(), "data", "alias-map.json");
+  const filePath = aliasMapFilePath();
   try {
     if (existsSync(filePath)) {
       const raw = JSON.parse(readFileSync(filePath, "utf-8"));
@@ -112,6 +117,75 @@ function loadAliasMap(): AliasEntry[] {
   return aliasMapCache;
 }
 
+// ---------------------------------------------------------------------------
+// User alias management (P1-B manage_alias tool 后端)
+//
+// 这些别名只作用于 BM25 通道(expandQuery 在 hybridRetrieval 内部被调用),
+// 刻意不进 vector embedding——随手加的用户别名若改变语义向量,排查
+// retrieval drift 会非常困难。全通道的 builtin 规则在 src/aliases.ts。
+// ---------------------------------------------------------------------------
+
+/** 写入校验:trigger 最短 2 字符(防高频泛词),expansions 最多 8 个。 */
+export const USER_ALIAS_TRIGGER_MIN = 2;
+export const USER_ALIAS_EXPANSIONS_MAX = 8;
+
+export type AliasUpsertResult =
+  | { ok: true; action: "added" | "updated"; entry: AliasEntry }
+  | { ok: false; reason: string };
+
+/** 新增/更新用户别名(写 alias-map.json;校验后缓存即时失效)。 */
+export function upsertUserAlias(trigger: string, expansions: string[]): AliasUpsertResult {
+  const t = trigger.trim();
+  const exp = [...new Set(expansions.map(e => e.trim()).filter(e => e.length > 0))];
+
+  if (t.length < USER_ALIAS_TRIGGER_MIN) {
+    return { ok: false, reason: `trigger 太短(<${USER_ALIAS_TRIGGER_MIN} 字符)——高频泛词会污染所有查询` };
+  }
+  if (exp.length === 0) {
+    return { ok: false, reason: "expansions 为空" };
+  }
+  if (exp.length > USER_ALIAS_EXPANSIONS_MAX) {
+    return { ok: false, reason: `expansions 超过 ${USER_ALIAS_EXPANSIONS_MAX} 个——过长扩展会冲淡 BM25 原查询词权重` };
+  }
+  if (exp.every(e => e === t)) {
+    return { ok: false, reason: "expansions 与 trigger 相同,无扩展意义" };
+  }
+
+  const rules = loadAliasMap();
+  const idx = rules.findIndex(r => r.trigger === t);
+  const entry: AliasEntry = { trigger: t, expansions: exp };
+  const next = idx >= 0 ? rules.map((r, i) => (i === idx ? entry : r)) : [...rules, entry];
+
+  const path = aliasMapFilePath();
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, JSON.stringify(next, null, 2) + "\n", "utf-8");
+  aliasMapCache = null;
+  return { ok: true, action: idx >= 0 ? "updated" : "added", entry };
+}
+
+/** 删除用户别名;返回是否真的删了。 */
+export function removeUserAlias(trigger: string): boolean {
+  const rules = loadAliasMap();
+  const next = rules.filter(r => r.trigger !== trigger.trim());
+  if (next.length === rules.length) return false;
+  const path = aliasMapFilePath();
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, JSON.stringify(next, null, 2) + "\n", "utf-8");
+  aliasMapCache = null;
+  return true;
+}
+
+/** 列出用户别名规则。 */
+export function listUserAliases(): AliasEntry[] {
+  return [...loadAliasMap()];
+}
+
+/** 检视:query 命中了哪些用户别名(BM25-only 通道)。 */
+export function explainUserAliases(query: string): AliasEntry[] {
+  const lower = query.toLowerCase();
+  return loadAliasMap().filter(e => lower.includes(e.trigger.toLowerCase()));
+}
+
 /**
  * Expand a query by appending synonym terms from the dictionary.
  * Returns the original query with additional terms appended.
@@ -123,7 +197,8 @@ export function expandQuery(query: string): string {
   // Entity resolution pre-pass: normalize aliases before synonym expansion
   const resolved = resolveQueryEntities(query);
   const lower = resolved.toLowerCase();
-  const additions = new Set<string>();
+  const synonymAdditions = new Set<string>();
+  const aliasAdditions = new Set<string>();
 
   // Static synonym map (built-in)
   for (const entry of SYNONYM_MAP) {
@@ -138,7 +213,7 @@ export function expandQuery(query: string): string {
     if (cnMatch || enMatch) {
       for (const exp of entry.expansions) {
         if (!lower.includes(exp.toLowerCase())) {
-          additions.add(exp);
+          synonymAdditions.add(exp);
         }
       }
     }
@@ -151,15 +226,21 @@ export function expandQuery(query: string): string {
     if (lower.includes(triggerLower)) {
       for (const exp of alias.expansions) {
         if (!lower.includes(exp.toLowerCase())) {
-          additions.add(exp);
+          aliasAdditions.add(exp);
         }
       }
     }
   }
 
-  if (additions.size === 0) return resolved;
+  if (aliasAdditions.size === 0 && synonymAdditions.size === 0) return resolved;
 
-  // Cap expansion terms to prevent query bloat
-  const limited = [...additions].slice(0, MAX_EXPANSION_TERMS);
+  // Cap expansion terms to prevent query bloat. User aliases rank first inside
+  // the cap — 用户为这个 trigger 显式配置的 canonical 名,不应被泛化同义词
+  // 挤出 MAX_EXPANSION_TERMS(P1-B:同义词"挂"曾把 alias 的实体名挤掉)。
+  const merged = [
+    ...aliasAdditions,
+    ...[...synonymAdditions].filter(t => !aliasAdditions.has(t)),
+  ];
+  const limited = merged.slice(0, MAX_EXPANSION_TERMS);
   return `${resolved} ${limited.join(" ")}`;
 }

@@ -81,9 +81,17 @@ export const ALIAS_RULES: AliasRule[] = [
   },
 ];
 
+/** 超过此长度的 query 不做别名扩展——长 query 是粘贴文档场景,扩展只添噪声 (P1-B)。 */
+export const ALIAS_QUERY_MAX_LENGTH = 100;
+
 /**
  * Expand a query by appending alias tokens for matching patterns.
  * Returns the original query unchanged if no rules match.
+ *
+ * 注意分工:本模块只承载**静态 builtin 规则**,作用于 retrieve() 全通道
+ * (vector + BM25)。**用户级** alias(data/alias-map.json)由
+ * query-expander.ts 加载,只作用于 BM25 通道(hybridRetrieval 内部)——
+ * 用户别名不进 vector embedding,避免随手加的别名造成语义向量漂移。
  *
  * Example:
  *   expandQueryWithAliases("帮我看我的记忆项目")
@@ -93,6 +101,7 @@ export const ALIAS_RULES: AliasRule[] = [
  */
 export function expandQueryWithAliases(query: string): string {
   if (!query || typeof query !== "string") return query;
+  if (query.length > ALIAS_QUERY_MAX_LENGTH) return query;
 
   const additions: string[] = [];
   const seen = new Set<string>();
@@ -112,7 +121,8 @@ export function expandQueryWithAliases(query: string): string {
 }
 
 /**
- * Inspection helper — return which rules matched a query, for debugging.
+ * Inspection helper — return which builtin rules matched a query, for debugging.
+ * 用户级规则(BM25-only)的检视走 query-expander.ts 的 explainUserAliases。
  */
 export function explainAliasExpansion(query: string): Array<{ pattern: string; expansion: string; comment?: string }> {
   return ALIAS_RULES.filter((rule) => rule.pattern.test(query)).map((rule) => ({
