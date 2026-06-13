@@ -461,3 +461,141 @@ describe("formatPromotionResult", () => {
     expect(text).toContain("Implementation:");
   });
 });
+
+// ---------------------------------------------------------------------------
+// A2 · skill verifier integration
+// ---------------------------------------------------------------------------
+
+function metaWithTools(key: "caseMemory" | "workflowPattern", tools: string[]): string {
+  return JSON.stringify({
+    evolution: {
+      status: "active", version: 1, accessCount: 0, lastAccessedAt: null,
+      supersededBy: null, consolidatedInto: null, sourceMemories: [],
+      validFrom: 1_700_000_000_000, validUntil: null,
+    },
+    [key]: { tools },
+  });
+}
+
+describe("A2 verifier integration", () => {
+  it("attaches passing verification when pattern tools ⊆ supporting cases and narrative resonates", async () => {
+    const entries = [
+      makeEntry({
+        category: "patterns",
+        text: "Deploy Pattern\n\nSteps:\n1. Run preflight check\n2. Deploy containers\nTools: git, docker",
+        vector: [0.95, 0.312, 0],
+        metadata: metaWithTools("workflowPattern", ["git", "docker"]),
+      }),
+      makeEntry({
+        text: "Deploy case: ran preflight check then deploy containers",
+        vector: [1, 0, 0],
+        metadata: metaWithTools("caseMemory", ["git", "docker"]),
+      }),
+      // 第二个 case 走正文 Tools fallback（metadata 无 caseMemory.tools）
+      makeEntry({
+        text: "Deploy fix: preflight check before deploy containers\nTools: git",
+        vector: similarVector(0.9),
+      }),
+    ];
+    const store = createMockStore(entries);
+    const result = await scanForPromotions(store, "project:test", { caseSimilarityThreshold: 0.75 });
+    const c = result.candidates.find(x => x.type === "pattern_to_skill");
+    expect(c).toBeDefined();
+    expect(c!.verification).toBeDefined();
+    expect(c!.verification!.ok).toBe(true);
+    expect(c!.verification!.coverage).toBe(1);
+  });
+
+  it("flags verification.ok=false when pattern claims a tool absent from supporting cases (hallucination)", async () => {
+    const entries = [
+      makeEntry({
+        category: "patterns",
+        text: "Deploy Pattern\n\nSteps:\n1. Run preflight check\n2. Deploy containers",
+        vector: [0.95, 0.312, 0],
+        metadata: metaWithTools("workflowPattern", ["nonexistent_cmd"]),
+      }),
+      makeEntry({
+        text: "Deploy case: ran preflight check then deploy containers",
+        vector: [1, 0, 0],
+        metadata: metaWithTools("caseMemory", ["git"]),
+      }),
+      makeEntry({
+        text: "Deploy fix: preflight check before deploy containers",
+        vector: similarVector(0.9),
+        metadata: metaWithTools("caseMemory", ["git"]),
+      }),
+    ];
+    const store = createMockStore(entries);
+    const result = await scanForPromotions(store, "project:test", { caseSimilarityThreshold: 0.75 });
+    const c = result.candidates.find(x => x.type === "pattern_to_skill");
+    expect(c).toBeDefined();
+    expect(c!.verification!.ok).toBe(false);
+    expect(c!.verification!.unmappedTools).toContain("nonexistent_cmd");
+  });
+
+  it("ranks verifier-passed candidate before failed one even when failed has higher confidence", async () => {
+    const entries = [
+      // cluster 1 (passing): pattern tools ⊆ cases, 2 supporting cases → confidence 0.5
+      makeEntry({
+        category: "patterns",
+        text: "Deploy Pattern\n\nSteps:\n1. Run preflight check\n2. Deploy containers\nTools: git",
+        vector: [0.95, 0.312, 0],
+        metadata: metaWithTools("workflowPattern", ["git"]),
+      }),
+      makeEntry({ text: "Deploy preflight check then deploy containers", vector: [1, 0, 0], metadata: metaWithTools("caseMemory", ["git"]) }),
+      makeEntry({ text: "Deploy preflight check before deploy containers", vector: similarVector(0.92), metadata: metaWithTools("caseMemory", ["git"]) }),
+      // cluster 2 (failing): pattern claims fake tool, 3 supporting cases → confidence 0.6 (higher!)
+      makeEntry({
+        category: "patterns",
+        text: "Rollback Pattern\n\nSteps:\n1. Run preflight check\n2. Deploy containers\nTools: fake_cmd",
+        vector: [0, 0.95, 0.312],
+        metadata: metaWithTools("workflowPattern", ["fake_cmd"]),
+      }),
+      makeEntry({ text: "Rollback preflight check then deploy containers", vector: [0, 1, 0], metadata: metaWithTools("caseMemory", ["git"]) }),
+      makeEntry({ text: "Rollback preflight check before deploy containers", vector: [0, 0.99, 0.141], metadata: metaWithTools("caseMemory", ["git"]) }),
+      makeEntry({ text: "Rollback preflight check after deploy containers", vector: [0, 0.97, 0.243], metadata: metaWithTools("caseMemory", ["git"]) }),
+    ];
+    const store = createMockStore(entries);
+    // minCaseOccurrences 设高，排除 case_to_pattern 候选，只看 pattern_to_skill 排序
+    const result = await scanForPromotions(store, "project:test", { caseSimilarityThreshold: 0.75, minCaseOccurrences: 99 });
+    const skillCandidates = result.candidates.filter(c => c.type === "pattern_to_skill");
+    expect(skillCandidates.length).toBe(2);
+    expect(result.candidates[0].verification!.ok).toBe(true);
+    expect(result.candidates[1].verification!.ok).toBe(false);
+    // 失败候选 confidence 更高，却排在通过候选之后
+    expect(result.candidates[1].confidence).toBeGreaterThan(result.candidates[0].confidence);
+  });
+
+  it("formatPromotionResult discloses verifier verdict (pass and fail)", () => {
+    const result: PromotionScanResult = {
+      candidates: [
+        {
+          type: "pattern_to_skill",
+          sourceEntries: [{ id: "a", text: "t", score: 1 }],
+          suggestedName: "Good Skill",
+          suggestedDescription: "ok",
+          suggestedImplementation: "1. step",
+          confidence: 0.6,
+          verification: { ok: true, coverage: 1, resonance: 1, unmappedTools: [] },
+        },
+        {
+          type: "pattern_to_skill",
+          sourceEntries: [{ id: "b", text: "t", score: 1 }],
+          suggestedName: "Bad Skill",
+          suggestedDescription: "hallucinated",
+          suggestedImplementation: "1. step",
+          confidence: 0.9,
+          verification: { ok: false, coverage: 0, resonance: 1, unmappedTools: ["fake_cmd"], reason: "coverage=0.00<0.5" },
+        },
+      ],
+      scannedCases: 2,
+      scannedPatterns: 2,
+      truncatedCases: 0,
+      vectorlessSkipped: 0,
+    };
+    const text = formatPromotionResult(result);
+    expect(text).toContain("pass");
+    expect(text).toContain("FAILED");
+    expect(text).toContain("fake_cmd");
+  });
+});

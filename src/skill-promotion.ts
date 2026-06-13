@@ -12,6 +12,7 @@
 import type { MemoryEntry, MemoryStore } from "./store.js";
 import { cosineSimilarity } from "./multi-vector.js";
 import { isActiveMemory } from "./memory-evolution.js";
+import { verifyDraft, type VerifyResult } from "./skill-verifier.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -25,6 +26,8 @@ export interface PromotionCandidate {
   /** For pattern_to_skill: extracted implementation steps */
   suggestedImplementation?: string;
   confidence: number; // 0-1
+  /** A2: zero-LLM verifier verdict (pattern_to_skill only). 失败候选保留披露、排后、不静默丢。 */
+  verification?: VerifyResult;
 }
 
 export interface PromotionScanResult {
@@ -120,6 +123,31 @@ function readTopicTag(entry: MemoryEntry): string | undefined {
     }
   } catch { /* fallthrough */ }
   return undefined;
+}
+
+/**
+ * A2: 抽 entry 的工具名供 verifier tool-coverage 用。
+ * metadata.{caseMemory|workflowPattern}.tools 优先；fallback 解析正文 `Tools: a, b, c` 行。
+ */
+function extractToolsFromEntry(entry: MemoryEntry): string[] {
+  try {
+    const parsed: unknown = JSON.parse(entry.metadata || "{}");
+    if (parsed !== null && typeof parsed === "object") {
+      const obj = parsed as Record<string, unknown>;
+      for (const key of ["caseMemory", "workflowPattern"]) {
+        const sub = obj[key];
+        if (sub !== null && typeof sub === "object") {
+          const tools = (sub as Record<string, unknown>).tools;
+          if (Array.isArray(tools)) {
+            return tools.filter((t): t is string => typeof t === "string" && t.length > 0);
+          }
+        }
+      }
+    }
+  } catch { /* fallthrough to text parse */ }
+  const m = entry.text.match(/(?:^|\n)Tools:\s*(.+)/);
+  if (m) return m[1].split(",").map(t => t.trim()).filter(Boolean);
+  return [];
 }
 
 /**
@@ -357,6 +385,14 @@ export async function scanForPromotions(
 
     if (similarCases.length < 2) continue;
 
+    // A2: zero-LLM verifier — pattern 当 draft，supporting cases 当 evidence。
+    // steps 传 [] 不是漏传：pattern.text 已含完整 Steps 块，resonance 用整段文本即可；
+    // extractSteps(pattern.text) 仅用于下面的 suggestedImplementation 字段。
+    const verification = verifyDraft(
+      { tools: extractToolsFromEntry(pattern), summary: pattern.text, steps: [] },
+      similarCases.map(h => ({ text: h.entry.text, tools: extractToolsFromEntry(h.entry) })),
+    );
+
     patternCandidates++;
     result.candidates.push({
       type: "pattern_to_skill",
@@ -372,11 +408,18 @@ export async function scanForPromotions(
       suggestedDescription: `Skill derived from pattern with ${similarCases.length} supporting cases`,
       suggestedImplementation: extractSteps(pattern.text),
       confidence: similarCases.length / (similarCases.length + 2),
+      verification,
     });
   }
 
-  // Sort by confidence descending, then truncate
-  result.candidates.sort((a, b) => b.confidence - a.confidence);
+  // Sort: A2 verifier-passed first, then confidence desc, then truncate.
+  // 失败候选保留披露但排后；截断优先砍失败候选，通过的不被挤掉(Codex 验证补充)。
+  result.candidates.sort((a, b) => {
+    const aOk = a.verification?.ok ?? true;
+    const bOk = b.verification?.ok ?? true;
+    if (aOk !== bOk) return aOk ? -1 : 1;
+    return b.confidence - a.confidence;
+  });
   result.candidates = result.candidates.slice(0, cfg.maxCandidates);
 
   return result;
@@ -412,6 +455,15 @@ export function formatPromotionResult(result: PromotionScanResult): string {
     lines.push(`Confidence: ${(c.confidence * 100).toFixed(1)}%`);
     lines.push(`Description: ${c.suggestedDescription}`);
     lines.push(`Sources: ${c.sourceEntries.length} entries`);
+    if (c.verification) {
+      const v = c.verification;
+      if (v.ok) {
+        lines.push(`Verifier: ✓ pass (coverage ${(v.coverage * 100).toFixed(0)}%, resonance ${(v.resonance * 100).toFixed(0)}%)`);
+      } else {
+        const unmapped = v.unmappedTools.length > 0 ? `; unmapped tools: ${v.unmappedTools.join(", ")}` : "";
+        lines.push(`Verifier: ⚠️ FAILED — ${v.reason ?? "?"} (coverage ${(v.coverage * 100).toFixed(0)}%, resonance ${(v.resonance * 100).toFixed(0)}%${unmapped})`);
+      }
+    }
     if (c.suggestedImplementation) {
       lines.push(`Implementation:\n\`\`\`\n${c.suggestedImplementation}\n\`\`\``);
     }
