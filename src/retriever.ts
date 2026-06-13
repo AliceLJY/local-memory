@@ -932,105 +932,18 @@ export class MemoryRetriever {
     // P0.1: Anchor boost for vector-only path
     const anchorBoosted = applyAnchorBoost(mapped, searchQuery);
 
-    trace?.startStage("recency_boost", anchorBoosted.length);
-    const boosted = this.applyRecencyBoost(anchorBoosted);
-    trace?.endStage(boosted.length, boosted.map(r => r.score));
+    const scored = this.applySharedScoring(anchorBoosted, query, trace);
 
-    trace?.startStage("importance_weight", boosted.length);
-    const weighted = this.applyImportanceWeight(boosted);
-    trace?.endStage(weighted.length, weighted.map(r => r.score));
+    // Session suppression: temporarily penalize "do not disturb" memories (vector-only path)
+    const afterSuppression = this.applySessionSuppression(scored);
 
-    trace?.startStage("confidence_weight", weighted.length);
-    const confidenceWeighted = this.applyConfidence(weighted);
-    trace?.endStage(confidenceWeighted.length, confidenceWeighted.map(r => r.score));
-
-    let afterEmotionVector = confidenceWeighted;
-    if (isEmotionScoringEnabled()) {
-      const queryEmotion = detectEmotion(query);
-      const adapted = confidenceWeighted.map(r => ({ ...r, metadata: r.entry.metadata ?? "{}" }));
-      const emotioned = applyEmotionWeight(adapted, queryEmotion);
-      afterEmotionVector = confidenceWeighted.map((r, i) => ({ ...r, score: emotioned[i]?.score ?? r.score }));
-    }
-
-    trace?.startStage("boundary_weight", afterEmotionVector.length);
-    const boundaryWeighted = this.applyBoundaryWeight(afterEmotionVector);
-    trace?.endStage(boundaryWeighted.length, boundaryWeighted.map(r => r.score));
-
-    trace?.startStage("asset_type_weight", boundaryWeighted.length);
-    const assetWeighted = this.applyAssetTypeWeight(boundaryWeighted);
-    trace?.endStage(assetWeighted.length, assetWeighted.map(r => r.score));
-
-    trace?.startStage("length_norm", assetWeighted.length);
-    const lengthNormalized = this.applyLengthNormalization(assetWeighted);
-    trace?.endStage(lengthNormalized.length, lengthNormalized.map(r => r.score));
-
-    trace?.startStage("time_decay", lengthNormalized.length);
-    const timeDecayed = this.applyTimeDecay(lengthNormalized);
-    trace?.endStage(timeDecayed.length, timeDecayed.map(r => r.score));
-
-    // B-1/E-1: Evolution decay blend — boost memories with high composite decay score
-    const evolutionBlended = this.applyEvolutionDecayBlend(timeDecayed);
-
-    // E-1: Access count boost — memories retrieved more often get a score nudge
-    const accessBoosted = this.applyAccessCountBoost(evolutionBlended);
-
-    // Hotness blend: boost frequently + recently accessed memories
-    trace?.startStage("hotness_blend", accessBoosted.length);
-    const hotnessBlended = this.applyHotnessBlend(accessBoosted);
-    trace?.endStage(hotnessBlended.length, hotnessBlended.map(r => r.score));
-
-    // P0.2: Frequency boost — repeatedly retrieved memories score higher
-    trace?.startStage("frequency_boost", hotnessBlended.length);
-    const frequencyBoosted = this.applyFrequencyBoost(hotnessBlended);
-    trace?.endStage(frequencyBoosted.length, frequencyBoosted.map(r => r.score));
-
-    // Session suppression: temporarily penalize "do not disturb" memories
-    const afterSuppression = this.applySessionSuppression(frequencyBoosted);
-    const rescored = [...afterSuppression].sort((a, b) => b.score - a.score);
-
-    trace?.startStage("hard_min_score", rescored.length);
-    const hardFiltered = minScoreOverride !== undefined
-      ? rescored
-      : rescored.filter(r => r.score >= this.minScoreFor(r.entry.category, shortQ));
-    trace?.endStage(hardFiltered.length, hardFiltered.map(r => r.score));
-
-    // Evolution status filter: exclude superseded/archived/consolidated memories
-    const evolutionFiltered = includeArchived
-      ? hardFiltered
-      : hardFiltered.filter(r => isActiveMemory(r.entry.metadata));
-
-    trace?.startStage("noise_filter", evolutionFiltered.length);
-    const denoised = this.config.filterNoise
-      ? filterNoise(evolutionFiltered, r => r.entry.text)
-      : evolutionFiltered;
-    trace?.endStage(denoised.length, denoised.map(r => r.score));
-
-    // RIF: demote near-duplicate weak results to improve diversity
-    const afterRif = this.config.enableRIF
-      ? filterInterference(denoised, this.config.rifThreshold ?? 0.85, this.config.rifScoreRatio ?? 0.80)
-      : denoised;
-
-    // MMR deduplication: avoid top-k filled with near-identical memories
-    trace?.startStage("mmr_diversity", afterRif.length);
-    const deduplicated = this.applyMMRDiversity(afterRif);
-    trace?.endStage(deduplicated.length, deduplicated.map(r => r.score));
-
-    // Tier 3.3: Version group dedup — keep only the top-ranked version per group
-    const versionDeduped = deduplicateByVersionGroup(deduplicated);
-
-    // LC-P2: Cluster insight dedup — prefer cluster summary over individual source memories
-    const clusterDeduped = deduplicateByClusterInsight(versionDeduped);
-
-    // Source diversity: round-robin across scopes for multi-session coverage
-    const diversified = (this.config.sourceDiversity ?? 0) > 0
-      ? applySourceDiversity(clusterDeduped, limit)
-      : clusterDeduped;
-
-    trace?.startStage("final_limit", diversified.length);
-    const final = diversified.slice(0, limit);
-    trace?.endStage(final.length, final.map(r => r.score));
-
-    return final;
+    return this.finalizeResults(afterSuppression, {
+      shortQ,
+      minScoreOverride,
+      includeArchived,
+      limit,
+      trace,
+    });
   }
 
   private async hybridRetrieval(
@@ -1122,46 +1035,61 @@ export class MemoryRetriever {
       : filtered;
     trace?.endStage(reranked.length, reranked.map(r => r.score));
 
-    // Apply temporal re-ranking (recency boost)
-    trace?.startStage("recency_boost", reranked.length);
-    const temporalReranked = this.applyRecencyBoost(reranked);
-    trace?.endStage(temporalReranked.length, temporalReranked.map(r => r.score));
+    const scored = this.applySharedScoring(reranked, query, trace);
 
-    // Apply importance weighting
-    trace?.startStage("importance_weight", temporalReranked.length);
-    const importanceWeighted = this.applyImportanceWeight(temporalReranked);
-    trace?.endStage(importanceWeighted.length, importanceWeighted.map(r => r.score));
+    return this.finalizeResults(scored, {
+      shortQ,
+      minScoreOverride,
+      includeArchived,
+      limit,
+      trace,
+    });
+  }
 
-    // Viewpoint confidence: penalize corrected/contradicted memories
-    trace?.startStage("confidence_weight", importanceWeighted.length);
-    const confidenceWeighted = this.applyConfidence(importanceWeighted);
+  /**
+   * Shared scoring pipeline — the 12 stages identical across the vector-only and
+   * hybrid paths. Order is load-bearing (Codex §3.6 "顺序即语义"); do not reorder.
+   * `query` feeds the emotion stage; `trace` carries per-stage trace spans.
+   * Path-specific stages stay in the caller: anchor / min_score / rerank / multi-vector
+   * blend run BEFORE this; vector-only session suppression runs AFTER this.
+   */
+  private applySharedScoring(
+    results: RetrievalResult[],
+    query: string,
+    trace?: TraceCollector,
+  ): RetrievalResult[] {
+    trace?.startStage("recency_boost", results.length);
+    const boosted = this.applyRecencyBoost(results);
+    trace?.endStage(boosted.length, boosted.map(r => r.score));
+
+    trace?.startStage("importance_weight", boosted.length);
+    const weighted = this.applyImportanceWeight(boosted);
+    trace?.endStage(weighted.length, weighted.map(r => r.score));
+
+    trace?.startStage("confidence_weight", weighted.length);
+    const confidenceWeighted = this.applyConfidence(weighted);
     trace?.endStage(confidenceWeighted.length, confidenceWeighted.map(r => r.score));
 
-    // Emotion scoring: boost memories matching query emotional tone
-    let afterEmotion = confidenceWeighted;
+    let afterEmotionVector = confidenceWeighted;
     if (isEmotionScoringEnabled()) {
       const queryEmotion = detectEmotion(query);
       const adapted = confidenceWeighted.map(r => ({ ...r, metadata: r.entry.metadata ?? "{}" }));
       const emotioned = applyEmotionWeight(adapted, queryEmotion);
-      afterEmotion = confidenceWeighted.map((r, i) => ({ ...r, score: emotioned[i]?.score ?? r.score }));
+      afterEmotionVector = confidenceWeighted.map((r, i) => ({ ...r, score: emotioned[i]?.score ?? r.score }));
     }
 
-    // Prefer higher-authority durable memories over raw evidence when scores are close.
-    trace?.startStage("boundary_weight", afterEmotion.length);
-    const boundaryWeighted = this.applyBoundaryWeight(afterEmotion);
+    trace?.startStage("boundary_weight", afterEmotionVector.length);
+    const boundaryWeighted = this.applyBoundaryWeight(afterEmotionVector);
     trace?.endStage(boundaryWeighted.length, boundaryWeighted.map(r => r.score));
 
-    // Separate pinned assets from synthesized briefs.
     trace?.startStage("asset_type_weight", boundaryWeighted.length);
     const assetWeighted = this.applyAssetTypeWeight(boundaryWeighted);
     trace?.endStage(assetWeighted.length, assetWeighted.map(r => r.score));
 
-    // Apply length normalization (penalize long entries dominating via keyword density)
     trace?.startStage("length_norm", assetWeighted.length);
     const lengthNormalized = this.applyLengthNormalization(assetWeighted);
     trace?.endStage(lengthNormalized.length, lengthNormalized.map(r => r.score));
 
-    // Apply time decay (penalize stale entries)
     trace?.startStage("time_decay", lengthNormalized.length);
     const timeDecayed = this.applyTimeDecay(lengthNormalized);
     trace?.endStage(timeDecayed.length, timeDecayed.map(r => r.score));
@@ -1182,9 +1110,27 @@ export class MemoryRetriever {
     const frequencyBoosted = this.applyFrequencyBoost(hotnessBlended);
     trace?.endStage(frequencyBoosted.length, frequencyBoosted.map(r => r.score));
 
-    // Hard minimum score cutoff (post all scoring stages)
-    // P0.1: lower thresholds for short queries (shortQ declared earlier for fuseResults)
-    const rescored = [...frequencyBoosted].sort((a, b) => b.score - a.score);
+    return frequencyBoosted;
+  }
+
+  /**
+   * Shared finalization tail — identical across both paths: sort → hard min →
+   * evolution-status filter → noise → RIF → MMR → version/cluster dedup →
+   * source diversity → limit. `shortQ` must be the value derived from the
+   * path's searchQuery (do not recompute from the raw query here).
+   */
+  private finalizeResults(
+    results: RetrievalResult[],
+    opts: {
+      shortQ: boolean;
+      minScoreOverride?: number;
+      includeArchived?: boolean;
+      limit: number;
+      trace?: TraceCollector;
+    },
+  ): RetrievalResult[] {
+    const { shortQ, minScoreOverride, includeArchived, limit, trace } = opts;
+    const rescored = [...results].sort((a, b) => b.score - a.score);
 
     trace?.startStage("hard_min_score", rescored.length);
     const hardFiltered = minScoreOverride !== undefined
@@ -1197,7 +1143,6 @@ export class MemoryRetriever {
       ? hardFiltered
       : hardFiltered.filter(r => isActiveMemory(r.entry.metadata));
 
-    // Filter noise
     trace?.startStage("noise_filter", evolutionFiltered.length);
     const denoised = this.config.filterNoise
       ? filterNoise(evolutionFiltered, r => r.entry.text)
