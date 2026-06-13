@@ -173,7 +173,13 @@ describe("MCP registry contract", () => {
   it("keeps registered tool count and tier header in sync", () => {
     const source = readFileSync(join(import.meta.dir, "..", "mcp-server.ts"), "utf8");
     const header = source.slice(0, source.indexOf("const TOOL_TIERS"));
-    const registeredTools = [...source.matchAll(/^\s*registerTool\(\s*"([^"]+)"/gm)].map(m => m[1]);
+    // P3-B: the 43 registerTool(...) calls now live in the tier modules; mcp-server.ts
+    // still owns TOOL_TIERS and the tier-count header comment above it.
+    const registeredTools = ["mcp-tools-core", "mcp-tools-advanced", "mcp-tools-governance"]
+      .flatMap((name) =>
+        [...readFileSync(join(import.meta.dir, "..", `${name}.ts`), "utf8")
+          .matchAll(/^\s*registerTool\(\s*"([^"]+)"/gm)].map((m) => m[1]),
+      );
     const tiers = new Map(
       [...source.matchAll(/^\s*([A-Za-z0-9_]+):\s*"(core|advanced|governance)"/gm)]
         .map(m => [m[1], m[2]] as const),
