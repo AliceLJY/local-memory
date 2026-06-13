@@ -56,6 +56,9 @@ export const kgMode = (): boolean => process.env.RECALLNEST_KG_MODE === "true";
 
 export const coreSummary = (): boolean => process.env.RECALLNEST_CORE_SUMMARY === "true";
 
+export const errorSignatureBoost = (): boolean =>
+  process.env.RECALLNEST_ERROR_SIGNATURE_BOOST === "true";
+
 // --- String settings with `||` default (empty string falls through) ---
 
 export const dataDir = (): string => process.env.RECALLNEST_DATA_DIR || "data";

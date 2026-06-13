@@ -71,3 +71,25 @@ describe("extractErrorSignatures — input gating", () => {
     expect(sigs.length).toBeLessThanOrEqual(MAX_SIGNATURES);
   });
 });
+
+describe("extractErrorSignatures — 过泛中文词收紧（P3-A 检索端噪声治理）", () => {
+  const BARE_GENERIC = /^(?:报错|出错|错误|异常|失败|超时|崩溃|无法|未定义|不能)[了的过着吧呢啊啦哦呀嘛。，！？!?,\s]*$/;
+
+  test("裸过泛词 + 语气助词不被抽成指纹（失败了 / 超时了 / 崩溃了 / 报错了）", () => {
+    for (const bare of ["部署失败了", "请求超时了", "程序崩溃了", "系统报错了"]) {
+      const sigs = extractErrorSignatures({ problem: bare });
+      expect(sigs.some(s => BARE_GENERIC.test(s.trim()))).toBe(false);
+    }
+  });
+
+  test("过泛词带具体锚点（英文 / 路径 / 多位数字）时保留", () => {
+    const sigs = extractErrorSignatures({ problem: "操作失败：xmlsec1 not found" });
+    expect(sigs.some(s => s.includes("xmlsec1"))).toBe(true);
+  });
+
+  test("具体中文短语不受收紧影响（找不到 / 权限被拒 / 连接失败）", () => {
+    expect(extractErrorSignatures({ problem: "找不到模块" }).length).toBeGreaterThan(0);
+    expect(extractErrorSignatures({ problem: "权限被拒绝" }).some(s => s.includes("权限被拒"))).toBe(true);
+    expect(extractErrorSignatures({ problem: "数据库连接失败" }).some(s => s.includes("连接失败"))).toBe(true);
+  });
+});

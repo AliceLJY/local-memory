@@ -14,6 +14,7 @@ const KEYS = [
   "RECALLNEST_NARRATIVE_MODE",
   "RECALLNEST_KG_MODE",
   "RECALLNEST_CORE_SUMMARY",
+  "RECALLNEST_ERROR_SIGNATURE_BOOST",
   "RECALLNEST_DATA_DIR",
   "RECALLNEST_MCP_TIER",
   "RECALLNEST_RECALL_MODE",
@@ -48,6 +49,7 @@ describe('env-config boolean flags — strict === "true"', () => {
     ["narrativeMode", envConfig.narrativeMode, "RECALLNEST_NARRATIVE_MODE"],
     ["kgMode", envConfig.kgMode, "RECALLNEST_KG_MODE"],
     ["coreSummary", envConfig.coreSummary, "RECALLNEST_CORE_SUMMARY"],
+    ["errorSignatureBoost", envConfig.errorSignatureBoost, "RECALLNEST_ERROR_SIGNATURE_BOOST"],
   ];
 
   for (const [name, accessor, key] of accessors) {

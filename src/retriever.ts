@@ -7,6 +7,7 @@ import type { MemoryStore, MemorySearchResult } from "./store.js";
 import type { Embedder } from "./embedder.js";
 import { filterNoise } from "./noise-filter.js";
 import * as envConfig from "./env-config.js";
+import { extractErrorSignatures } from "./error-signature.js";
 import { shouldSkipRetrieval } from "./adaptive-retrieval.js";
 import { expandQueryWithAliases } from "./aliases.js";
 import { expandQuery } from "./query-expander.js";
@@ -314,6 +315,32 @@ function applyAnchorBoost(results: RetrievalResult[], query: string): RetrievalR
     // Boost proportional to overlap quality, capped at ANCHOR_BOOST_MAX
     const boost = 1 + overlap * ANCHOR_BOOST_MAX;
     return { ...r, score: r.score * boost };
+  });
+}
+
+/** Multiplicative boost applied to a case on exact error-signature match. */
+const ERROR_SIGNATURE_BOOST_FACTOR = 1.5;
+
+/**
+ * A1 (P3-A): error-signature exact-match boost. When RECALLNEST_ERROR_SIGNATURE_BOOST
+ * is on, case memories whose metadata.error_signature overlaps the query's extracted
+ * signatures get a strong multiplicative boost ("上次一模一样的报错"精确召回). Flag off
+ * (default) returns the input unchanged — bit-identical, so the pure-move eval baseline holds.
+ * Only affects category="cases"; read and query side share extractErrorSignatures so the
+ * signatures compare apples-to-apples.
+ */
+export function applyErrorSignatureBoost(results: RetrievalResult[], query: string): RetrievalResult[] {
+  if (!envConfig.errorSignatureBoost()) return results;
+  const querySignatures = extractErrorSignatures({ problem: query });
+  if (querySignatures.length === 0) return results;
+  const querySet = new Set(querySignatures.map(s => s.toLowerCase()));
+  return results.map(r => {
+    if (r.entry.category !== "cases") return r;
+    const sigs = parseMetadata(r.entry.metadata).error_signature;
+    if (!Array.isArray(sigs) || sigs.length === 0) return r;
+    const hit = sigs.some(s => typeof s === "string" && querySet.has(s.toLowerCase()));
+    if (!hit) return r;
+    return { ...r, score: Math.min(1, Math.max(0, r.score * ERROR_SIGNATURE_BOOST_FACTOR)) };
   });
 }
 
@@ -1110,7 +1137,8 @@ export class MemoryRetriever {
     const frequencyBoosted = this.applyFrequencyBoost(hotnessBlended);
     trace?.endStage(frequencyBoosted.length, frequencyBoosted.map(r => r.score));
 
-    return frequencyBoosted;
+    // A1 error-signature 精确匹配 boost（flag 门控，默认 off → no-op、bit-identical）
+    return applyErrorSignatureBoost(frequencyBoosted, query);
   }
 
   /**

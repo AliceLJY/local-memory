@@ -49,6 +49,13 @@ const STOP_WORDS = new Set([
   "not", "a", "an", "of", "to", "is", "in", "on", "by", "was", "were",
 ]);
 
+/**
+ * 过泛中文错误词——单独出现（裸词 + 语气助词、无具体锚点）会在检索端过度匹配。
+ * 具体短语（找不到 / 权限被拒 / 连接失败 / 段错误 / 空指针）不在此列、照常保留。
+ * 已有 cjk<3 长度门挡掉 2 字裸词；本表治的是 3+ 字「裸词+助词」（失败了 / 超时了）。
+ */
+const GENERIC_CN_ERROR = /^(?:报错|出错|错误|异常|失败|超时|崩溃|无法|未定义|不能)[了的过着吧呢啊啦哦呀嘛。，！？!?,\s]*$/;
+
 /** 失败信号词——outcome/solutionSteps 仅在命中时才纳入语料（避免成功态反向噪声）。 */
 const FAILURE_HINT = /(error|fail|failed|failure|exception|not found|cannot|denied|timeout|拒绝|失败|报错|错误|异常|不能|无法|超时|崩溃)/i;
 
@@ -122,6 +129,10 @@ function normaliseFragment(frag: string): string | null {
   // 纯英文停用词片段才拒；纯中文（words 为空）不走这条
   const words = truncated.toLowerCase().split(/[^a-z0-9_]+/).filter(Boolean);
   if (words.length > 0 && words.every((w) => STOP_WORDS.has(w))) return null;
+  // P3-A 收紧：裸过泛中文词（报错/失败/超时…+语气助词）且无具体锚点（latin≥3 / 多位数字 / 路径）→ 拒，
+  // 避免检索端 error-signature 精确通道被这类词过度匹配成噪声。
+  const hasSpecificAnchor = /[A-Za-z]{3,}|\d{2,}|\//.test(truncated);
+  if (!hasSpecificAnchor && GENERIC_CN_ERROR.test(truncated)) return null;
   return truncated;
 }
 
