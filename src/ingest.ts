@@ -20,6 +20,7 @@ import { isConnectorOutputV1 } from "./connector-types.js";
 import { isObsidianVault, scanVault } from "./obsidian-connector.js";
 import { segmentEvents, type EventSegmenterConfig, DEFAULT_EVENT_SEGMENTER_CONFIG } from "./event-segmenter.js";
 import { isProcessed, markProcessed } from "./tracker.js";
+import * as envConfig from "./env-config.js";
 import type { LLMClient, SmartExtraction } from "./llm-client.js";
 import { resolveIngestBoundary } from "./memory-boundaries.js";
 import { isNoise } from "./noise-filter.js";
@@ -507,7 +508,7 @@ async function smartExtractBatch(
  * Tier 3.1: Check if core summary generation is enabled.
  */
 function isCoreSummaryEnabled(): boolean {
-  return process.env.RECALLNEST_CORE_SUMMARY === "true";
+  return envConfig.coreSummary();
 }
 
 /**

@@ -16,13 +16,14 @@
  */
 
 import type { Embedder } from "./embedder.js";
+import * as envConfig from "./env-config.js";
 
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
 
 export function isMultiVectorEnabled(): boolean {
-  return process.env.RECALLNEST_MULTI_VECTOR === "true";
+  return envConfig.multiVector();
 }
 
 // ---------------------------------------------------------------------------

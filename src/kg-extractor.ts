@@ -8,6 +8,7 @@ import type { LLMClient } from "./llm-client.js";
 import type { KGStore } from "./kg-store.js";
 import { logInfo, logWarn } from "./stderr-log.js";
 import { detectLang, getKgPromptHook } from "./language-hook.js";
+import * as envConfig from "./env-config.js";
 
 // ============================================================================
 // Types
@@ -39,7 +40,7 @@ interface LlmExtractionResponse {
 
 /** Check if KG mode is enabled (env var) */
 export function isKGModeEnabled(): boolean {
-  return process.env.RECALLNEST_KG_MODE === "true";
+  return envConfig.kgMode();
 }
 
 // ============================================================================

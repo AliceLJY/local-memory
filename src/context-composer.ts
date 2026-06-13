@@ -1,4 +1,5 @@
 import { listPinAssets, type PinAsset } from "./memory-assets.js";
+import * as envConfig from "./env-config.js";
 import { buildStableContextSections } from "./context-composer-stable.js";
 import {
   buildAssociativeNestEntityFallbackQuery,
@@ -469,7 +470,7 @@ export async function composeResumeContext(
   let reconstructedContext: string | undefined;
   let reconstructionConfidence: number | undefined;
   let reconstructionContradictions: Array<{ memoryIds: [string, string]; description: string }> | undefined;
-  const constructiveFlag = process.env.RECALLNEST_CONSTRUCTIVE_RETRIEVAL === "true";
+  const constructiveFlag = envConfig.constructiveRetrieval();
   if (constructiveFlag && deps.llm?.isAvailable?.()) {
     const allReconResults = [...profileResults, ...preferenceResults, ...entityResults, ...filteredPatterns, ...filteredCases];
     if (allReconResults.length >= 3) {

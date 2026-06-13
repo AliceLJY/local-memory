@@ -27,6 +27,7 @@
  */
 
 import type { MemoryEntry } from "./store.js";
+import * as envConfig from "./env-config.js";
 
 // ---------------------------------------------------------------------------
 // Constants（复刻 Orb decay_tick 判定阈值，供 deriveUsageStatus / computeUsageStatus 使用）
@@ -130,7 +131,7 @@ function readInjectionCount(meta: Record<string, unknown>): number {
  * 病史见 memory canonicalKey=constructive-retrieval-flag-clinical-history)
  */
 export function isUsageSignalActive(): boolean {
-  return process.env.RECALLNEST_CONSTRUCTIVE_RETRIEVAL === "true";
+  return envConfig.constructiveRetrieval();
 }
 
 // ---------------------------------------------------------------------------

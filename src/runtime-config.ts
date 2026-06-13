@@ -11,6 +11,7 @@ import { AccessTracker } from "./access-tracker.js";
 import { FrequencyTracker } from "./frequency-tracker.js";
 import { createLLMClient, type LLMClient, type LLMConfig } from "./llm-client.js";
 import { logInfo } from "./stderr-log.js";
+import * as envConfig from "./env-config.js";
 
 export type RecallMode = "full" | "light" | "summary" | "off";
 
@@ -179,7 +180,7 @@ export function resolveRecallMode(config: LocalMemoryConfig, perCallOverride?: s
   if (perCallOverride && VALID_RECALL_MODES.includes(perCallOverride as RecallMode)) {
     return perCallOverride as RecallMode;
   }
-  const envMode = process.env.RECALLNEST_RECALL_MODE;
+  const envMode = envConfig.recallModeRaw();
   if (envMode && VALID_RECALL_MODES.includes(envMode as RecallMode)) {
     return envMode as RecallMode;
   }

@@ -7,6 +7,7 @@
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import * as envConfig from "./env-config.js";
 
 export type AuditOperation =
   | "store"
@@ -59,7 +60,7 @@ function parseLines(raw: string): AuditEntry[] {
 export function createAuditLogger(logPath?: string): AuditLogger {
   const resolvedPath =
     logPath ??
-    join(process.env.RECALLNEST_DATA_DIR || "data", "audit.jsonl");
+    join(envConfig.dataDir(), "audit.jsonl");
 
   // Ensure directory exists (silent on failure)
   try {

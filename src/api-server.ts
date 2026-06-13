@@ -26,6 +26,7 @@ import { buildManagedCheckpointObservation, buildManagedResumeObservation } from
 import { runAutoRecall } from "./auto-recall.js";
 import { buildRetrievalContext, resolveScopeSelection } from "./scope-policy.js";
 import { runMemoryLint } from "./memory-lint.js";
+import * as envConfig from "./env-config.js";
 
 const config = (loadDotEnv(), loadConfig());
 const getComponents = createComponentResolver(config);
@@ -642,7 +643,7 @@ async function handleHealth(): Promise<Response> {
 // Server
 // ============================================================================
 
-const port = clampInt(process.env.RECALLNEST_API_PORT, 4318, 1, 65535);
+const port = clampInt(envConfig.apiPortRaw(), 4318, 1, 65535);
 
 const server = Bun.serve({
   port,

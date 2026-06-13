@@ -19,6 +19,7 @@ import {
   existsSync,
 } from "node:fs";
 import { join, dirname } from "node:path";
+import * as envConfig from "./env-config.js";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -34,7 +35,7 @@ export interface DistillLockConfig {
 }
 
 export const DEFAULT_DISTILL_LOCK_CONFIG: DistillLockConfig = {
-  lockPath: join(process.env.RECALLNEST_DATA_DIR || "data", "distill.lock"),
+  lockPath: join(envConfig.dataDir(), "distill.lock"),
   expireMs: 3_600_000,
   minCheckpoints: 3,
 };

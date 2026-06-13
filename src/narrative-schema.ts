@@ -12,13 +12,14 @@
  */
 
 import { z } from "zod";
+import * as envConfig from "./env-config.js";
 
 // ---------------------------------------------------------------------------
 // Feature Flag
 // ---------------------------------------------------------------------------
 
 export function isNarrativeModeEnabled(): boolean {
-  return process.env.RECALLNEST_NARRATIVE_MODE === "true";
+  return envConfig.narrativeMode();
 }
 
 // ---------------------------------------------------------------------------

@@ -7,6 +7,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import * as envConfig from "./env-config.js";
 
 export interface RetentionPolicy {
   /** Auto-archive memories older than this many days (0 = disabled) */
@@ -29,7 +30,7 @@ function scopeHash(scope: string): string {
 
 function retentionDir(configDir?: string): string {
   return join(
-    configDir ?? (process.env.RECALLNEST_DATA_DIR || "data"),
+    configDir ?? envConfig.dataDir(),
     "retention",
   );
 }

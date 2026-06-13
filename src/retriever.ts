@@ -6,6 +6,7 @@
 import type { MemoryStore, MemorySearchResult } from "./store.js";
 import type { Embedder } from "./embedder.js";
 import { filterNoise } from "./noise-filter.js";
+import * as envConfig from "./env-config.js";
 import { shouldSkipRetrieval } from "./adaptive-retrieval.js";
 import { expandQueryWithAliases } from "./aliases.js";
 import { expandQuery } from "./query-expander.js";
@@ -799,7 +800,7 @@ export class MemoryRetriever {
 
     // Phase 4: Constructive retrieval — first-class reconstruction (no metadata hack)
     const resultSet = results as RetrievalResultSet;
-    const constructiveFlag = process.env.RECALLNEST_CONSTRUCTIVE_RETRIEVAL === "true";
+    const constructiveFlag = envConfig.constructiveRetrieval();
     if (shouldReconstruct({
       flagEnabled: constructiveFlag,
       callerOptIn: context.reconstruct === true,

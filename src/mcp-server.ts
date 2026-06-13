@@ -15,6 +15,7 @@
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import * as envConfig from "./env-config.js";
 
 // ============================================================================
 // Tier Configuration
@@ -22,7 +23,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 type ToolTier = "core" | "advanced" | "governance";
 
-const MCP_TIER = (process.env.RECALLNEST_MCP_TIER || "advanced") as "core" | "advanced" | "full";
+const MCP_TIER = envConfig.mcpTier();
 
 const TOOL_TIERS: Record<string, ToolTier> = {
   // Core (always)

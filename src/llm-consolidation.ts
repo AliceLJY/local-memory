@@ -16,6 +16,7 @@ import type { LLMClient } from "./llm-client.js";
 import type { MemoryEntry } from "./store.js";
 import { createVersionGroup } from "./version-manager.js";
 import { logInfo, logWarn } from "./stderr-log.js";
+import * as envConfig from "./env-config.js";
 
 // ============================================================================
 // Configuration
@@ -25,7 +26,7 @@ import { logInfo, logWarn } from "./stderr-log.js";
  * Check if LLM-driven consolidation is enabled.
  */
 export function isLLMConsolidationEnabled(): boolean {
-  return process.env.RECALLNEST_LLM_CONSOLIDATION === "true";
+  return envConfig.llmConsolidation();
 }
 
 // ============================================================================

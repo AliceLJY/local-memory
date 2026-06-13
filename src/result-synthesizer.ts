@@ -12,6 +12,7 @@
 
 import type { LLMClient } from "./llm-client.js";
 import { logWarn } from "./stderr-log.js";
+import * as envConfig from "./env-config.js";
 
 // ============================================================================
 // Configuration
@@ -38,7 +39,7 @@ export const DEFAULT_SYNTHESIZER_CONFIG: SynthesizerConfig = {
  * Check if synthesis is enabled via environment variable.
  */
 export function isSynthesisEnabled(): boolean {
-  return process.env.RECALLNEST_SYNTHESIZE === "true";
+  return envConfig.synthesize();
 }
 
 /**

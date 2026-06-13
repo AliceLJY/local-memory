@@ -11,6 +11,7 @@ import {
   mkdirSync,
 } from "node:fs";
 import { join, dirname } from "node:path";
+import * as envConfig from "./env-config.js";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -29,7 +30,7 @@ export interface ActivityCounterConfig {
 
 export const DEFAULT_ACTIVITY_CONFIG: ActivityCounterConfig = {
   statsPath: join(
-    process.env.RECALLNEST_DATA_DIR || "data",
+    envConfig.dataDir(),
     "activity-stats.json",
   ),
   lightThreshold: 15,

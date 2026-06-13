@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { boundedStringSchema, identifierSchema, normalizedStringListSchema, optionalBoundedStringSchema } from "./schema-utils.js";
+import * as envConfig from "./env-config.js";
 
 export const DURABLE_MEMORY_CATEGORIES = [
   "profile",
@@ -266,9 +267,9 @@ export type PromoteMemoryInput = z.infer<typeof PromoteMemoryInputSchema>;
 export type StoredPromotedMemoryRecord = z.infer<typeof StoredPromotedMemoryRecordSchema>;
 
 export function isEmotionScoringEnabled(): boolean {
-  return process.env.RECALLNEST_EMOTION_SCORING === "true";
+  return envConfig.emotionScoring();
 }
 
 export function isPredictiveMemoryEnabled(): boolean {
-  return process.env.RECALLNEST_PREDICTIVE_MEMORY === "true";
+  return envConfig.predictiveMemory();
 }
