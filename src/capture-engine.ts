@@ -1,6 +1,7 @@
 import type { Embedder } from "./embedder.js";
 import { detectLang, tokenizeFts } from "./language-hook.js";
 import { generateAnchor } from "./anchor-generator.js";
+import { extractErrorSignatures } from "./error-signature.js";
 import { incrementWriteCount } from "./activity-counter.js";
 import { verifyWrite } from "./write-verifier.js";
 // batchInternalDedup is available in ingest.ts for large-batch scenarios;
@@ -699,6 +700,17 @@ function buildCaseMemoryMetadata(
       tools: input.tools,
     },
   };
+  // A1: error-signature 指纹（读写对称，P3-A 检索复用同一抽取器）。
+  // 在 build metadata 前算好作为 extra 写入，不 post-write update（Codex 验证要求）。
+  const errorSignature = extractErrorSignatures({
+    problem: input.problem,
+    context: input.context,
+    outcome: input.outcome,
+    solutionSteps: input.solutionSteps,
+  });
+  if (errorSignature.length > 0) cmExtra.error_signature = errorSignature;
+  // A1: break-loop 五维（可选，向后兼容；不提供则普通 case）。
+  if (input.debugFraming) cmExtra.debugFraming = input.debugFraming;
   const anchor = generateAnchor(input.title + ": " + input.problem, cmExtra);
   if (anchor) cmExtra.anchor = anchor;
   return buildStructuredMetadata({

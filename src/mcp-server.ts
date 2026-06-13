@@ -97,7 +97,7 @@ import { aliasMapFilePath, expandQuery, explainUserAliases, listUserAliases, rem
 import { archiveDirtyBriefAsset, assetSummaryLine, buildBriefAsset, buildPinAsset, listDirtyBriefAssets, listMemoryAssets, listPinAssets, saveBriefAsset, savePinAsset, writeExportArtifact } from "./memory-assets.js";
 import { indexAsset, indexPinnedAsset } from "./asset-sync.js";
 import { createComponentResolver, loadConfig, loadDotEnv, resolveRecallMode } from "./runtime-config.js";
-import { DurableMemoryCategorySchema, StoreMemorySourceSchema, PrivacyTierSchema, isPredictiveMemoryEnabled } from "./memory-schema.js";
+import { DurableMemoryCategorySchema, StoreMemorySourceSchema, PrivacyTierSchema, isPredictiveMemoryEnabled, DebugFramingSchema } from "./memory-schema.js";
 import { persistCaseMemory, persistMemory, persistMemoryBatch, persistWorkflowPattern, promoteMemory } from "./capture-engine.js";
 import { persistSkill, retrieveSkills, recordSkillOutcome } from "./skill-engine.js";
 import { SkillImplementationTypeSchema } from "./skill-schema.js";
@@ -562,8 +562,9 @@ registerTool(
     source: StoreMemorySourceSchema.default("agent").describe("How this case was captured"),
     tags: z.array(z.string().min(1).max(40)).max(8).default([]).describe("Optional tags"),
     canonicalKey: z.string().min(1).max(120).optional().describe("Optional stable key for merge/update semantics"),
+    debugFraming: DebugFramingSchema.optional().describe("Optional break-loop 五维归因 (rootCause/whyPriorFixFailed/defense/systematicExtension/knowledgeFix)"),
   },
-  async ({ title, problem, context, solutionSteps, outcome, tools, importance, scope, source, tags, canonicalKey }) => {
+  async ({ title, problem, context, solutionSteps, outcome, tools, importance, scope, source, tags, canonicalKey, debugFraming }) => {
     const { store, embedder } = getComponents();
     const stored = await persistCaseMemory({
       store,
@@ -582,6 +583,7 @@ registerTool(
       source,
       tags,
       canonicalKey,
+      debugFraming,
     });
 
     return {

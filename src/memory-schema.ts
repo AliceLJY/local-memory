@@ -181,6 +181,23 @@ export const WorkflowPatternInputSchema = z.object({
   canonicalKey: CanonicalKeySchema,
 });
 
+/** A1 · break-loop 五维（Trellis 借鉴）：debug case 的结构化归因，全可选、向后兼容。 */
+export const DebugFramingSchema = z.object({
+  rootCause: z.enum([
+    "missing_spec",
+    "cross_layer_contract",
+    "change_propagation",
+    "test_coverage_gap",
+    "implicit_assumption",
+  ]).describe("根因归类：缺spec/跨层契约/改动传播失败/测试覆盖缺口/隐式假设"),
+  whyPriorFixFailed: z.string().max(300).optional().describe("为何之前没修对"),
+  defense: z.string().max(300).optional().describe("防御机制（强度：架构>编译期>运行期>测试>review>文档）"),
+  systematicExtension: z.string().max(300).optional().describe("系统性扩展：同类问题还在哪"),
+  knowledgeFix: z.string().max(300).optional().describe("知识固化：沉淀去向"),
+});
+
+export type DebugFraming = z.infer<typeof DebugFramingSchema>;
+
 export const CaseMemoryInputSchema = z.object({
   title: CaseMemoryTitleSchema,
   problem: CaseMemoryProblemSchema,
@@ -193,6 +210,7 @@ export const CaseMemoryInputSchema = z.object({
   source: StoreMemorySourceSchema.default("agent"),
   tags: MemoryTagsSchema,
   canonicalKey: CanonicalKeySchema,
+  debugFraming: DebugFramingSchema.optional(),
 });
 
 export const PromoteMemoryInputSchema = z.object({

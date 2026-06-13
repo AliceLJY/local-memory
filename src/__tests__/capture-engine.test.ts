@@ -450,6 +450,56 @@ describe("persistCaseMemory", () => {
       },
     });
   });
+
+  it("A1: extracts error_signature into metadata from problem text", async () => {
+    const { deps, storedEntries } = createDeps();
+    await persistCaseMemory(deps as any, {
+      title: "Build broke on missing native lib",
+      problem: "pip install failed: xmlsec1 not found, exit code 1",
+      solutionSteps: ["brew install xmlsec1", "retry pip install"],
+      scope: TEST_SCOPE,
+      tools: ["pip", "brew"],
+    });
+    const meta = JSON.parse(storedEntries[0].metadata);
+    expect(Array.isArray(meta.error_signature)).toBe(true);
+    expect(meta.error_signature.some((s: string) => s.includes("xmlsec1 not found"))).toBe(true);
+  });
+
+  it("A1: round-trips optional debugFraming into metadata", async () => {
+    const { deps, storedEntries } = createDeps();
+    await persistCaseMemory(deps as any, {
+      title: "Cron change not applied",
+      problem: "service kept old schedule after editing crontab",
+      solutionSteps: ["restart the service after editing cron"],
+      scope: TEST_SCOPE,
+      tools: ["systemctl"],
+      debugFraming: {
+        rootCause: "implicit_assumption",
+        whyPriorFixFailed: "assumed cron reload was automatic",
+        defense: "runbook: 改 cron 必 restart 对应服务",
+      },
+    });
+    const meta = JSON.parse(storedEntries[0].metadata);
+    expect(meta.debugFraming).toMatchObject({
+      rootCause: "implicit_assumption",
+      whyPriorFixFailed: "assumed cron reload was automatic",
+    });
+  });
+
+  it("A1: success-only case yields no reverse-signal error_signature", async () => {
+    const { deps, storedEntries } = createDeps();
+    await persistCaseMemory(deps as any, {
+      title: "Routine weekly digest",
+      problem: "need to generate the weekly summary digest on schedule",
+      solutionSteps: ["run the digest generator", "review output"],
+      outcome: "digest generated successfully, exit code 0",
+      scope: TEST_SCOPE,
+      tools: ["digest"],
+    });
+    const meta = JSON.parse(storedEntries[0].metadata);
+    // problem 无错误现象 + outcome 成功态(无失败词)不纳入 → 不应抽到 "exit code 0" 反向信号
+    expect((meta.error_signature ?? []).some((s: string) => s.includes("exit code 0"))).toBe(false);
+  });
 });
 
 describe("promoteMemory", () => {
