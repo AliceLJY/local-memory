@@ -153,6 +153,7 @@ bun run src/ui-server.ts
 | **会话蒸馏** | 3 层对话压缩：微缩 → LLM 结构化摘要 → 知识提取 |
 | **对话导入** | 支持 Claude Code、Claude.ai、ChatGPT、Slack、纯文本 |
 | **Topic Tags** | scope 内 topic 分区，自动检测，搜索时可过滤 |
+| **关联 scope 侧栏** | 显式传 `includeRelatedScopes` 时，按 `scopeRelations` 白名单额外检索，并和主 scope 排序分开展示 |
 
 ### 记忆生命周期与治理
 

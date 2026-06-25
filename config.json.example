@@ -34,5 +34,8 @@
     "recencyHalfLifeDays": 30,
     "timeDecayHalfLifeDays": 120,
     "hardMinScore": 0.3
+  },
+  "scopeRelations": {
+    "project:example-a": ["project:example-b"]
   }
 }

@@ -153,6 +153,7 @@ bun run src/ui-server.ts
 | **Session Distiller** | 3-layer conversation compression: microcompact → LLM summary → knowledge extraction |
 | **Conversation Import** | Import from Claude Code, Claude.ai, ChatGPT, Slack, and plaintext |
 | **Topic Tags** | Intra-scope topic partitioning — auto-detected, filterable in search |
+| **Related Scope Sidecar** | Opt-in `includeRelatedScopes` search over configured `scopeRelations`, shown separately from the main scoped ranking |
 
 ### Memory Lifecycle & Governance
 
