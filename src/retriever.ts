@@ -213,8 +213,15 @@ export const DEFAULT_CATEGORY_MIN_SCORES: Record<string, number> = {
   patterns: 0.45,
 };
 
+// P1.2（2026-06-25）：默认 vector-only。canary eval 实测个人记忆库 vector 召回质量全面优于
+// hybrid（robustness 带 scope WITH 6/12 + 不带 scope WITHOUT 10/12，完胜 hybrid 的 3/9；BM25 在
+// 高度同质的个人记忆里是净噪声，会把 vector 本应 top 的目标如 dbcb317a 挤掉）。改频率层救低频
+// 目标实测是死结（动 hotness 必伤靠 hotness 上位的记忆）。hybrid 路径代码全保留，mode 改回
+// "hybrid" 即可切换（注：multiHopExpand 仍硬编码走 hybrid，默认 off，config.retrieval.multiHop
+// 开了会破纯 vector）。数据盲区：canary 全是语义 query，未覆盖 BM25 强项的精确关键词/token 召回
+// （变量名 / commit hash / alias-map 昵称）——待补 exact-token canary 验证。
 export const DEFAULT_RETRIEVAL_CONFIG: RetrievalConfig = {
-  mode: "hybrid",
+  mode: "vector",
   vectorWeight: 0.7,
   bm25Weight: 0.3,
   minScore: 0.3,
