@@ -25,6 +25,7 @@
     "test:contracts": "bun test src/__tests__/contracts.test.ts",
     "eval": "bun run src/eval.ts",
     "eval:continuity": "bun run src/eval.ts --mode continuity --cases eval/continuity/cases.json",
+    "eval:canary": "bun run src/eval.ts --mode canary --cases eval/cases-canary.json",
     "profiles": "bun run src/cli.ts profiles",
     "doctor": "bun run src/cli.ts doctor",
     "demo": "bun run src/cli.ts demo",
