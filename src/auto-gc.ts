@@ -13,12 +13,15 @@ import type { MemoryStorePort } from "./memory-store-port.js";
 import {
   parseEvolution,
   computeDecayScore,
+  computeUsageAdjustedDecayScore,
   buildArchivedMetadata,
   isActiveMemory,
 } from "./memory-evolution.js";
 import { loadRetentionPolicy, shouldArchiveByPolicy } from "./retention-policy.js";
 import type { RetentionPolicy } from "./retention-policy.js";
 import type { AuditLogger } from "./audit-log.js";
+import * as envConfig from "./env-config.js";
+import { isUsageSignalActive } from "./usage-tracker.js";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -130,6 +133,7 @@ export async function maybeRunGc(
   }
 
   // Pass 2: archive sweep.
+  const useUsageAdjustedDecay = envConfig.usageDecay() && isUsageSignalActive();
   outer:
   for (let offset = 0; ; offset += GC_PAGE_SIZE) {
     const page = await store.listPage({ limit: GC_PAGE_SIZE, offset });
@@ -152,7 +156,9 @@ export async function maybeRunGc(
     let shouldArchive = false;
     if (ageDays >= config.minAgeDays) {
       const evo = parseEvolution(entry.metadata, entry.timestamp);
-      let decayScore = computeDecayScore(evo, importance, now, entry.metadata);
+      let decayScore = useUsageAdjustedDecay
+        ? computeUsageAdjustedDecayScore(evo, importance, now, entry.metadata)
+        : computeDecayScore(evo, importance, now, entry.metadata);
       // F3: Expired memories (validUntil < now) get 2x decay acceleration
       if (evo.validUntil != null && evo.validUntil < now) {
         decayScore *= 0.5; // Halve the score → archives faster

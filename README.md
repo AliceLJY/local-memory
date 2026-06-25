@@ -220,6 +220,8 @@ v2.1 added philosophy-informed behavior; v2.2 closes the last three engine-layer
 
 - **Temporal Validity Windows** *(TSM / TiMem / Zep)* — `store_memory` accepts `validUntil` (expiration) and `eventTime` (when the event actually happened). `search_memory` supports `validAt` (point-in-time query) and `includeExpired` (demote 80% instead of hide). Auto-GC applies 2× decay acceleration to expired memories.
 
+- **Usage-Adjusted Auto-GC** *(off by default)* — `RECALLNEST_USAGE_DECAY=true` enables a GC-only cold-memory penalty when constructive retrieval is also active. Cold memories discount the frequency component instead of changing online retrieval ranking.
+
 ---
 
 ## New in v2.3: Connector Ecosystem + Source Health

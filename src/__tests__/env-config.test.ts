@@ -15,6 +15,7 @@ const KEYS = [
   "RECALLNEST_KG_MODE",
   "RECALLNEST_CORE_SUMMARY",
   "RECALLNEST_ERROR_SIGNATURE_BOOST",
+  "RECALLNEST_USAGE_DECAY",
   "RECALLNEST_DATA_DIR",
   "RECALLNEST_MCP_TIER",
   "RECALLNEST_RECALL_MODE",
@@ -50,6 +51,7 @@ describe('env-config boolean flags — strict === "true"', () => {
     ["kgMode", envConfig.kgMode, "RECALLNEST_KG_MODE"],
     ["coreSummary", envConfig.coreSummary, "RECALLNEST_CORE_SUMMARY"],
     ["errorSignatureBoost", envConfig.errorSignatureBoost, "RECALLNEST_ERROR_SIGNATURE_BOOST"],
+    ["usageDecay", envConfig.usageDecay, "RECALLNEST_USAGE_DECAY"],
   ];
 
   for (const [name, accessor, key] of accessors) {
