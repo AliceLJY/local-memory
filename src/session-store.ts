@@ -78,6 +78,11 @@ export class SessionCheckpointStore {
     const timestampToken = parsed.updatedAt.replace(/[:.]/g, "-");
     const path = join(this.dataDir, `${timestampToken}-${parsed.checkpointId}.json`);
     try {
+      const suffix = `-${parsed.checkpointId}.json`;
+      for (const name of readdirSync(this.dataDir).filter((item) => item.endsWith(suffix))) {
+        const existingPath = join(this.dataDir, name);
+        if (existingPath !== path) unlinkSync(existingPath);
+      }
       writeFileSync(path, JSON.stringify(parsed, null, 2) + "\n");
     } catch (err) {
       console.error("[recallnest] Failed to save session checkpoint:", err instanceof Error ? err.message : String(err));

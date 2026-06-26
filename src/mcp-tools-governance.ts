@@ -34,8 +34,9 @@ registerTool(
     tags: z.array(z.string().min(1).max(40)).max(8).default([]).describe("Optional tags"),
     tools: z.array(z.string().min(1).max(60)).max(6).default([]).describe("Optional tools involved"),
     skillId: z.string().min(1).max(128).optional().describe("Optional skill id to bump. When present and outcome is success, the skill's successCount increments; otherwise failureCount increments. Missing/corrupt skills are skipped silently (does not block observation write)."),
+    idempotencyKey: z.string().min(1).max(160).optional().describe("Optional stable request key; repeated saves with the same key replace the prior observation"),
   },
-  async ({ workflowId, outcome, summary, scope, source, signal, task, tags, tools, skillId }) => {
+  async ({ workflowId, outcome, summary, scope, source, signal, task, tags, tools, skillId, idempotencyKey }) => {
     const record = buildWorkflowObservationRecord({
       workflowId,
       outcome,
@@ -47,6 +48,7 @@ registerTool(
       tags,
       tools,
       skillId,
+      idempotencyKey,
     });
     const stored = await workflowObservationStore.save(record);
 

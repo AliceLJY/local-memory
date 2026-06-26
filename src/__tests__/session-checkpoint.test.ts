@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -45,6 +45,38 @@ describe("SessionCheckpointStore", () => {
 
       expect(latestByScope?.checkpointId).toBe(second.checkpointId);
       expect(latestBySession?.checkpointId).toBe(first.checkpointId);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("uses idempotencyKey to replace retried checkpoint files", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "recallnest-checkpoint-idempotency-"));
+    try {
+      const store = new SessionCheckpointStore(dir);
+      const baseInput = {
+        sessionId: "session-retry",
+        scope: "project:recallnest",
+        summary: "Save retry-safe checkpoint state.",
+        decisions: ["Use explicit idempotency keys for client retries"],
+        idempotencyKey: "checkpoint-request-123",
+      };
+
+      const first = await store.save(buildSessionCheckpointRecord({
+        ...baseInput,
+        updatedAt: "2026-06-26T01:00:00.000Z",
+      }));
+      const retried = await store.save(buildSessionCheckpointRecord({
+        ...baseInput,
+        updatedAt: "2026-06-26T01:01:00.000Z",
+      }));
+
+      expect(retried.checkpointId).toBe(first.checkpointId);
+      expect(readdirSync(dir).filter((name) => name.endsWith(".json"))).toHaveLength(1);
+
+      const recent = await store.listRecent({ sessionId: "session-retry", limit: 10 });
+      expect(recent).toHaveLength(1);
+      expect(recent[0]?.updatedAt).toBe("2026-06-26T01:01:00.000Z");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

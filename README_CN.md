@@ -315,7 +315,7 @@ RecallNest 提供两种接口：
 
 | 工具 | 说明 |
 |------|------|
-| `workflow_observe` | 存储 append-only 工作流观察记录 |
+| `workflow_observe` | 存储 append-only 工作流观察记录；支持 `idempotencyKey` 防重复写入 |
 | `workflow_health` | 查看工作流健康状态或降级面板 |
 | `workflow_evidence` | 构建工作流证据包 |
 | `store_memory` | 存储一条持久记忆 |
@@ -327,7 +327,7 @@ RecallNest 提供两种接口：
 | `audit_conflicts` | 汇总过期/升级的冲突优先级 |
 | `escalate_conflicts` | 预览或应用冲突升级元数据 |
 | `resolve_conflict` | 解决冲突（保留 / 接受 / 合并） |
-| `checkpoint_session` | 保存当前工作状态 |
+| `checkpoint_session` | 保存当前工作状态；支持 `idempotencyKey` 防重复写入 |
 | `latest_checkpoint` | 查看最近的 checkpoint |
 | `resume_context` | 为新窗口编排启动上下文 |
 | `search_memory` | 任务开始时主动召回 |
@@ -403,7 +403,7 @@ bun run src/cli.ts distill "topic" --profile writing
 bun run src/cli.ts stats
 
 # 工作流观察
-bun run src/cli.ts workflow-observe resume_context "Fresh window skipped continuity recovery." --outcome missed --scope project:recallnest
+bun run src/cli.ts workflow-observe resume_context "Fresh window skipped continuity recovery." --outcome missed --scope project:recallnest --idempotency-key smoke-2026-06-26
 bun run src/cli.ts workflow-health resume_context --scope project:recallnest
 bun run src/cli.ts workflow-evidence checkpoint_session --scope project:recallnest
 

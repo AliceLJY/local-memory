@@ -1819,6 +1819,7 @@ program
   .option("--task <task>", "相关任务")
   .option("--tags <tags>", "逗号分隔 tags")
   .option("--tools <tools>", "逗号分隔 tools")
+  .option("--idempotency-key <key>", "同一请求重试时用于替换旧 observation 的稳定键")
   .option("--json", "输出 JSON")
   .action(async (workflowId, summary, options) => {
     const store = new WorkflowObservationStore();
@@ -1832,6 +1833,7 @@ program
       task: options.task,
       tags: splitCsvOption(options.tags),
       tools: splitCsvOption(options.tools),
+      idempotencyKey: options.idempotencyKey,
     });
     const stored = await store.save(record);
     if (options.json) {

@@ -316,7 +316,7 @@ Examples live in [`integrations/examples/`](integrations/examples/):
 
 | Tool | Description |
 |------|-------------|
-| `workflow_observe` | Store an append-only workflow observation outside regular memory |
+| `workflow_observe` | Store an append-only workflow observation outside regular memory; accepts `idempotencyKey` for retry-safe writes |
 | `workflow_health` | Inspect workflow observation health or show a degraded-workflow dashboard |
 | `workflow_evidence` | Build an evidence pack for a workflow primitive |
 | `store_memory` | Store a durable memory for future windows |
@@ -328,7 +328,7 @@ Examples live in [`integrations/examples/`](integrations/examples/):
 | `audit_conflicts` | Summarize stale/escalated conflict priorities |
 | `escalate_conflicts` | Preview or apply conflict escalation metadata |
 | `resolve_conflict` | Resolve a stored conflict candidate (keep / accept / merge) |
-| `checkpoint_session` | Store the current active work state outside durable memory |
+| `checkpoint_session` | Store the current active work state outside durable memory; accepts `idempotencyKey` for retry-safe writes |
 | `latest_checkpoint` | Inspect the latest saved checkpoint by session or scope |
 | `resume_context` | Compose startup context for a fresh window |
 | `search_memory` | Proactive recall at task start |
@@ -404,7 +404,7 @@ bun run src/cli.ts distill "topic" --profile writing
 bun run src/cli.ts stats
 
 # Workflow observation
-bun run src/cli.ts workflow-observe resume_context "Fresh window skipped continuity recovery." --outcome missed --scope project:recallnest
+bun run src/cli.ts workflow-observe resume_context "Fresh window skipped continuity recovery." --outcome missed --scope project:recallnest --idempotency-key smoke-2026-06-26
 bun run src/cli.ts workflow-health resume_context --scope project:recallnest
 bun run src/cli.ts workflow-evidence checkpoint_session --scope project:recallnest
 
