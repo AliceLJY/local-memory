@@ -2,7 +2,7 @@ import { z } from "zod";
 import { persistMemory } from "./capture-engine.js";
 import { composeLightResumeContext, composeResumeContext } from "./context-composer.js";
 import { renderMemories } from "./context-renderer.js";
-import { formatSearchResults, formatBriefResults, formatFullResults } from "./memory-output.js";
+import { formatSearchResults, formatBriefResults, formatFullResults, formatCollapsedResults } from "./memory-output.js";
 import { DurableMemoryCategorySchema, StoreMemorySourceSchema, PrivacyTierSchema, isPredictiveMemoryEnabled } from "./memory-schema.js";
 import type { PredictionContext } from "./prediction-engine.js";
 import { setReminder, checkTriggers, fireReminder, suggestPredictedReminders, formatSuggestedReminders } from "./prospective-memory.js";
@@ -332,8 +332,8 @@ registerTool(
     before: z.string().optional().describe("Filter memories stored before this date (ISO format YYYY-MM-DD, or relative)"),
     graph: z.boolean().default(false).optional().describe("Enable KG graph traversal (PPR) for relationship-aware search. Use when query involves entity relationships (e.g. 'what tools does Alice use', 'Bob的朋友')."),
     includeArchived: z.boolean().default(false).optional().describe("When true, also return archived/superseded/consolidated memories (default: only active)"),
-    detail_level: z.enum(["brief", "normal", "full"]).default("normal").optional()
-      .describe("Result detail level: brief (ID+score+one-liner), normal (default, current behavior), full (include metadata)"),
+    detail_level: z.enum(["brief", "normal", "full", "adaptive"]).default("normal").optional()
+      .describe("Result detail level: brief (ID+score+one-liner), normal (default, table), full (include metadata), adaptive (per-result L0/L1/L2 fidelity by relevance within an 8k token budget — high-relevance gets full text, lower gets summary/one-line)"),
     topicTag: z.string().min(1).max(60).optional()
       .describe("Filter by topic tag (e.g. 'auth', 'deploy', 'testing'). Only returns memories tagged with this topic."),
     reconstruct: z.boolean().default(false).describe(
@@ -484,6 +484,9 @@ registerTool(
       body = formatBriefResults(results, { query });
     } else if (level === "full") {
       body = formatFullResults(results, { query, profile: profile.name });
+    } else if (level === "adaptive") {
+      // P-fidelity (点4): 按相关性分配 L0/L1/L2 保真度 + token 预算（复用 collapseResults）。
+      body = formatCollapsedResults(results, { query, profile: profile.name });
     } else {
       body = formatSearchResults(results, { query, profile: profile.name });
     }

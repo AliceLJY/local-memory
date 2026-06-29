@@ -5,6 +5,7 @@ import { extractMemoryProvenance } from "./memory-boundaries.js";
 import { extractMultiVectorText } from "./multi-vector.js";
 import { parseNarrative } from "./narrative-schema.js";
 import { getConfidence, getConfidenceMetadata } from "./confidence-tracker.js";
+import { estimateTokens } from "./context-collapse-renderer.js";
 
 interface MemoryMetadata {
   source?: string;
@@ -217,6 +218,49 @@ function pickBestSnippet(query: string, text: string): string {
   return cleanSnippet(bestSentence);
 }
 
+/**
+ * adaptive 专用 query-aware snippet：取匹配词周围窗口（而非整句/开头），保证匹配证据可见。
+ * 解决 pickBestSnippet 的两个退化（Codex 审点4 C 版 P2）：① 短缩写 query（如 "CI"）
+ * extractTerms 提取不到词 → 退回开头；② 匹配在超长句/log 行后段 → cleanSnippet 从头截断丢匹配。
+ * 只给 adaptive 用，不改 pickBestSnippet（避免影响 normal/explain 的既有行为）。
+ */
+function adaptiveSnippet(query: string, text: string): string {
+  const clean = text.replace(/\s+/g, " ").trim();
+  const lower = clean.toLowerCase();
+  // 短缩写时 extractTerms 可能为空，用 raw query 兜底直接定位。
+  const terms = extractTerms(query);
+  const isFallback = terms.length === 0;
+  const searchTerms = (isFallback ? [query.toLowerCase().trim()] : terms).filter(Boolean);
+
+  let matchIdx = -1;
+  for (const term of searchTerms) {
+    // term 定位策略：
+    // - ASCII 字母数字短缩写（CI/PR）用 word boundary，避免误匹配 "specific" 里的 "ci"（Codex C P2）
+    // - CJK 单字 / 符号 query（猫 / C++ / C#）：JS \b 只认 ASCII、对它们永不匹配，回到 substring（收尾审 P2-1）
+    // - 正常 extractTerms 词：substring（容忍词根 / 词形）
+    // 已知限制（收尾审 P2-2，留后续）：多 term 取最早出现，未按 term rarity/coverage 给窗口打分——
+    // 泛词在前、判别词在窗口外时可能漏掉判别词。第一版接受。
+    let idx: number;
+    if (isFallback && /^[a-z0-9]+$/i.test(term)) {
+      const m = new RegExp(`\\b${term}\\b`, "i").exec(clean);
+      idx = m ? m.index : -1;
+    } else {
+      idx = lower.indexOf(term);
+    }
+    if (idx >= 0 && (matchIdx < 0 || idx < matchIdx)) matchIdx = idx;
+  }
+  if (matchIdx < 0) return pickBestSnippet(query, text); // 完全无匹配 → 退回整句最佳
+
+  const WINDOW_BEFORE = 60;
+  const WINDOW_AFTER = 180;
+  const start = Math.max(0, matchIdx - WINDOW_BEFORE);
+  const end = Math.min(clean.length, matchIdx + WINDOW_AFTER);
+  let snip = clean.slice(start, end).trim();
+  if (start > 0) snip = "…" + snip;
+  if (end < clean.length) snip = snip + "…";
+  return snip;
+}
+
 function normalizeRecallText(result: RetrievalResult): string {
   const source = getSourceLabel(result);
   if (source !== "asset") return result.entry.text;
@@ -380,6 +424,73 @@ export function formatSearchResults(
   }
 
   return lines.join("\n");
+}
+
+const ADAPTIVE_TOKEN_BUDGET = 8000;
+const ADAPTIVE_FULL_SCORE = 0.85;
+
+/**
+ * P-fidelity (点4): adaptive 保真度渲染 — 借鉴 RepoPrompt CE「保真度阶梯」的内核
+ * （按相关性分配保真度 + token 预算），但 search-native 实现。
+ *
+ * 为什么不复用 resume_context 的 collapseResults（CC+Codex 共识，Codex 三轮 review）：
+ * collapse 的 l0 floor / 按 score 重排 / query-agnostic fallback 都是为 resume 场景定制，
+ * 搬到 search 连续撞三个 P2（隐藏过滤 / 覆盖 highlight 排序 / 丢失匹配证据）。search 的语义
+ * 不同——结果是"为什么这条命中"，必须 query-aware；故第一版自实现两档：
+ *   - 高相关（score ≥ 0.85）→ 全文
+ *   - 其余 → query-aware snippet（pickBestSnippet，显示匹配证据）
+ * 按 handler 传入顺序（normal=score / highlight=contextual）依次填入 token 预算，超预算时
+ * 全文降级 snippet、snippet 仍超则停止（剩余计入 omitted）。完整三档保真度阶梯（每条记忆预存
+ * 多档摘要 + 预缓存 token 成本）留作后续大改。
+ */
+export function formatCollapsedResults(
+  results: RetrievalResult[],
+  context: RenderContext,
+): string {
+  if (results.length === 0) return "No results found.";
+
+  const rendered: string[] = [];
+  let tokensUsed = 0;
+  let shown = 0;
+
+  // 保留传入顺序（不重排）：handler 已按 normal=score / highlight=contextual 排好。
+  for (const r of results) {
+    const isFull = r.score >= ADAPTIVE_FULL_SCORE;
+    let level = isFull ? "FULL" : "SNIP";
+    // query-aware：snippet 取匹配词周围窗口、显示匹配证据（search 是"为什么命中"）。
+    let text = isFull ? r.entry.text : adaptiveSnippet(context.query, r.entry.text);
+    let tokens = estimateTokens(text);
+
+    if (tokensUsed + tokens > ADAPTIVE_TOKEN_BUDGET) {
+      if (isFull) {
+        // 全文超预算 → 降级为 query-aware snippet
+        text = adaptiveSnippet(context.query, r.entry.text);
+        level = "SNIP";
+        tokens = estimateTokens(text);
+      }
+      if (tokensUsed + tokens > ADAPTIVE_TOKEN_BUDGET) break; // snippet 仍超 → 停止，剩余计入 omitted
+    }
+    tokensUsed += tokens;
+    shown++;
+
+    // 定位信息：id / score / category / source（Codex 约束：search 结果必须可定位）
+    const id = r.entry.id.slice(0, 8);
+    const scorePct = `${(r.score * 100).toFixed(0)}%`;
+    rendered.push(`[${level}] ${id}  ${scorePct}  ${getCategoryLabel(r)}  ${getSourceLabel(r)}`);
+    rendered.push(text);
+    rendered.push("");
+  }
+
+  const omitted = results.length - shown;
+  const lines = [
+    `Query   : ${context.query}`,
+    `Profile : ${context.profile}`,
+    `Mode    : adaptive — full text for score ≥ ${ADAPTIVE_FULL_SCORE}, query-aware snippet otherwise, ${ADAPTIVE_TOKEN_BUDGET}-token budget`,
+    `Shown   : ${shown} of ${results.length}${omitted > 0 ? ` (${omitted} omitted: token budget)` : ""}`,
+    "",
+    ...rendered,
+  ];
+  return lines.join("\n").trimEnd();
 }
 
 export function formatExplainResults(
