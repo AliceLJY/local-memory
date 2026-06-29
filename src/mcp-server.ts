@@ -26,6 +26,7 @@ import { KGStore } from "./kg-store.js";
 import { createKGExtractor, isKGModeEnabled, type KGExtractor } from "./kg-extractor.js";
 import type { MemoryStore } from "./store.js";
 import type { LLMClient } from "./llm-client.js";
+import { runToolSafely } from "./error-taxonomy.js";
 
 import { registerCoreTools } from "./mcp-tools-core.js";
 import { registerAdvancedTools } from "./mcp-tools-advanced.js";
@@ -173,8 +174,15 @@ function registerTool(name: string, description: string, schema: ToolSchema, han
   // Lazy-init guard: defer heavy component construction to first tool call so the
   // MCP handshake (initialize / tools/list) isn't blocked. tools/call enters here.
   const lazyHandler = (async (...args: unknown[]) => {
-    await ensureComponents();
-    return (handler as (...a: unknown[]) => unknown)(...args);
+    // P-error-taxonomy: 把 ensureComponents(lazy-init) + handler 调用整体交给 runToolSafely，
+    // 任意抛错都分类 + 结构化日志 + 返回 isError result（不裸抛）。lazy-init 失败（缺 env /
+    // LanceDB load / 无效 storage path）同样被覆盖（Codex 复审 P2-1）。
+    // 已知分层边界（P2-2）：SDK 在调本 handler 前已跑 zod schema 验证，参数校验失败由 SDK
+    // 返回标准 MCP validation error、不经此处；taxonomy 只覆盖执行层错误。
+    return runToolSafely(name, async () => {
+      await ensureComponents();
+      return (handler as (...a: unknown[]) => unknown)(...args);
+    });
   }) as ToolHandler;
   server.tool(name, description, schema, lazyHandler);
 }
