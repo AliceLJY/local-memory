@@ -393,6 +393,9 @@ registerTool(
       }));
     }
 
+    // P-omitted: 在 after/before filter 创建新数组、丢失 ResultSet.omitted 之前快照。
+    const omittedInfo = (results as import("./retriever.js").RetrievalResultSet).omitted;
+
     // Explicit temporal filtering from after/before params
     if (after || before) {
       const constraint: TemporalConstraint = {
@@ -485,6 +488,16 @@ registerTool(
       body = formatSearchResults(results, { query, profile: profile.name });
     }
     sections.push(body);
+
+    // P-omitted: 因 limit 上限未返回的达标结果，明确告知调用方可提高 limit 看到更多。
+    // 仅在普通检索下报告；after/before/topicTag 模式内部用 limit*3 拉取，omitted 语义不一致，跳过避免误导。
+    // "up to" 措辞：omitted 是上界估计，可能含将被 validity filter 过滤的 expired 项（P3-2）。
+    if (!after && !before && !topicTag && omittedInfo && omittedInfo.count > 0) {
+      sections.push(
+        `ℹ️ Up to ${omittedInfo.count} more matching result(s) were capped by limit=${limit}. ` +
+        `Raise \`limit\` (max 20) or refine the query to surface them.`
+      );
+    }
 
     // P1-A: 显式 scope 0 命中 → 相近 scope 提示(拼写漂移最常见;只提示不改写)
     if (scope && (scopeFallbackUsed || results.length === 0)) {

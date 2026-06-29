@@ -193,6 +193,12 @@ export interface RetrievalResult extends MemorySearchResult {
  */
 export type RetrievalResultSet = RetrievalResult[] & {
   reconstruction?: ReconstructionOutput;
+  /**
+   * P-omitted: 因 limit 上限被截断、未返回的达标结果数（提高 limit 可见）。
+   * 仅统计 finalizeResults 的 limit 截断，不含质量过滤（min-score/noise/MMR）丢弃——
+   * 那些提高 limit 也拿不到，报告出来反而误导调用方。
+   */
+  omitted?: { count: number; reason: "limit" };
 };
 
 // ============================================================================
@@ -759,6 +765,10 @@ export class MemoryRetriever {
       }
     }
 
+    // P-omitted: 快照 finalize 阶段因 limit 截断的达标结果数（提高 limit 可见）。
+    // 必须在后续 validity/topicTag filter 创建新数组、丢失 ResultSet 属性之前读取。
+    let omittedByLimit = (results as RetrievalResultSet).omitted?.count ?? 0;
+
     // LME-2: Multi-hop retrieval — extract entities from first-pass results,
     // run focused follow-up queries, merge to improve cross-session coverage.
     const useMultiHop = context.multiHop ?? this.config.multiHop ?? false;
@@ -827,6 +837,10 @@ export class MemoryRetriever {
 
     // Phase 4: Constructive retrieval — first-class reconstruction (no metadata hack)
     const resultSet = results as RetrievalResultSet;
+    // P-omitted: 把快照的 limit 截断数挂回最终 resultSet（validity filter 已丢原数组属性）。
+    if (omittedByLimit > 0) {
+      resultSet.omitted = { count: omittedByLimit, reason: "limit" };
+    }
     const constructiveFlag = envConfig.constructiveRetrieval();
     if (shouldReconstruct({
       flagEnabled: constructiveFlag,
@@ -931,7 +945,13 @@ export class MemoryRetriever {
       : (shortQ
           ? this.config.minScore * SHORT_QUERY_MIN_SCORE_FACTOR
           : this.config.minScore);
-    const results = await this.store.vectorSearch(queryVector, limit, vectorMinScore, scopeFilter);
+    // P-omitted: over-fetch a wider candidate pool so finalizeResults can detect limit-capped
+    // omissions. Previously fetched exactly `limit`, so vector-only omitted was always 0
+    // (hybrid already over-fetches candidatePoolSize). Cost is minimal — ANN with a larger K
+    // plus a few more local scoring passes, no extra API; P1.2's vector-only savings come from
+    // skipping hybrid BM25/fusion/rerank, not from fetch size.
+    const fetchLimit = Math.max(limit, this.config.candidatePoolSize ?? limit);
+    const results = await this.store.vectorSearch(queryVector, fetchLimit, vectorMinScore, scopeFilter);
     trace?.endStage(results.length, results.map(r => r.score));
 
     // Filter by category if specified
@@ -1201,6 +1221,16 @@ export class MemoryRetriever {
     trace?.startStage("final_limit", diversified.length);
     const final = diversified.slice(0, limit);
     trace?.endStage(final.length, final.map(r => r.score));
+
+    // P-omitted: 从 source-diversity 之前的候选池(clusterDeduped)算 limit 截断数。
+    // 若启用 sourceDiversity，applySourceDiversity 会先把 diversified 压到 limit，
+    // 用 diversified.length 会让 omitted 恒为 0（Codex 复审 P3-1，与 vector-only 同类）。
+    // 注意：clusterDeduped 仍可能含将被 retrieve 层 validity filter 过滤的 expired 项，
+    // 故 omitted 是“上界估计”，输出层用 "up to N" 措辞反映（P3-2）。
+    const omittedByLimit = Math.max(0, clusterDeduped.length - final.length);
+    if (omittedByLimit > 0) {
+      (final as RetrievalResultSet).omitted = { count: omittedByLimit, reason: "limit" };
+    }
 
     return final;
   }
