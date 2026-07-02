@@ -14,7 +14,9 @@ mkdir -p "$LOG_DIR"
 LAST_RUN_FILE="${HOME}/recallnest/data/.last-dream-run"
 NOW=$(date '+%Y-%m-%d %H:%M:%S')
 
-# 目标 scope:cc 前缀 = 主力记忆数据(73K+);单次 maxEntriesPerRun=500 控制 LLM 消耗
+# dream --auto: 从 activity-counter 拉写计数达标(>= minWritesForDream)的所有 scope,逐个跑 dream
+# (单 scope 失败不阻断其他)。per-scope 计数 = 每个活跃 scope 独立触发,不再全局单点。
+# DREAM_SCOPE 保留仅供手动单 scope 调试(不走 --auto 时)。
 DREAM_SCOPE="${DREAM_SCOPE:-cc}"
 
 # Dry-run mode: DREAM_DRY_RUN=1 ./dream-consolidation.sh
@@ -30,7 +32,7 @@ if [ "${DREAM_FORCE:-0}" = "1" ]; then
     echo "[$NOW] FORCE mode — skipping min-writes gate"
 fi
 
-echo "[$NOW] Dream consolidation starting (scope=$DREAM_SCOPE)"
+echo "[$NOW] Dream consolidation starting (auto: 所有写计数达标的 scope)"
 
 DREAM_OUT=$(mktemp /tmp/rn-dream.XXXXXX)
 trap "rm -f $DREAM_OUT" EXIT
@@ -42,7 +44,7 @@ for attempt in 1 2 3; do
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] dream 尝试 $attempt/3"
     : > "$DREAM_OUT"
 
-    "$HOME/.bun/bin/bun" run "$HOME/recallnest/src/cli.ts" dream --scope "$DREAM_SCOPE" $FORCE_FLAG 2>&1 | tee "$DREAM_OUT"
+    "$HOME/.bun/bin/bun" run "$HOME/recallnest/src/cli.ts" dream --auto $FORCE_FLAG 2>&1 | tee "$DREAM_OUT"
     DREAM_EXIT=${PIPESTATUS[0]}
 
     STATUS_LINE=$(grep -aoE '\[\[DREAM_STATUS\]\] (ok|blocked|skip)' "$DREAM_OUT" 2>/dev/null | tail -1)

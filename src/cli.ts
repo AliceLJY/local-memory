@@ -11,7 +11,7 @@
 
 import { Command } from "commander";
 import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
 
 import { metaDir } from "./compat.js";
@@ -35,7 +35,8 @@ import {
 import { runDoctor, formatDoctorResults } from "./doctor.js";
 import { persistCaseMemory, persistMemory, persistWorkflowPattern } from "./capture-engine.js";
 import { scanMemoryPromotions, buildPromoteScanDeps, formatPromoteScanResult } from "./memory-promotion.js";
-import { runDream, formatDreamResult } from "./dream-pipeline.js";
+import { runDream, formatDreamResult, DEFAULT_DREAM_CONFIG } from "./dream-pipeline.js";
+import { listScopesAboveThreshold } from "./activity-counter.js";
 import {
   CaseMemoryInputSchema,
   type CaseMemoryInput,
@@ -1574,10 +1575,36 @@ program
   .command("dream")
   .description("运行 dream 离线整固管线 (Orient/Gather/Consolidate/Prune)")
   .option("--scope <scope>", "目标 scope(前缀或精确)", "cc")
+  .option("--auto", "扫描 activity-counter 中写计数达标的所有 scope，逐个跑 dream（单 scope 失败不阻断其他）")
   .option("--force", "跳过 min-writes 门槛强制运行")
-  .action(async (options: { scope: string; force?: boolean }) => {
+  .action(async (options: { scope: string; auto?: boolean; force?: boolean }) => {
     const config = loadConfig();
     const { store, embedder, llm } = createComponents(config);
+    // Same activity-stats file the store writes per-scope counts to (beside the LanceDB dir).
+    const activityStatsPath = join(dirname(store.dbPath), "activity-stats.json");
+
+    if (options.auto) {
+      const scopes = listScopesAboveThreshold(DEFAULT_DREAM_CONFIG.minWritesForDream, { statsPath: activityStatsPath });
+      if (scopes.length === 0) {
+        console.log("dream --auto: 无达标 scope（写计数均低于门槛）");
+        console.log("[[DREAM_STATUS]] skip");
+        process.exit(0);
+      }
+      console.log(`dream --auto: ${scopes.length} 个达标 scope → ${scopes.join(", ")}`);
+      let anyFailed = false;
+      for (const scope of scopes) {
+        try {
+          const result = await runDream({ store, llm, embedder, scope, force: Boolean(options.force), activityStatsPath });
+          console.log(`[scope=${scope}] ${formatDreamResult(result)}`);
+        } catch (err) {
+          anyFailed = true;
+          // 单 scope 失败不阻断其他 scope
+          console.error(`[scope=${scope}] dream failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+      console.log(anyFailed ? "[[DREAM_STATUS]] blocked" : "[[DREAM_STATUS]] ok");
+      process.exit(anyFailed ? 1 : 0);
+    }
 
     try {
       const result = await runDream({
@@ -1586,6 +1613,7 @@ program
         embedder,
         scope: options.scope,
         force: Boolean(options.force),
+        activityStatsPath,
       });
 
       console.log(formatDreamResult(result));
