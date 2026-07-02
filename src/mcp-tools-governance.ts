@@ -16,6 +16,7 @@ import { buildWorkflowEvidence, buildWorkflowObservationRecord, inspectWorkflowD
 import { formatWorkflowEvidencePack, formatWorkflowHealthDashboard, formatWorkflowHealthReport, formatWorkflowObservationSaved } from "./workflow-observation-output.js";
 import { WorkflowObservationOutcomeSchema } from "./workflow-observation-schema.js";
 import type { ToolRegistryDeps } from "./mcp-tool-deps.js";
+import { withLock } from "./distill-lock.js";
 
 export function registerGovernanceTools(deps: ToolRegistryDeps): void {
   const { registerTool, getComponents, conflictStore, workflowObservationStore, getKGExtractor } = deps;
@@ -342,12 +343,29 @@ registerTool(
       };
     }
 
-    const engine = new ConsolidationEngine(store, { clusterThreshold, mergeThreshold, maxEntriesPerRun: maxEntries });
-    const result = await engine.run(scope);
+    // P0-1: serialize applied consolidation per scope across the 11 mcp-server processes.
+    // Skip (not queue) if another process is already consolidating this scope — the
+    // store-write lock already prevents write corruption; this just avoids redundant work.
+    const outcome = await withLock(
+      `consolidate-${scope}`,
+      async () => {
+        const engine = new ConsolidationEngine(store, { clusterThreshold, mergeThreshold, maxEntriesPerRun: maxEntries });
+        return engine.run(scope);
+      },
+      { onBusy: "skip", expireMs: 600_000 },
+    );
+    if (!outcome.ran) {
+      return {
+        content: [{
+          type: "text" as const,
+          text: `⏭️ consolidate_memories skipped: another process is consolidating scope "${scope}".`,
+        }],
+      };
+    }
     return {
       content: [{
         type: "text" as const,
-        text: formatConsolidationResult(result),
+        text: formatConsolidationResult(outcome.result),
       }],
     };
   }

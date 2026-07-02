@@ -264,7 +264,9 @@ export async function withWriteLock<T>(
  */
 export function stampLock(cfg?: Partial<DistillLockConfig>): void {
   const { lockPath } = resolveConfig(cfg);
-  if (!existsSync(lockPath)) return;
-  const now = new Date();
-  utimesSync(lockPath, now, now);
+  mkdirSync(dirname(lockPath), { recursive: true });
+  // Create-or-overwrite so the mtime becomes now. Unlike releaseLock this leaves the
+  // file in place — it is a persistent "last run" marker (gc's cross-process throttle),
+  // read back via getLastDistillTime.
+  writeFileSync(lockPath, String(process.pid), "utf-8");
 }

@@ -1,0 +1,99 @@
+import { afterEach, describe, expect, it } from "bun:test";
+import { mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { dirname } from "node:path";
+
+import { runDream } from "../dream-pipeline.js";
+import { maybeRunGc, resetGcTimestamp, type AutoGcConfig, DEFAULT_AUTO_GC_CONFIG } from "../auto-gc.js";
+import { lockPathForKey } from "../distill-lock.js";
+
+/**
+ * P0-1 接线回归：dream/gc 维护入口接了跨进程锁。用「预写一个当前进程 PID 的锁文件」
+ * 模拟「另一进程持有锁」（同进程 PID 恒活，acquireLock 判定为被占）。
+ */
+
+const createdLocks: string[] = [];
+function holdLock(key: string): string {
+  const p = lockPathForKey(key);
+  mkdirSync(dirname(p), { recursive: true });
+  writeFileSync(p, String(process.pid), "utf-8"); // current pid ⇒ acquireLock sees it as a live holder
+  createdLocks.push(p);
+  return p;
+}
+
+afterEach(() => {
+  while (createdLocks.length > 0) {
+    try {
+      rmSync(createdLocks.pop()!, { force: true });
+    } catch {
+      /* ignore */
+    }
+  }
+  resetGcTimestamp();
+});
+
+describe("runDream cross-process lock", () => {
+  it("skips (ran:false, locked) and does not run the body when the scope lock is held", async () => {
+    const scope = "project:dream-lock-test";
+    holdLock(`dream-${scope}`);
+
+    let bodyRan = false;
+    const store = {
+      stats: async () => {
+        bodyRan = true;
+        return { totalCount: 100, scopeCounts: {}, categoryCounts: {} };
+      },
+      list: async () => [],
+      listPage: async () => [],
+      update: async () => null,
+      patchMetadata: async () => null,
+    };
+
+    const result = await runDream({
+      store: store as any,
+      llm: null,
+      embedder: { embedPassage: async () => [0, 0, 0] },
+      scope,
+      force: true,
+    });
+
+    expect(result.ran).toBe(false);
+    expect(result.reason).toBe("locked_by_another_process");
+    expect(bodyRan).toBe(false); // runDreamInner never entered
+  });
+});
+
+describe("maybeRunGc cross-process lock + throttle", () => {
+  function makeStore(totalCount: number) {
+    return {
+      stats: async () => ({ totalCount, scopeCounts: {}, categoryCounts: {} }),
+      listPage: async () => [] as unknown[],
+      update: async () => null,
+      list: async () => [],
+    } as any;
+  }
+
+  it("skips (locked) when another process holds the gc run lock", async () => {
+    resetGcTimestamp();
+    holdLock("gc-run");
+    const config: AutoGcConfig = { ...DEFAULT_AUTO_GC_CONFIG, minMemoryCount: 1, minHoursSinceLastGc: 24 };
+    const result = await maybeRunGc(makeStore(10), config);
+    expect(result.triggered).toBe(false);
+    expect(result.reason).toBe("locked_by_another_process");
+  });
+
+  it("throttles a second run within the window, then runs again after reset", async () => {
+    resetGcTimestamp();
+    const config: AutoGcConfig = { ...DEFAULT_AUTO_GC_CONFIG, minMemoryCount: 1, minHoursSinceLastGc: 24 };
+
+    const first = await maybeRunGc(makeStore(10), config);
+    expect(first.triggered).toBe(true);
+
+    const second = await maybeRunGc(makeStore(10), config);
+    expect(second.triggered).toBe(false);
+    expect(second.reason).toBe("too_soon");
+
+    resetGcTimestamp();
+    const third = await maybeRunGc(makeStore(10), config);
+    expect(third.triggered).toBe(true);
+  });
+});

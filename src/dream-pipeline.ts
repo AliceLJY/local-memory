@@ -22,6 +22,7 @@ import { maybeRunGc, type GcResult, type AutoGcConfig, DEFAULT_AUTO_GC_CONFIG } 
 import { getWriteCount, resetWriteCount } from "./activity-counter.js";
 import { deriveUsageStatus, getUsageMetadata, isUsageSignalActive } from "./usage-tracker.js";
 import { isActiveMemory } from "./memory-evolution.js";
+import { withLock } from "./distill-lock.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -76,7 +77,7 @@ export interface DreamResult {
 // Pipeline
 // ---------------------------------------------------------------------------
 
-export async function runDream(params: {
+async function runDreamInner(params: {
   store: MemoryStorePort;
   llm: LLMClient | null;
   embedder: Pick<Embedder, "embedPassage">;
@@ -224,6 +225,45 @@ export async function runDream(params: {
   resetWriteCount();
 
   return { ran: true, phases, stats };
+}
+
+/**
+ * P0-1: run dream under a per-scope cross-process lock. Dream internally does
+ * consolidation + gc, so the lock sits at this outermost entry — no nested maintenance
+ * locks. If another of the 11 mcp-server processes holds the scope's dream lock, skip
+ * rather than queue: a redundant dream on a personal store is pure waste, and the next
+ * writer's dream picks up whatever this run skipped.
+ */
+export async function runDream(params: {
+  store: MemoryStorePort;
+  llm: LLMClient | null;
+  embedder: Pick<Embedder, "embedPassage">;
+  scope: string;
+  config?: Partial<DreamConfig>;
+  /** Skip the minimum-writes gate (force run) */
+  force?: boolean;
+}): Promise<DreamResult> {
+  const outcome = await withLock(
+    `dream-${params.scope}`,
+    () => runDreamInner(params),
+    { onBusy: "skip", expireMs: 600_000 },
+  );
+  if (outcome.ran) return outcome.result;
+  return {
+    ran: false,
+    reason: "locked_by_another_process",
+    phases: [{ phase: "orient", detail: `another process holds the dream lock for scope ${params.scope}` }],
+    stats: {
+      totalMemories: 0,
+      activeMemories: 0,
+      writesSinceLastDream: 0,
+      clustersFound: 0,
+      insightsGenerated: 0,
+      patternsExtracted: 0,
+      mergedCount: 0,
+      archivedCount: 0,
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------

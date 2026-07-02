@@ -274,7 +274,11 @@ describe("stampLock", () => {
     expect(Math.abs(st.mtimeMs - Date.now())).toBeLessThan(2000);
   });
 
-  it("is a no-op when the lock file does not exist", () => {
-    expect(() => stampLock({ lockPath: lockPathForKey("stamp-absent", tempDir) })).not.toThrow();
+  it("creates the marker file when absent (mtime ~ now)", () => {
+    const p = lockPathForKey("stamp-absent", tempDir);
+    expect(existsSync(p)).toBe(false);
+    stampLock({ lockPath: p });
+    expect(existsSync(p)).toBe(true);
+    expect(Math.abs(statSync(p).mtimeMs - Date.now())).toBeLessThan(2000);
   });
 });
