@@ -12,8 +12,8 @@ A local-first memory system backed by LanceDB that turns scattered conversation 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Runtime](https://img.shields.io/badge/Runtime-Bun_|_Node.js_18+-f9f1e1?logo=bun)](https://bun.sh)
 [![LanceDB](https://img.shields.io/badge/LanceDB-Vector+FTS-orange)](https://lancedb.com)
-[![MCP](https://img.shields.io/badge/MCP-42_tools-blue)](https://modelcontextprotocol.io)
-[![Tests](https://img.shields.io/badge/Tests-1573_pass-brightgreen)](https://github.com/AliceLJY/recallnest)
+[![MCP](https://img.shields.io/badge/MCP-43_tools-blue)](https://modelcontextprotocol.io)
+[![Tests](https://img.shields.io/badge/Tests-1742_pass-brightgreen)](https://github.com/AliceLJY/recallnest)
 [![CC Plugin](https://img.shields.io/badge/Claude_Code-Plugin-blueviolet)](https://github.com/AliceLJY/recallnest)
 
 **English** | [简体中文](README_CN.md) | [Roadmap](ROADMAP.md)
@@ -250,7 +250,7 @@ v2.2 hardened retrieval quality; v2.3 opens RecallNest to external data sources 
 │                   Integration Layer                       │
 │  ┌─────────────────────┐  ┌────────────────────────────┐ │
 │  │  MCP Server         │  │  HTTP API Server           │ │
-│  │  41 tools           │  │  21 endpoints              │ │
+│  │  43 tools           │  │  21 endpoints              │ │
 │  └─────────┬───────────┘  └──────────┬─────────────────┘ │
 └────────────┼─────────────────────────┼───────────────────┘
              └──────────┬──────────────┘
@@ -312,7 +312,7 @@ Examples live in [`integrations/examples/`](integrations/examples/):
 ---
 
 <details>
-<summary><strong>MCP Tools (42 tools)</strong></summary>
+<summary><strong>MCP Tools (43 tools)</strong></summary>
 
 | Tool | Description |
 |------|-------------|
