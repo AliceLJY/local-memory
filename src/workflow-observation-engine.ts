@@ -11,6 +11,7 @@ import type {
 } from "./workflow-observation-schema.js";
 import { WorkflowObservationInputSchema, WorkflowObservationRecordSchema } from "./workflow-observation-schema.js";
 import type { WorkflowObservationStore } from "./workflow-observation-store.js";
+import { buildIdempotentRecordId } from "./idempotency.js";
 
 const DEFAULT_WINDOWS = [7, 30] as const;
 const MAX_OBSERVATIONS_FOR_ANALYSIS = 1000;
@@ -148,7 +149,7 @@ export function buildWorkflowObservationRecord(rawInput: unknown): WorkflowObser
   const input = WorkflowObservationInputSchema.parse(rawInput);
   return WorkflowObservationRecordSchema.parse({
     ...input,
-    observationId: randomUUID(),
+    observationId: buildIdempotentRecordId("wfo", input.idempotencyKey) ?? randomUUID(),
     resolvedScope: resolveWorkflowObservationScope(input),
   });
 }

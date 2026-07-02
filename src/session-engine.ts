@@ -6,6 +6,7 @@ import {
   type SessionCheckpointRecord,
   SessionCheckpointRecordSchema,
 } from "./session-schema.js";
+import { buildIdempotentRecordId } from "./idempotency.js";
 
 const REPO_STATE_PATTERN = /\bgit status\b|未提交|staged|uncommitted|已修改文件|modified files?|untracked|新增文件|dirty repo|dirty worktree/iu;
 const SENTENCE_SPLIT_PATTERN = /(?:\r?\n)+|(?<=[。！？!?;；])\s+/u;
@@ -141,7 +142,7 @@ export function buildSessionCheckpointResult(rawInput: unknown): SessionCheckpoi
 
   const record = SessionCheckpointRecordSchema.parse({
     ...sanitizedInput,
-    checkpointId: randomUUID(),
+    checkpointId: buildIdempotentRecordId("chk", sanitizedInput.idempotencyKey) ?? randomUUID(),
     resolvedScope: resolveCheckpointScope(sanitizedInput),
   });
 

@@ -23,6 +23,7 @@ export const WorkflowObservationInputSchema = z.object({
   tools: normalizedStringListSchema("tools", 6, 60),
   recordedAt: z.string().datetime().default(() => new Date().toISOString()),
   skillId: optionalBoundedStringSchema(128),
+  idempotencyKey: optionalBoundedStringSchema(160),
 });
 
 export const WorkflowObservationRecordSchema = WorkflowObservationInputSchema.extend({
@@ -85,4 +86,3 @@ export interface WorkflowEvidencePack {
   }>;
   suggestions: string[];
 }
-

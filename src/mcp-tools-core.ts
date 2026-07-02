@@ -2,7 +2,7 @@ import { z } from "zod";
 import { persistMemory } from "./capture-engine.js";
 import { composeLightResumeContext, composeResumeContext } from "./context-composer.js";
 import { renderMemories } from "./context-renderer.js";
-import { formatSearchResults, formatBriefResults, formatFullResults } from "./memory-output.js";
+import { formatSearchResults, formatBriefResults, formatFullResults, formatCollapsedResults } from "./memory-output.js";
 import { DurableMemoryCategorySchema, StoreMemorySourceSchema, PrivacyTierSchema, isPredictiveMemoryEnabled } from "./memory-schema.js";
 import type { PredictionContext } from "./prediction-engine.js";
 import { setReminder, checkTriggers, fireReminder, suggestPredictedReminders, formatSuggestedReminders } from "./prospective-memory.js";
@@ -177,9 +177,10 @@ registerTool(
     nextActions: z.array(z.string().min(1).max(200)).max(6).default([]).describe("Next actions to take"),
     entities: z.array(z.string().min(1).max(120)).max(8).default([]).describe("Relevant projects, tools, or people"),
     files: z.array(z.string().min(1).max(220)).max(12).default([]).describe("Relevant files or paths"),
+    idempotencyKey: z.string().min(1).max(160).optional().describe("Optional stable request key; repeated saves with the same key replace the prior checkpoint"),
     updatedAt: z.string().datetime().optional().describe("Optional override; defaults to now"),
   },
-  async ({ sessionId, scope, summary, task, decisions, openLoops, nextActions, entities, files, updatedAt }) => {
+  async ({ sessionId, scope, summary, task, decisions, openLoops, nextActions, entities, files, idempotencyKey, updatedAt }) => {
     const result = buildSessionCheckpointResult({
       sessionId,
       scope,
@@ -190,6 +191,7 @@ registerTool(
       nextActions,
       entities,
       files,
+      idempotencyKey,
       ...(updatedAt ? { updatedAt } : {}),
     });
     const storedRecord = await checkpointStore.save(result.record);
@@ -370,8 +372,8 @@ registerTool(
     before: z.string().optional().describe("Filter memories stored before this date (ISO format YYYY-MM-DD, or relative)"),
     graph: z.boolean().default(false).optional().describe("Enable KG graph traversal (PPR) for relationship-aware search. Use when query involves entity relationships (e.g. 'what tools does Alice use', 'Bob的朋友')."),
     includeArchived: z.boolean().default(false).optional().describe("When true, also return archived/superseded/consolidated memories (default: only active)"),
-    detail_level: z.enum(["brief", "normal", "full"]).default("normal").optional()
-      .describe("Result detail level: brief (ID+score+one-liner), normal (default, current behavior), full (include metadata)"),
+    detail_level: z.enum(["brief", "normal", "full", "adaptive"]).default("normal").optional()
+      .describe("Result detail level: brief (ID+score+one-liner), normal (default, table), full (include metadata), adaptive (per-result L0/L1/L2 fidelity by relevance within an 8k token budget — high-relevance gets full text, lower gets summary/one-line)"),
     topicTag: z.string().min(1).max(60).optional()
       .describe("Filter by topic tag (e.g. 'auth', 'deploy', 'testing'). Only returns memories tagged with this topic."),
     reconstruct: z.boolean().default(false).describe(
@@ -431,6 +433,9 @@ registerTool(
       }));
     }
 
+    // P-omitted: 在 after/before filter 创建新数组、丢失 ResultSet.omitted 之前快照。
+    const omittedInfo = (results as import("./retriever.js").RetrievalResultSet).omitted;
+
     results = applyExplicitTemporalFilters(results, { after, before, limit });
 
     // Apply context-aware rendering when requested
@@ -485,6 +490,8 @@ registerTool(
     const formatAtLevel = (items: RetrievalResult[]) => {
       if (level === "brief") return formatBriefResults(items, { query });
       if (level === "full") return formatFullResults(items, { query, profile: profile.name });
+      // P-fidelity (点4): 按相关性分配 L0/L1/L2 保真度 + token 预算（复用 collapseResults）。
+      if (level === "adaptive") return formatCollapsedResults(items, { query, profile: profile.name });
       return formatSearchResults(items, { query, profile: profile.name });
     };
 
@@ -554,6 +561,16 @@ registerTool(
 
     if (relatedScopeSections.length > 0) {
       sections.push(`## Related scope results\n${relatedScopeSections.join("\n\n")}`);
+    }
+
+    // P-omitted: 因 limit 上限未返回的达标结果，明确告知调用方可提高 limit 看到更多。
+    // 仅在普通检索下报告；after/before/topicTag 模式内部用 limit*3 拉取，omitted 语义不一致，跳过避免误导。
+    // "up to" 措辞：omitted 是上界估计，可能含将被 validity filter 过滤的 expired 项（P3-2）。
+    if (!after && !before && !topicTag && omittedInfo && omittedInfo.count > 0) {
+      sections.push(
+        `ℹ️ Up to ${omittedInfo.count} more matching result(s) were capped by limit=${limit}. ` +
+        `Raise \`limit\` (max 20) or refine the query to surface them.`
+      );
     }
 
     // P1-A: 显式 scope 0 命中 → 相近 scope 提示(拼写漂移最常见;只提示不改写)

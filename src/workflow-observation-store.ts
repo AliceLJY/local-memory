@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 import { metaDir } from "./compat.js";
@@ -37,6 +37,11 @@ export class WorkflowObservationStore {
     const parsed = WorkflowObservationRecordSchema.parse(record);
     const timestampToken = parsed.recordedAt.replace(/[:.]/g, "-");
     const path = join(this.dataDir, `${timestampToken}-${parsed.observationId}.json`);
+    const suffix = `-${parsed.observationId}.json`;
+    for (const name of readdirSync(this.dataDir).filter((item) => item.endsWith(suffix))) {
+      const existingPath = join(this.dataDir, name);
+      if (existingPath !== path) unlinkSync(existingPath);
+    }
     writeFileSync(path, JSON.stringify(parsed, null, 2) + "\n");
     return parsed;
   }
@@ -67,4 +72,3 @@ export class WorkflowObservationStore {
     return sortNewestFirst(items).slice(0, limit);
   }
 }
-

@@ -14,6 +14,7 @@ export const SessionCheckpointInputSchema = z.object({
   nextActions: normalizedStringListSchema("nextActions", 6, 200),
   entities: normalizedStringListSchema("entities", 8, 120),
   files: normalizedStringListSchema("files", 12, 220),
+  idempotencyKey: optionalBoundedStringSchema(160),
   updatedAt: z.string().datetime().default(() => new Date().toISOString()),
 });
 

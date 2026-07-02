@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -112,6 +112,39 @@ describe("workflow observation engine", () => {
       expect(evidence.suggestions).toContain(
         "Add end-of-window guards so checkpoint content is sanitized before it becomes the next handoff.",
       );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("uses idempotencyKey to replace retried workflow observation files", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "recallnest-workflow-idempotency-"));
+    try {
+      const store = new WorkflowObservationStore(dir);
+      const baseInput = {
+        workflowId: "checkpoint_session",
+        outcome: "success" as const,
+        summary: "Checkpoint saved after task handoff.",
+        scope: "project:recallnest",
+        source: "agent",
+        idempotencyKey: "workflow-observation-request-123",
+      };
+
+      const first = await store.save(buildWorkflowObservationRecord({
+        ...baseInput,
+        recordedAt: "2026-06-26T01:00:00.000Z",
+      }));
+      const retried = await store.save(buildWorkflowObservationRecord({
+        ...baseInput,
+        recordedAt: "2026-06-26T01:01:00.000Z",
+      }));
+
+      expect(retried.observationId).toBe(first.observationId);
+      expect(readdirSync(dir).filter((name) => name.endsWith(".json"))).toHaveLength(1);
+
+      const recent = await store.listRecent({ workflowId: "checkpoint_session", scope: "project:recallnest" });
+      expect(recent).toHaveLength(1);
+      expect(recent[0]?.recordedAt).toBe("2026-06-26T01:01:00.000Z");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
