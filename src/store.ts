@@ -421,15 +421,20 @@ export class MemoryStore implements MemoryStorePort {
       return e;
     });
 
+    // P2: collapse in-batch duplicate ids (latest-wins) BEFORE writing. Two entries
+    // with the same (scope,text) → same deterministic id; adding both would create a
+    // fresh dup-id pair in one shot (delete-set was deduped but the add was not).
+    const dedupedById = new Map<string, MemoryEntry>();
+    for (const e of enrichedEntries) dedupedById.set(e.id, e); // later occurrence wins
+    const toWrite = [...dedupedById.values()];
+
     try {
       await withWriteLock("store-write", async () => {
         // P0-1/P0-2: idempotent batch write under the global store-write lock —
-        // delete any existing rows for these ids, then add. Dedup ids within the
-        // batch so the delete IN-clause matches exactly the rows we re-add.
-        const ids = [...new Set(enrichedEntries.map(e => e.id))];
-        const inList = ids.map(id => `'${escapeSqlLiteral(id)}'`).join(", ");
+        // delete any existing rows for these ids, then add the deduped set.
+        const inList = [...dedupedById.keys()].map(id => `'${escapeSqlLiteral(id)}'`).join(", ");
         await this.table!.delete(`id IN (${inList})`).catch(() => undefined);
-        await this.table!.add(enrichedEntries);
+        await this.table!.add(toWrite);
       }, { expireMs: 30_000 });
     } catch (err: any) {
       const code = err.code || "";
@@ -438,7 +443,7 @@ export class MemoryStore implements MemoryStorePort {
         `Failed to batch store ${entries.length} memories in "${this.config.dbPath}": ${code} ${message}`
       );
     }
-    return fullEntries.length;
+    return toWrite.length;
   }
 
   /**

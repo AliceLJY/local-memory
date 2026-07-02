@@ -88,6 +88,20 @@ describe("store P0-2 idempotency (upsert-backed store/storeBatch)", () => {
     expect(byId[0].text).toBe("batch-a-updated");
   });
 
+  it("storeBatch() collapses in-batch duplicate ids (latest-wins) into one row", async () => {
+    const store = makeStore();
+    const scope = "project:upsert-test";
+    const stored = await store.storeBatch([
+      { text: "dup-in-batch", vector: [1, 0, 0], category: "entities", scope, importance: 0.3, metadata: "{}" },
+      { text: "dup-in-batch", vector: [1, 0, 0], category: "entities", scope, importance: 0.8, metadata: "{}" },
+    ]);
+    expect(stored).toBe(1); // two same-(scope,text) entries collapse to one
+    const rows = await store.list([scope]);
+    const target = rows.filter((r) => r.text === "dup-in-batch");
+    expect(target.length).toBe(1);
+    expect(target[0].importance).toBeCloseTo(0.8, 5); // last occurrence wins
+  });
+
   it("storeBatch() without ids still stores distinct entries", async () => {
     const store = makeStore();
     const scope = "project:upsert-test";
