@@ -487,12 +487,9 @@ registerTool(
     );
 
     if (!result.success) {
-      return {
-        content: [{
-          type: "text" as const,
-          text: `❌ Forget failed: ${result.error}`,
-        }],
-      };
+      // P1-7 C 类收尾：写操作逻辑失败改抛出，进 runToolSafely 统一层带 isError + reason_code，
+      // 不再当「看起来成功」的普通文本返回（原样抛 result.error 保留失败原因）。
+      throw new Error(result.error || "forget_memory failed");
     }
 
     const lines = [
@@ -648,49 +645,47 @@ registerTool(
   },
   async ({ id, level }) => {
     const { store } = getComponents();
-    try {
-      const entry = await store.getById(id);
-      if (!entry) {
-        return {
-          content: [{ type: "text" as const, text: `No memory found with ID: ${id}` }],
-        };
-      }
-
-      // Parse metadata for L0/L1/L2 content
-      let meta: Record<string, unknown> = {};
-      try {
-        meta = JSON.parse(entry.metadata || "{}");
-      } catch { /* malformed metadata, use raw text */ }
-
-      // Support both legacy short names (l0/l1) and current long names (l0_abstract/l1_overview/l2_content)
-      const l0 = typeof meta.l0_abstract === "string" ? meta.l0_abstract : typeof meta.l0 === "string" ? meta.l0 : null;
-      const l1 = typeof meta.l1_overview === "string" ? meta.l1_overview : typeof meta.l1 === "string" ? meta.l1 : null;
-      const l2 = typeof meta.l2_content === "string" ? meta.l2_content : entry.text;
-
-      let content: string;
-      if (level === "overview" && l1) {
-        content = `## ${entry.category} (L1 Overview)\n\n${l1}`;
-      } else {
-        content = `## ${entry.category} (Full Content)\n\n${l2}`;
-      }
-
-      const header = [
-        `**ID**: ${entry.id}`,
-        `**Category**: ${entry.category}`,
-        `**Scope**: ${entry.scope}`,
-        `**Importance**: ${entry.importance}`,
-        `**Created**: ${new Date(entry.timestamp).toISOString()}`,
-        l0 ? `**Abstract**: ${l0}` : null,
-      ].filter(Boolean).join("\n");
-
+    // P1-7 第二阶段：不设外层 catch —— store.getById 的真错误（LanceDB 故障等）直接抛给
+    // runToolSafely 归类为 store_error/isError，让 agent 能判断重试/上报。旧的外层 catch 把
+    // 主操作错误吞成「看起来成功」的普通文本（无 isError），比不 catch 更糟。内层 :663
+    // metadata 解析兜底保留（best-effort，非主操作）。
+    const entry = await store.getById(id);
+    if (!entry) {
       return {
-        content: [{ type: "text" as const, text: `${header}\n\n${content}` }],
-      };
-    } catch (err) {
-      return {
-        content: [{ type: "text" as const, text: `Error drilling down: ${String(err)}` }],
+        content: [{ type: "text" as const, text: `No memory found with ID: ${id}` }],
       };
     }
+
+    // Parse metadata for L0/L1/L2 content
+    let meta: Record<string, unknown> = {};
+    try {
+      meta = JSON.parse(entry.metadata || "{}");
+    } catch { /* malformed metadata, use raw text */ }
+
+    // Support both legacy short names (l0/l1) and current long names (l0_abstract/l1_overview/l2_content)
+    const l0 = typeof meta.l0_abstract === "string" ? meta.l0_abstract : typeof meta.l0 === "string" ? meta.l0 : null;
+    const l1 = typeof meta.l1_overview === "string" ? meta.l1_overview : typeof meta.l1 === "string" ? meta.l1 : null;
+    const l2 = typeof meta.l2_content === "string" ? meta.l2_content : entry.text;
+
+    let content: string;
+    if (level === "overview" && l1) {
+      content = `## ${entry.category} (L1 Overview)\n\n${l1}`;
+    } else {
+      content = `## ${entry.category} (Full Content)\n\n${l2}`;
+    }
+
+    const header = [
+      `**ID**: ${entry.id}`,
+      `**Category**: ${entry.category}`,
+      `**Scope**: ${entry.scope}`,
+      `**Importance**: ${entry.importance}`,
+      `**Created**: ${new Date(entry.timestamp).toISOString()}`,
+      l0 ? `**Abstract**: ${l0}` : null,
+    ].filter(Boolean).join("\n");
+
+    return {
+      content: [{ type: "text" as const, text: `${header}\n\n${content}` }],
+    };
   },
 );
 

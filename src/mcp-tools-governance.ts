@@ -388,14 +388,14 @@ registerTool(
     const text = (() => {
       switch (action) {
         case "add": {
-          if (!trigger || !expansions?.length) return "add 需要 trigger 与 expansions。";
+          if (!trigger || !expansions?.length) throw new Error("invalid input: manage_alias add 需要 trigger 与 expansions");
           const result = upsertUserAlias(trigger, expansions);
           return result.ok
             ? `${result.action}: "${result.entry.trigger}" → [${result.entry.expansions.join(", ")}](写入 ${aliasMapFilePath()},BM25 通道立即生效)`
             : `拒绝: ${result.reason}`;
         }
         case "remove": {
-          if (!trigger) return "remove 需要 trigger。";
+          if (!trigger) throw new Error("invalid input: manage_alias remove 需要 trigger");
           return removeUserAlias(trigger)
             ? `removed: "${trigger}"`
             : `未找到 trigger "${trigger}"(只能删用户规则;builtin 规则在 src/aliases.ts)`;
@@ -411,7 +411,7 @@ registerTool(
           ].join("\n");
         }
         case "explain": {
-          if (!query) return "explain 需要 query。";
+          if (!query) throw new Error("invalid input: manage_alias explain 需要 query");
           const builtinMatched = explainAliasExpansion(query);
           const userMatched = explainUserAliases(query);
           return [
