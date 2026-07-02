@@ -22,6 +22,7 @@ import { maybeRunGc, type GcResult, type AutoGcConfig, DEFAULT_AUTO_GC_CONFIG } 
 import { getWriteCount, resetWriteCount } from "./activity-counter.js";
 import { deriveUsageStatus, getUsageMetadata, isUsageSignalActive } from "./usage-tracker.js";
 import { isActiveMemory } from "./memory-evolution.js";
+import { withLock } from "./distill-lock.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -76,7 +77,7 @@ export interface DreamResult {
 // Pipeline
 // ---------------------------------------------------------------------------
 
-export async function runDream(params: {
+async function runDreamInner(params: {
   store: MemoryStorePort;
   llm: LLMClient | null;
   embedder: Pick<Embedder, "embedPassage">;
@@ -84,9 +85,12 @@ export async function runDream(params: {
   config?: Partial<DreamConfig>;
   /** Skip the minimum-writes gate (force run) */
   force?: boolean;
+  /** Override the activity-counter stats file (defaults to <dataDir>/activity-stats.json). */
+  activityStatsPath?: string;
 }): Promise<DreamResult> {
   const { store, llm, embedder, scope, force = false } = params;
   const config = { ...DEFAULT_DREAM_CONFIG, ...params.config };
+  const statsCfg = params.activityStatsPath ? { statsPath: params.activityStatsPath } : undefined;
   const phases: DreamPhaseResult[] = [];
 
   const stats = {
@@ -103,7 +107,7 @@ export async function runDream(params: {
   // =========================================================================
   // Phase 1: Orient — assess current memory state
   // =========================================================================
-  const writeCount = getWriteCount();
+  const writeCount = getWriteCount(scope, statsCfg);
   stats.writesSinceLastDream = writeCount;
 
   const storeStats = await store.stats([scope]);
@@ -167,7 +171,7 @@ export async function runDream(params: {
   if (active.length < config.minClusterSize) {
     phases.push({ phase: "consolidate", detail: "skipped — too few active entries" });
     phases.push({ phase: "prune", detail: "skipped — too few entries for GC" });
-    resetWriteCount();
+    resetWriteCount(scope, statsCfg);
     return { ran: true, reason: "completed_early", phases, stats };
   }
 
@@ -175,36 +179,44 @@ export async function runDream(params: {
   // Phase 3: Consolidate — cluster, merge, generate insights + patterns
   // =========================================================================
 
-  // 3a: Deterministic consolidation (merge near-duplicates, link clusters)
-  const engine = new ConsolidationEngine(store, {
-    ...DEFAULT_CONSOLIDATION_CONFIG,
-    clusterThreshold: config.clusterThreshold,
-    maxEntriesPerRun: config.maxEntriesPerRun,
-  });
-  const consolidation = await engine.run(scope);
-  stats.clustersFound += consolidation.clustersFound;
-  stats.mergedCount += consolidation.mergedCount;
-
-  // 3b: LLM-driven cluster consolidation (insights + patterns) — requires LLM
-  if (llm) {
-    const clusterResult = await clusterAndConsolidate({
-      entries: active,
-      embedder,
-      llm,
-      store,
-      scope,
-      minClusterSize: config.minClusterSize,
-      clusterThreshold: config.clusterThreshold - 0.07, // slightly lower for semantic clustering
-      extractPatterns: config.extractPatterns,
+  // P2 (codex): run the consolidation phase under the scope's consolidate lock so a
+  // standalone consolidate_memories on the same scope can't run concurrently with the
+  // dream's own consolidation. Nested inside the dream lock (dream → consolidate →
+  // store-write), consistent with the one-way lock order.
+  const consolidateOutcome = await withLock(`consolidate-${scope}`, async () => {
+    // 3a: Deterministic consolidation (merge near-duplicates, link clusters)
+    const engine = new ConsolidationEngine(store, {
+      ...DEFAULT_CONSOLIDATION_CONFIG,
+      clusterThreshold: config.clusterThreshold,
+      maxEntriesPerRun: config.maxEntriesPerRun,
     });
-    stats.clustersFound += clusterResult.clustersFound;
-    stats.insightsGenerated = clusterResult.insightsGenerated;
-    stats.patternsExtracted = clusterResult.patternsExtracted;
-  }
+    const consolidation = await engine.run(scope);
+    stats.clustersFound += consolidation.clustersFound;
+    stats.mergedCount += consolidation.mergedCount;
+
+    // 3b: LLM-driven cluster consolidation (insights + patterns) — requires LLM
+    if (llm) {
+      const clusterResult = await clusterAndConsolidate({
+        entries: active,
+        embedder,
+        llm,
+        store,
+        scope,
+        minClusterSize: config.minClusterSize,
+        clusterThreshold: config.clusterThreshold - 0.07, // slightly lower for semantic clustering
+        extractPatterns: config.extractPatterns,
+      });
+      stats.clustersFound += clusterResult.clustersFound;
+      stats.insightsGenerated = clusterResult.insightsGenerated;
+      stats.patternsExtracted = clusterResult.patternsExtracted;
+    }
+  }, { onBusy: "skip", expireMs: 600_000 });
 
   phases.push({
     phase: "consolidate",
-    detail: `${stats.clustersFound} clusters, ${stats.mergedCount} merged, ${stats.insightsGenerated} insights, ${stats.patternsExtracted} patterns`,
+    detail: consolidateOutcome.ran
+      ? `${stats.clustersFound} clusters, ${stats.mergedCount} merged, ${stats.insightsGenerated} insights, ${stats.patternsExtracted} patterns`
+      : `skipped — another process holds the consolidate lock for scope ${scope}`,
   });
 
   // =========================================================================
@@ -224,6 +236,47 @@ export async function runDream(params: {
   resetWriteCount();
 
   return { ran: true, phases, stats };
+}
+
+/**
+ * P0-1: run dream under a per-scope cross-process lock. Dream internally does
+ * consolidation + gc, so the lock sits at this outermost entry — no nested maintenance
+ * locks. If another of the 11 mcp-server processes holds the scope's dream lock, skip
+ * rather than queue: a redundant dream on a personal store is pure waste, and the next
+ * writer's dream picks up whatever this run skipped.
+ */
+export async function runDream(params: {
+  store: MemoryStorePort;
+  llm: LLMClient | null;
+  embedder: Pick<Embedder, "embedPassage">;
+  scope: string;
+  config?: Partial<DreamConfig>;
+  /** Skip the minimum-writes gate (force run) */
+  force?: boolean;
+  /** Override the activity-counter stats file (defaults to <dataDir>/activity-stats.json). */
+  activityStatsPath?: string;
+}): Promise<DreamResult> {
+  const outcome = await withLock(
+    `dream-${params.scope}`,
+    () => runDreamInner(params),
+    { onBusy: "skip", expireMs: 600_000 },
+  );
+  if (outcome.ran) return outcome.result;
+  return {
+    ran: false,
+    reason: "locked_by_another_process",
+    phases: [{ phase: "orient", detail: `another process holds the dream lock for scope ${params.scope}` }],
+    stats: {
+      totalMemories: 0,
+      activeMemories: 0,
+      writesSinceLastDream: 0,
+      clustersFound: 0,
+      insightsGenerated: 0,
+      patternsExtracted: 0,
+      mergedCount: 0,
+      archivedCount: 0,
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------

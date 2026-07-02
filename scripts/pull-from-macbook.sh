@@ -44,7 +44,7 @@ SSH_OPTS="ssh -o ProxyCommand=none -o ConnectTimeout=30 -o ServerAliveInterval=2
 
 # 2. rsync CC projects（含全部子目录）
 log "→ rsync CC projects"
-rsync -avz --partial --timeout=120 \
+rsync -avz --partial --rsync-path=/opt/homebrew/bin/rsync --timeout=120 \
   --include='*/' --include='*.jsonl' --exclude='*' \
   -e "$SSH_OPTS" \
   mac:~/.claude/projects/ \
@@ -53,7 +53,7 @@ rsync -avz --partial --timeout=120 \
 
 # 3. rsync Codex sessions
 log "→ rsync Codex sessions"
-rsync -avz --partial --timeout=120 \
+rsync -avz --partial --rsync-path=/opt/homebrew/bin/rsync --timeout=120 \
   --include='*/' --include='*.jsonl' --exclude='*' \
   -e "$SSH_OPTS" \
   mac:~/.codex/sessions/ \
@@ -62,7 +62,7 @@ rsync -avz --partial --timeout=120 \
 
 # 3b. rsync Codex archived_sessions（App 内归档会把文件移到此目录，不拉会漏）
 log "→ rsync Codex archived_sessions"
-rsync -avz --partial --timeout=120 \
+rsync -avz --partial --rsync-path=/opt/homebrew/bin/rsync --timeout=120 \
   --include='*/' --include='*.jsonl' --exclude='*' \
   -e "$SSH_OPTS" \
   mac:~/.codex/archived_sessions/ \
@@ -72,7 +72,7 @@ rsync -avz --partial --timeout=120 \
 # 4. rsync Codex session_index（用于 mini 端合并双机索引）
 if ssh -o ConnectTimeout=5 mac 'test -f ~/.codex/session_index.jsonl' 2>/dev/null; then
   log "→ rsync Codex session_index"
-  rsync -avz --partial --timeout=60 \
+  rsync -avz --partial --rsync-path=/opt/homebrew/bin/rsync --timeout=60 \
     -e "$SSH_OPTS" \
     mac:~/.codex/session_index.jsonl \
     ~/.codex/session_index.macbook.jsonl \
@@ -112,6 +112,27 @@ PY
 fi
 
 register_codex_projectless_threads
+
+# 4c. rsync Claude Desktop（local agent mode）本地对话 → data/desktop-import
+#     desktop app 跑的 CC/local agent 对话在 ~/Library/Application Support/Claude/
+#     local-agent-mode-sessions/<...>/.claude/projects/<...>/*.jsonl，标准 projects rsync 扫不到。
+#     扁平化到 data/desktop-import/，复用现成 desktop 通道（config.sources.desktop / --source all）。
+#     ⚠️ -s/--protect-args 处理远程路径空格(Application Support)，但它会阻止远程展开 ~，
+#     所以远程必须用绝对路径($HOME 本地展开，双机 home 同为 $HOME)，不能用 ~。
+log "→ rsync Claude Desktop local-agent 对话"
+DESKTOP_IMPORT="$HOME/recallnest/data/desktop-import"
+DESKTOP_STAGING="$HOME/.cache/desktop-agent-staging"
+mkdir -p "$DESKTOP_IMPORT" "$DESKTOP_STAGING"
+rsync -az --partial --rsync-path=/opt/homebrew/bin/rsync --timeout=180 -s --prune-empty-dirs \
+  --include='*/' --exclude='audit.jsonl' --include='*.jsonl' --exclude='*' \
+  -e "$SSH_OPTS -o BatchMode=yes" \
+  "mac:$HOME/Library/Application Support/Claude/local-agent-mode-sessions/" \
+  "$DESKTOP_STAGING/" \
+  >> "$ROTATING_LOG" 2>&1 || { EC=$?; log "⚠️ Desktop rsync 失败 exit=$EC（不阻塞，已拉部分仍 ingest）"; }
+# 扁平化（cli.ts desktop 分支对该目录单层 readdirSync；uuid 文件名全局唯一，无碰撞）
+DESKTOP_N=$(find "$DESKTOP_STAGING" -name '*.jsonl' ! -name 'audit.jsonl' 2>/dev/null | wc -l | tr -d ' ')
+find "$DESKTOP_STAGING" -name '*.jsonl' ! -name 'audit.jsonl' -exec cp -p {} "$DESKTOP_IMPORT/" \; 2>/dev/null
+log "Desktop 对话扁平化 ${DESKTOP_N} 个 jsonl → data/desktop-import"
 
 # 5. 触发 incremental-ingest（无论上面有没有 partial 失败，已拉到的部分也值得 ingest）
 if [ $EC -eq 0 ]; then

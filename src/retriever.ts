@@ -219,8 +219,15 @@ export const DEFAULT_CATEGORY_MIN_SCORES: Record<string, number> = {
   patterns: 0.45,
 };
 
+// P1.2（2026-06-25）：默认 vector-only。canary eval 实测个人记忆库 vector 召回质量全面优于
+// hybrid（robustness 带 scope WITH 6/12 + 不带 scope WITHOUT 10/12，完胜 hybrid 的 3/9；BM25 在
+// 高度同质的个人记忆里是净噪声，会把 vector 本应 top 的目标如 dbcb317a 挤掉）。改频率层救低频
+// 目标实测是死结（动 hotness 必伤靠 hotness 上位的记忆）。hybrid 路径代码全保留，mode 改回
+// "hybrid" 即可切换（注：multiHopExpand 仍硬编码走 hybrid，默认 off，config.retrieval.multiHop
+// 开了会破纯 vector）。数据盲区：canary 全是语义 query，未覆盖 BM25 强项的精确关键词/token 召回
+// （变量名 / commit hash / alias-map 昵称）——待补 exact-token canary 验证。
 export const DEFAULT_RETRIEVAL_CONFIG: RetrievalConfig = {
-  mode: "hybrid",
+  mode: "vector",
   vectorWeight: 0.7,
   bm25Weight: 0.3,
   minScore: 0.3,
@@ -236,6 +243,30 @@ export const DEFAULT_RETRIEVAL_CONFIG: RetrievalConfig = {
   timeDecayHalfLifeDays: 60,
   hotnessWeight: 0,
 };
+
+/**
+ * P1.2+: 检测 query 是否含「精确 token」——大写常量 / commit hash / 文件名 / snake/camelCase /
+ * 低元音 ID（如 rwmjhb）。这类 token vectorOnly 抓不到（embedding 做语义相似非精确匹配，跟语言
+ * 无关：实测纯/中文/中英混 query 都漏靠 token 区分的目标），需 BM25 兜底。刻意避开元音正常的普通词
+ * （mem0/recallnest/GitHub），避免日常语义 query 误触发 BM25 噪声。
+ */
+export function hasExactToken(query: string): boolean {
+  for (const t of query.split(/[\s，。、；：（）()【】「」"'`?？!！]+/)) {
+    if (t.length < 5) continue;
+    // 全大写 + 下划线常量（必须含下划线，避免 JSON/HTTP/GitHub 等普通缩写/驼峰误触发）
+    if (/^[A-Z][A-Z0-9]*_[A-Z0-9_]+$/.test(t)) return true;                   // DEDUP_HARD_THRESHOLD
+    // snake_case 标识符（含下划线）
+    if (/^[a-z][a-z0-9]*_[a-z0-9_]+$/i.test(t)) return true;                  // capture_engine
+    // 文件名（基名 + 代码扩展名）
+    if (/^[\w./-]+\.(ts|tsx|js|jsx|py|md|sh|json|sql|go|rs|java|cpp|yml|yaml|toml)$/i.test(t)) return true;  // capture-heuristic.ts
+    // hex commit hash（7-40，含数字+字母，纯 hex）
+    if (/^[0-9a-f]{7,40}$/i.test(t) && /[0-9]/.test(t) && /[a-f]/i.test(t)) return true;  // dd12fb5
+    // 注：camelCase（GitHub/TypeScript）与低元音 ID（rwmjhb/pytest/nginx）两条宽规则已移除——
+    // 前者误伤日常技术 query 引回 BM25 噪声；rwmjhb 类纯小写 ID 即便触发，fts 中英混分词也召回不到
+    // （根因在 tokenizer，是独立 backlog），靠中英一起 query 的中文锚点已能补回。
+  }
+  return false;
+}
 
 // ============================================================================
 // Utility Functions
@@ -766,8 +797,16 @@ export class MemoryRetriever {
     }
 
     // P-omitted: 快照 finalize 阶段因 limit 截断的达标结果数（提高 limit 可见）。
-    // 必须在后续 validity/topicTag filter 创建新数组、丢失 ResultSet 属性之前读取。
+    // 必须在后续 validity/topicTag filter（以及 BM25 补偿等换数组操作）丢失 ResultSet 属性之前读取。
     let omittedByLimit = (results as RetrievalResultSet).omitted?.count ?? 0;
+
+    // P1.2+: exact-token BM25 补偿——query 含精确 token（大写常量/commit hash/.ts 文件名/camelCase/
+    // 低元音 ID 如 rwmjhb）时，vector 漏掉的精确命中用 BM25 补回（vectorOnly 做语义相似、不做精确
+    // 字符串匹配，是 embedding 本质，跟语言无关）。普通词（mem0/recallnest/GitHub）不触发，日常
+    // 语义召回不受影响。
+    if (hasExactToken(rawQuery)) {
+      results = await this.supplementExactTokenWithBm25(query, results, safeLimit, scopeFilter, category, includeArchived);
+    }
 
     // LME-2: Multi-hop retrieval — extract entities from first-pass results,
     // run focused follow-up queries, merge to improve cross-session coverage.
@@ -866,6 +905,36 @@ export class MemoryRetriever {
     }
 
     return resultSet;
+  }
+
+  /**
+   * P1.2+: exact-token BM25 补偿。vectorOnly 主路径后，若 query 含精确 token，用 BM25 精确匹配把
+   * vector 漏掉的命中补回。hasFtsSupport 在 vectorOnly 触发 store init 后为真；fake store 为假时跳过。
+   * bm25 精确命中提到结果前（exact-token 意图=精确优先），vector 语义结果跟后，去重后 slice limit。
+   */
+  private async supplementExactTokenWithBm25(
+    query: string,
+    vectorResults: RetrievalResult[],
+    limit: number,
+    scopeFilter?: string[],
+    category?: string,
+    includeArchived?: boolean,
+  ): Promise<RetrievalResult[]> {
+    if (!this.store.hasFtsSupport) return vectorResults;
+    const ftsQuery = tokenizeFts(expandQuery(query), detectLang(query));
+    const bm25 = await this.runBM25Search(ftsQuery, Math.max(limit, 5), scopeFilter, category, includeArchived);
+    const vecIds = new Set(vectorResults.map(r => r.entry.id));
+    const supplements = bm25
+      .filter(b => !vecIds.has(b.entry.id))
+      .filter(b => isActiveMemory(b.entry.metadata))   // 排掉 superseded/archived/consolidated（补偿绕过了 finalize 的尾部过滤，这里补回 active 校验）
+      .slice(0, 3)
+      .map(b => ({
+        entry: b.entry,
+        score: b.score,
+        sources: { bm25: { score: b.score, rank: b.rank } },
+      } as RetrievalResult));
+    if (supplements.length === 0) return vectorResults;
+    return [...supplements, ...vectorResults].slice(0, limit);
   }
 
   /**

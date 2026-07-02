@@ -2,7 +2,6 @@ import type { Embedder } from "./embedder.js";
 import { detectLang, tokenizeFts } from "./language-hook.js";
 import { generateAnchor } from "./anchor-generator.js";
 import { extractErrorSignatures } from "./error-signature.js";
-import { incrementWriteCount } from "./activity-counter.js";
 import { verifyWrite } from "./write-verifier.js";
 // batchInternalDedup is available in ingest.ts for large-batch scenarios;
 // persistMemoryBatch relies on per-item conflict detection (A-2) instead.
@@ -1043,14 +1042,9 @@ export async function persistMemory(
     // Audit must never block memory writes
   }
 
-  // HP-3: Activity counter — track non-dedup writes for distill trigger
-  if (disposition !== "deduped") {
-    try {
-      incrementWriteCount();
-    } catch {
-      // Activity tracking must never block memory writes
-    }
-  }
+  // HP-3 activity counter moved to the store layer (store/upsert/storeBatch count per
+  // scope): that is the necessary chokepoint for every write source (capture/ingest/
+  // store_memory/consolidation), and per-scope counts drive per-scope dream activation.
 
   // HP-2: Post-write verification — async, non-blocking
   if (disposition !== "deduped" && deps.store.get) {

@@ -28,11 +28,14 @@
     }
   },
   "retrieval": {
-    "mode": "hybrid",
+    "mode": "vector",
     "vectorWeight": 0.7,
     "bm25Weight": 0.3,
     "recencyHalfLifeDays": 30,
     "timeDecayHalfLifeDays": 120,
     "hardMinScore": 0.3
+  },
+  "scopeRelations": {
+    "project:example-a": ["project:example-b"]
   }
 }

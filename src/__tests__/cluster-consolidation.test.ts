@@ -187,6 +187,76 @@ describe("clusterAndConsolidate", () => {
     }
   });
 
+  // P0-2/P1-2: insight/pattern idempotency — deterministic id from source cluster ids.
+  it("re-running on the same cluster yields a stable, deterministic insight id", async () => {
+    const entries = [
+      makeEntry({ id: "a", text: "TypeScript is great for large projects", vector: [0.9, 0.1, 0], importance: 0.8 }),
+      makeEntry({ id: "b", text: "TypeScript helps with code safety", vector: [0.88, 0.12, 0], importance: 0.7 }),
+      makeEntry({ id: "c", text: "TypeScript improves developer experience", vector: [0.92, 0.08, 0], importance: 0.6 }),
+    ];
+    const llm = createMockLLM(() => "TypeScript benefits for development");
+    const embedder = createMockEmbedder([0.5, 0.5, 0]);
+
+    const run1 = createMockStore();
+    await clusterAndConsolidate({
+      entries, embedder, llm: llm as unknown as LLMClient, store: run1.store,
+      scope: "project:test", minClusterSize: 3, clusterThreshold: 0.75,
+    });
+    const run2 = createMockStore();
+    await clusterAndConsolidate({
+      entries, embedder, llm: llm as unknown as LLMClient, store: run2.store,
+      scope: "project:test", minClusterSize: 3, clusterThreshold: 0.75,
+    });
+
+    // Same source cluster ⇒ identical deterministic id across runs (upsert dedups downstream).
+    expect(run1.stored[0].id).toBe(run2.stored[0].id);
+    // Must be the engine-supplied deterministic id, not the mock counter fallback.
+    expect(run1.stored[0].id).not.toMatch(/^insight-\d+$/);
+  });
+
+  it("an upsert-like (dedup-by-id) store keeps a single insight across repeated runs", async () => {
+    const entries = [
+      makeEntry({ id: "a", text: "TypeScript is great for large projects", vector: [0.9, 0.1, 0], importance: 0.8 }),
+      makeEntry({ id: "b", text: "TypeScript helps with code safety", vector: [0.88, 0.12, 0], importance: 0.7 }),
+      makeEntry({ id: "c", text: "TypeScript improves developer experience", vector: [0.92, 0.08, 0], importance: 0.6 }),
+    ];
+    const llm = createMockLLM(() => "TypeScript benefits for development");
+    const embedder = createMockEmbedder([0.5, 0.5, 0]);
+
+    const byId = new Map<string, MemoryEntry>();
+    const dedupStore: Pick<MemoryStore, "store" | "update"> = {
+      async store(entry) {
+        const full = {
+          ...entry,
+          id: entry.id || `insight-${byId.size}`,
+          timestamp: Date.now(),
+          metadata: entry.metadata || "{}",
+        } as MemoryEntry;
+        byId.set(full.id, full); // same id overwrites (upsert semantics)
+        return full;
+      },
+      async update(id, upd) {
+        return { id, text: "", vector: [], category: "events", scope: "project:test", importance: 0.5, timestamp: Date.now(), metadata: upd.metadata || "{}" } as MemoryEntry;
+      },
+    };
+
+    const params = {
+      entries, embedder, llm: llm as unknown as LLMClient, store: dedupStore,
+      scope: "project:test", minClusterSize: 3, clusterThreshold: 0.75,
+    };
+    await clusterAndConsolidate(params);
+    await clusterAndConsolidate(params);
+
+    const insights = [...byId.values()].filter((e) => {
+      try {
+        return JSON.parse(e.metadata!).cluster_insight === true;
+      } catch {
+        return false;
+      }
+    });
+    expect(insights.length).toBe(1);
+  });
+
   it("skips non-active entries", async () => {
     const entries = [
       makeEntry({ id: "a", text: "active memory", vector: [0.9, 0.1, 0] }),

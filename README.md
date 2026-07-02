@@ -153,6 +153,7 @@ bun run src/ui-server.ts
 | **Session Distiller** | 3-layer conversation compression: microcompact → LLM summary → knowledge extraction |
 | **Conversation Import** | Import from Claude Code, Claude.ai, ChatGPT, Slack, and plaintext |
 | **Topic Tags** | Intra-scope topic partitioning — auto-detected, filterable in search |
+| **Related Scope Sidecar** | Opt-in `includeRelatedScopes` search over configured `scopeRelations`, shown separately from the main scoped ranking |
 
 ### Memory Lifecycle & Governance
 
@@ -218,6 +219,8 @@ v2.1 added philosophy-informed behavior; v2.2 closes the last three engine-layer
 - **Interference Detection + Active Forgetting Gate** *(PI-LLM / SleepGate)* — Semantic cluster detection identifies groups of near-duplicate memories competing for retrieval. Enhanced RIF keeps only top-K (default 3) per cluster; extras are demoted 50% instead of removed. Write-time pre-warning: when a scope accumulates ≥5 high-similarity active memories, the weakest is flagged `pending_review`. `data_checkup` reports interference density.
 
 - **Temporal Validity Windows** *(TSM / TiMem / Zep)* — `store_memory` accepts `validUntil` (expiration) and `eventTime` (when the event actually happened). `search_memory` supports `validAt` (point-in-time query) and `includeExpired` (demote 80% instead of hide). Auto-GC applies 2× decay acceleration to expired memories.
+
+- **Usage-Adjusted Auto-GC** *(off by default)* — `RECALLNEST_USAGE_DECAY=true` enables a GC-only cold-memory penalty when constructive retrieval is also active. Cold memories discount the frequency component instead of changing online retrieval ranking.
 
 ---
 

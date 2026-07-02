@@ -35,6 +35,12 @@ export interface LocalMemoryConfig {
   sources: Record<string, { path: string; glob: string; description: string }>;
   retrieval?: Partial<RetrievalConfig>;
   /**
+   * Opt-in cross-scope sidecar map for search_memory.
+   * Main scoped search remains isolated; callers must pass includeRelatedScopes
+   * before configured related scopes are queried and shown separately.
+   */
+  scopeRelations?: Record<string, string[]>;
+  /**
    * Default depth for auto-recall injection.
    * - "full": inject complete text (default, backward compatible)
    * - "l1": inject L1 overview from metadata (~500 tokens)

@@ -13,6 +13,7 @@
  */
 
 import { parseEmotion, isEmotionScoringEnabled } from "./memory-schema.js";
+import { computeUsageStatus } from "./usage-tracker.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -329,6 +330,16 @@ export function computeDecayScore(
   now?: number,
   metadata?: string,
 ): number {
+  return computeDecayScoreInternal(evo, importance, now, metadata, 1);
+}
+
+function computeDecayScoreInternal(
+  evo: EvolutionMetadata,
+  importance: number,
+  now: number | undefined,
+  metadata: string | undefined,
+  frequencyFactor: number,
+): number {
   const ts = now ?? Date.now();
 
   // Time decay (Weibull-ish exponential)
@@ -340,7 +351,7 @@ export function computeDecayScore(
   const recencyBoost = evo.lastAccessedAt
     ? Math.pow(0.5, Math.max(0, (ts - evo.lastAccessedAt) / 86_400_000) / 30) // 30-day half-life for recency
     : 0.5; // never accessed → neutral
-  const frequencyScore = Math.min(1, rawFreq * recencyBoost);
+  const frequencyScore = Math.min(1, rawFreq * recencyBoost) * Math.max(0, Math.min(1, frequencyFactor));
 
   const clampedImportance = Math.max(0, Math.min(1, importance));
 
@@ -362,4 +373,65 @@ export function computeDecayScore(
     FREQUENCY_WEIGHT_BASE * frequencyScore +
     IMPORTANCE_WEIGHT_BASE * clampedImportance
   );
+}
+
+function parseMetadataObject(metadata: string | undefined): Record<string, unknown> {
+  if (!metadata) return {};
+  try {
+    const parsed: unknown = JSON.parse(metadata);
+    return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function readUsageCounts(meta: Record<string, unknown>): { injection: number; use: number } {
+  const usage = meta.usage;
+  const usageObj = usage && typeof usage === "object" && !Array.isArray(usage)
+    ? usage as Record<string, unknown>
+    : {};
+  return {
+    injection: typeof meta.accessCount === "number" ? meta.accessCount : 0,
+    use: typeof usageObj.useCount === "number" ? usageObj.useCount : 0,
+  };
+}
+
+function isPendingProspectiveReminder(meta: Record<string, unknown>, now: number): boolean {
+  const prospective = meta.prospective;
+  if (!prospective || typeof prospective !== "object" || Array.isArray(prospective)) return false;
+  const obj = prospective as Record<string, unknown>;
+  if (obj.status !== "pending") return false;
+  if (typeof obj.expiresAt !== "string" || obj.expiresAt.length === 0) return true;
+  const expiresAt = Date.parse(obj.expiresAt);
+  return Number.isNaN(expiresAt) || expiresAt >= now;
+}
+
+function isUsageDecayProtected(meta: Record<string, unknown>, importance: number, now: number): boolean {
+  if (importance >= 0.95) return true;
+  if (typeof meta.promotedTo === "string" && meta.promotedTo.trim().length > 0) return true;
+  return isPendingProspectiveReminder(meta, now);
+}
+
+/**
+ * GC-only usage-adjusted decay score.
+ *
+ * Cold means "repeatedly surfaced but never actually cited"; in that case the
+ * frequency term is discounted instead of rewarding unhelpful exposure. This is
+ * intentionally separate from computeDecayScore(), which is still used by
+ * online retrieval ranking.
+ */
+export function computeUsageAdjustedDecayScore(
+  evo: EvolutionMetadata,
+  importance: number,
+  now?: number,
+  metadata?: string,
+): number {
+  const ts = now ?? Date.now();
+  const meta = parseMetadataObject(metadata);
+  const counts = readUsageCounts(meta);
+  const status = computeUsageStatus(counts.injection, counts.use);
+  const factor = status === "cold" && !isUsageDecayProtected(meta, importance, ts) ? 0.2 : 1;
+  return computeDecayScoreInternal(evo, importance, ts, metadata, factor);
 }

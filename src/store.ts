@@ -5,11 +5,13 @@
 import type * as LanceDB from "@lancedb/lancedb";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, accessSync, constants, mkdirSync, realpathSync, lstatSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { logWarn } from "./stderr-log.js";
 import type { DurableMemoryCategory } from "./memory-schema.js";
 import { matchesScopeFilter } from "./scope-policy.js";
 import { detectEmotionIfEnabled } from "./emotion-detector.js";
+import { withWriteLock } from "./distill-lock.js";
+import { incrementWriteCount } from "./activity-counter.js";
 import type { MemoryStorePort, MemoryStoreStats, MemoryStoreUpdate } from "./memory-store-port.js";
 
 // ============================================================================
@@ -378,7 +380,10 @@ export class MemoryStore implements MemoryStorePort {
     }
 
     try {
-      await this.table!.add([fullEntry]);
+      // P0-2: go through upsert (delete+add under the global store-write lock) rather
+      // than a bare table.add — with the deterministic id above, storing the same
+      // (scope,text) twice now yields one row, not a dup-id pair (fixes the append bug).
+      return await this.upsert(fullEntry);
     } catch (err: any) {
       const code = err.code || "";
       const message = err.message || String(err);
@@ -386,20 +391,21 @@ export class MemoryStore implements MemoryStorePort {
         `Failed to store memory in "${this.config.dbPath}": ${code} ${message}`
       );
     }
-    return fullEntry;
   }
 
   /**
    * Batch store multiple entries at once — much faster than individual store() calls.
    * LanceDB handles bulk inserts efficiently with a single index update.
    */
-  async storeBatch(entries: Omit<MemoryEntry, "id" | "timestamp">[]): Promise<number> {
+  async storeBatch(entries: (Omit<MemoryEntry, "id" | "timestamp"> & { id?: string })[]): Promise<number> {
     if (entries.length === 0) return 0;
     await this.ensureInitialized();
 
     const fullEntries: MemoryEntry[] = entries.map(entry => ({
       ...entry,
-      id: deterministicId(entry.scope, entry.text),
+      // P0-2: honor a caller-supplied id (consolidation insight/pattern idempotency),
+      // else the deterministic content id — unified with store() (was: always recompute).
+      id: entry.id ?? deterministicId(entry.scope, entry.text),
       timestamp: Date.now(),
       metadata: entry.metadata || "{}",
       language: entry.language || "en",
@@ -416,8 +422,20 @@ export class MemoryStore implements MemoryStorePort {
       return e;
     });
 
+    // P2: collapse in-batch duplicate ids (latest-wins) BEFORE writing. Two entries
+    // with the same (scope,text) → same deterministic id; adding both would create a
+    // fresh dup-id pair in one shot (delete-set was deduped but the add was not).
+    const dedupedById = new Map<string, MemoryEntry>();
+    for (const e of enrichedEntries) dedupedById.set(e.id, e); // later occurrence wins
+    const toWrite = [...dedupedById.values()];
+
     try {
-      await this.table!.add(enrichedEntries);
+      await withWriteLock("store-write", async () => {
+        // P0-1/P0-2/P1: atomic idempotent batch write via mergeInsert (no delete+add
+        // window a crash could tear). toWrite is already in-batch deduped by id above,
+        // so the merge key matches ≤1 existing row (given no pre-existing dup-id rows).
+        await this.table!.mergeInsert("id").whenMatchedUpdateAll().whenNotMatchedInsertAll().execute(toWrite);
+      }, { expireMs: 30_000 });
     } catch (err: any) {
       const code = err.code || "";
       const message = err.message || String(err);
@@ -425,7 +443,44 @@ export class MemoryStore implements MemoryStorePort {
         `Failed to batch store ${entries.length} memories in "${this.config.dbPath}": ${code} ${message}`
       );
     }
-    return fullEntries.length;
+    // Per-scope write counts drive dream activation. Best-effort — never block writes.
+    try {
+      const statsPath = this.activityStatsPath();
+      const countByScope = new Map<string, number>();
+      for (const e of toWrite) countByScope.set(e.scope, (countByScope.get(e.scope) ?? 0) + 1);
+      for (const [scope, n] of countByScope) incrementWriteCount(scope, n, { statsPath });
+    } catch { /* activity tracking is best-effort */ }
+    return toWrite.length;
+  }
+
+  /**
+   * P0-1/P0-2/P1: Idempotent, crash-atomic write of a fully-formed entry, serialized
+   * across processes.
+   *
+   * Uses mergeInsert("id") (same primitive as update()) so the write is atomic — no
+   * delete+add window that a crash between the two steps could tear, losing the row
+   * (P1). The global `store-write` lock still serializes concurrent merges across the
+   * 11 mcp-server processes so two whenNotMatched inserts can't both fire for the same
+   * id (the P0-1 race). "Same id overwrites" gives content-addressed idempotency to
+   * every store()/storeBatch() caller whose id is deterministicId(scope,text).
+   * Precondition: no pre-existing dup-id rows in the table (run the dedup migration
+   * scripts/cleanup-duplicate-ids.ts first) — else the merge key match is ambiguous.
+   */
+  /** Path to this store's activity-counter stats file, beside the LanceDB dir. */
+  private activityStatsPath(): string {
+    return join(dirname(this.config.dbPath), "activity-stats.json");
+  }
+
+  async upsert(entry: MemoryEntry): Promise<MemoryEntry> {
+    await this.ensureInitialized();
+    await withWriteLock("store-write", async () => {
+      await this.table!.mergeInsert("id").whenMatchedUpdateAll().whenNotMatchedInsertAll().execute([entry]);
+    }, { expireMs: 30_000 });
+    // Per-scope write count drives dream activation. Best-effort — never block a write.
+    try {
+      incrementWriteCount(entry.scope, 1, { statsPath: this.activityStatsPath() });
+    } catch { /* activity tracking is best-effort */ }
+    return entry;
   }
 
   /**

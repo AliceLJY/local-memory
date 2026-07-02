@@ -18,6 +18,7 @@
  */
 
 import type { MemoryEntry, MemorySearchResult } from "./store.js";
+import { deterministicId } from "./store.js";
 import type { MemoryStorePort } from "./memory-store-port.js";
 import { createVersionGroup } from "./version-manager.js";
 import { isActiveMemory, parseEvolution, buildSupersedeMetadata, buildConsolidatedMetadata, patchEvolution } from "./memory-evolution.js";
@@ -401,8 +402,13 @@ export async function clusterAndConsolidate(params: {
     // Embed the insight text
     const insightVector = await params.embedder.embedPassage(insight);
 
-    // Store the insight as a new memory
+    // Store the insight as a new memory. P0-2/P1-2: derive a deterministic id from the
+    // (sorted) source member ids so re-running dream/consolidate on the same cluster
+    // upserts the same insight row instead of appending a near-duplicate each run
+    // (the highest-frequency dup-id source). Cross-run stable because sourceIds are stable.
+    const sortedSourceIds = cluster.map(m => m.id).slice().sort();
     const insightEntry = await store.store({
+      id: deterministicId(scope, `cluster-insight:${sortedSourceIds.join(",")}`),
       text: insight,
       vector: insightVector,
       category: bestCat,
@@ -445,6 +451,7 @@ export async function clusterAndConsolidate(params: {
         const patternImportance = Math.min(maxImportance + 0.1, 1.0);
         const patternVector = await params.embedder.embedPassage(patternText);
         const patternEntry = await store.store({
+          id: deterministicId(scope, `cluster-pattern:${sortedSourceIds.join(",")}`),
           text: patternText,
           vector: patternVector,
           category: "patterns",

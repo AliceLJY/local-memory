@@ -7,6 +7,7 @@ import type { AuditLogger } from "./audit-log.js";
 import type { StoredMemoryRecord, DurableMemoryCategory } from "./memory-schema.js";
 import { persistMemory } from "./capture-engine.js";
 import { detectLang, getSessionPromptHook } from "./language-hook.js";
+import { withWriteLock } from "./distill-lock.js";
 
 // ============================================================================
 // Types
@@ -305,7 +306,14 @@ export async function distillSession(
   };
 
   if (shouldPersist && Object.keys(summaryResult.dimensions).length > 0) {
-    persistResult = await extractAndPersist(summaryResult, deps, scope);
+    // P0-1: serialize the persist phase per scope across processes. Wait (not skip) —
+    // skipping would drop this session's distilled knowledge when two sessions distill
+    // the same scope at once. Writes are fast and store-write already makes each write
+    // idempotent, so the brief wait is lossless; microcompact/summary above run unlocked.
+    persistResult = await withWriteLock(
+      `distill-${scope}`,
+      () => extractAndPersist(summaryResult, deps, scope),
+    );
   }
 
   return {

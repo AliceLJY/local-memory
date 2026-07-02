@@ -15,7 +15,7 @@ import type { WorkflowObservationInput } from "./workflow-observation-schema.js"
 import { WorkflowObservationStore } from "./workflow-observation-store.js";
 
 export type ProfileName = "default" | "writing" | "debug" | "fact-check";
-export type EvalMode = "retrieval" | "continuity";
+export type EvalMode = "retrieval" | "continuity" | "canary";
 
 export interface RetrievalEvalCase {
   name: string;
@@ -56,6 +56,47 @@ export interface ContinuityEvalCase {
   expectCasesAny?: string[];
   expectCheckpointAny?: string[];
   forbid?: string[];
+  notes?: string;
+}
+
+export interface CanaryEvalCase {
+  name: string;
+  query: string;
+  profile?: ProfileName;
+  scope?: string;
+  limit?: number;
+  /** A 类：该召回的 memory id（按 target id 算 rank） */
+  targets?: string[];
+  /** C 类：不该进 TopK 的干扰项 memory id */
+  hardNegatives?: string[];
+  /** 目标应进前几（默认 3） */
+  expectTopK?: number;
+  /** B 类新旧序：按此顺序排列，newer 在前，前者 rank 应小于后者 */
+  expectOrder?: string[];
+  /** D 类稳定偏好：召回文本命中任一要点即算对（不钉 id） */
+  expectContentAny?: string[];
+  /** 文本层禁词（沿用 retrieval 语义） */
+  forbid?: string[];
+  notes?: string;
+}
+
+export interface CanaryCaseReport {
+  mode: "canary";
+  name: string;
+  query: string;
+  profile: ProfileName;
+  score: number;
+  passed: boolean;
+  hitCount: number;
+  targetRanks: Array<{ id: string; rank: number | null }>;
+  top1Hit: boolean;
+  top3Hit: boolean;
+  forbiddenIdMatches: string[];
+  orderOk: boolean | null;
+  matchedContentAny: string[];
+  forbiddenMatches: string[];
+  topIds: string[];
+  topSnippet: string;
   notes?: string;
 }
 
@@ -100,7 +141,7 @@ export interface ContinuityCaseReport {
   notes?: string;
 }
 
-type EvalReport = RetrievalCaseReport | ContinuityCaseReport;
+type EvalReport = RetrievalCaseReport | ContinuityCaseReport | CanaryCaseReport;
 
 interface EvalArgs {
   mode: EvalMode;
@@ -144,7 +185,7 @@ function parseArgs(args: string[]): EvalArgs {
   const observationScopeIdx = args.indexOf("--observation-scope");
   const observationSourceIdx = args.indexOf("--observation-source");
   const modeRaw = modeIdx >= 0 ? args[modeIdx + 1] : "retrieval";
-  const mode = modeRaw === "continuity" ? "continuity" : "retrieval";
+  const mode: EvalMode = modeRaw === "continuity" ? "continuity" : modeRaw === "canary" ? "canary" : "retrieval";
 
   return {
     mode,
@@ -158,9 +199,9 @@ function parseArgs(args: string[]): EvalArgs {
 }
 
 function defaultCasesPath(mode: EvalMode): string {
-  return mode === "continuity"
-    ? resolve(metaDir(import.meta), "../eval/continuity/cases.json")
-    : resolve(metaDir(import.meta), "../eval/cases.json");
+  if (mode === "continuity") return resolve(metaDir(import.meta), "../eval/continuity/cases.json");
+  if (mode === "canary") return resolve(metaDir(import.meta), "../eval/cases-canary.json");
+  return resolve(metaDir(import.meta), "../eval/cases.json");
 }
 
 function loadCases<T>(mode: EvalMode, pathArg?: string): T[] {
@@ -217,6 +258,109 @@ export function scoreRetrievalCase(
     forbiddenMatches,
     topScopes: scopes.slice(0, 5),
     topSnippet,
+    notes: evalCase.notes,
+  };
+}
+
+export function scoreCanaryCase(
+  evalCase: CanaryEvalCase,
+  results: Array<{ entry: { id: string; text: string; scope: string; metadata?: string } }>,
+): CanaryCaseReport {
+  const profile = evalCase.profile || "default";
+  const ids = results.map((r) => r.entry.id);
+  const topK = evalCase.expectTopK ?? 3;
+  const limit = evalCase.limit ?? results.length;
+  const joined = results
+    .map((r) => `${r.entry.scope}\n${r.entry.text}\n${r.entry.metadata || ""}`)
+    .join("\n")
+    .toLowerCase();
+
+  // memory id 用前缀匹配：targets/expectOrder/hardNegatives 常写 8 位短前缀，
+  // 而召回结果的 entry.id 是完整 UUID（recallnest 惯例：≥8 hex 前缀即可定位）。
+  const idMatches = (fullId: string, target: string): boolean =>
+    fullId === target || fullId.startsWith(target);
+  const rankOf = (target: string): number | null => {
+    const idx = ids.findIndex((fullId) => idMatches(fullId, target));
+    return idx === -1 ? null : idx + 1;
+  };
+
+  // A 类：单目标命中
+  const targets = evalCase.targets || [];
+  const targetRanks = targets.map((id) => ({ id, rank: rankOf(id) }));
+  const top1Hit = targetRanks.some((t) => t.rank === 1);
+  const top3Hit = targetRanks.some((t) => t.rank !== null && t.rank <= Math.min(3, topK));
+
+  // C 类：干扰项进 TopK（limit 内）即违规（同样前缀匹配）
+  const forbiddenIdMatches = (evalCase.hardNegatives || []).filter((neg) => {
+    const rank = rankOf(neg);
+    return rank !== null && rank <= limit;
+  });
+
+  // B 类：新旧序，前者须召回且 rank 小于后者
+  let orderOk: boolean | null = null;
+  const order = evalCase.expectOrder || [];
+  if (order.length >= 2) {
+    orderOk = true;
+    for (let i = 0; i < order.length - 1; i += 1) {
+      const a = rankOf(order[i]);
+      const b = rankOf(order[i + 1]);
+      if (a === null) {
+        orderOk = false;
+        break;
+      }
+      if (b !== null && a >= b) {
+        orderOk = false;
+        break;
+      }
+    }
+  }
+
+  // D 类：内容要点命中
+  const matchedContentAny = matchedTerms(evalCase.expectContentAny, joined);
+
+  // 文本禁词
+  const forbiddenMatches = matchedTerms(evalCase.forbid, joined);
+
+  // 动态加权：只计 case 实际声明的维度
+  const parts: Array<{ weight: number; value: number }> = [];
+  if (targets.length > 0) {
+    const ranks = targetRanks.map((t) => t.rank).filter((r): r is number => r !== null);
+    const bestRank = ranks.length > 0 ? Math.min(...ranks) : null;
+    const targetScore = bestRank === null ? 0 : bestRank === 1 ? 1 : bestRank <= 3 ? 0.7 : 0.4;
+    parts.push({ weight: 0.5, value: targetScore });
+  }
+  if (orderOk !== null) {
+    parts.push({ weight: 0.2, value: orderOk ? 1 : 0 });
+  }
+  const contentAny = evalCase.expectContentAny || [];
+  if (contentAny.length > 0) {
+    parts.push({ weight: 0.3, value: matchedContentAny.length / contentAny.length });
+  }
+  const totalWeight = parts.reduce((sum, p) => sum + p.weight, 0);
+  let score = totalWeight > 0
+    ? parts.reduce((sum, p) => sum + p.weight * p.value, 0) / totalWeight
+    : (results.length > 0 ? 0.5 : 0);
+  if (forbiddenIdMatches.length > 0) score -= 0.3;
+  if (forbiddenMatches.length > 0) score -= 0.3;
+  score = Math.max(0, Math.min(1, score));
+
+  return {
+    mode: "canary",
+    name: evalCase.name,
+    query: evalCase.query,
+    profile,
+    score,
+    passed: score >= 0.7 && forbiddenIdMatches.length === 0 && forbiddenMatches.length === 0,
+    hitCount: results.length,
+    targetRanks,
+    top1Hit,
+    top3Hit,
+    forbiddenIdMatches,
+    orderOk,
+    matchedContentAny,
+    forbiddenMatches,
+    topIds: ids.slice(0, 5),
+    topSnippet: results[0] ? clip(results[0].entry.text) : "-",
     notes: evalCase.notes,
   };
 }
@@ -438,6 +582,50 @@ function markdownRetrievalReport(reports: RetrievalCaseReport[]): string {
   return lines.join("\n");
 }
 
+function markdownCanaryReport(reports: CanaryCaseReport[]): string {
+  const { passed, average } = summarizeReports(reports);
+  const top1 = reports.filter((r) => r.top1Hit).length;
+  const top3 = reports.filter((r) => r.top3Hit).length;
+
+  const lines = [
+    "# RecallNest Canary Eval",
+    "",
+    `- Generated: ${new Date().toISOString()}`,
+    `- Cases: ${reports.length}`,
+    `- Passed: ${passed}/${reports.length}`,
+    `- Average score: ${formatPercent(average)}`,
+    `- Top1 hit: ${top1}/${reports.length}`,
+    `- Top3 hit: ${top3}/${reports.length}`,
+    "",
+    "| Case | Profile | Score | Pass | Top1 | Top3 | Order | Forbid |",
+    "|------|---------|-------|------|------|------|-------|--------|",
+    ...reports.map((item) =>
+      `| ${item.name} | ${item.profile} | ${(item.score * 100).toFixed(0)}% | ${item.passed ? "yes" : "no"} | ${item.top1Hit ? "yes" : "-"} | ${item.top3Hit ? "yes" : "-"} | ${item.orderOk === null ? "-" : item.orderOk ? "ok" : "bad"} | ${item.forbiddenIdMatches.length + item.forbiddenMatches.length || "-"} |`,
+    ),
+    "",
+    "## Case Notes",
+    "",
+  ];
+
+  for (const item of reports) {
+    lines.push(`### ${item.name}`);
+    lines.push(`- Query: ${item.query}`);
+    lines.push(`- Score: ${(item.score * 100).toFixed(0)}% (${item.passed ? "pass" : "fail"})`);
+    lines.push(`- Target ranks: ${item.targetRanks.map((t) => `${t.id}=${t.rank ?? "miss"}`).join(", ") || "-"}`);
+    lines.push(`- Top1 / Top3: ${item.top1Hit ? "yes" : "no"} / ${item.top3Hit ? "yes" : "no"}`);
+    lines.push(`- Order ok: ${item.orderOk === null ? "n/a" : item.orderOk}`);
+    lines.push(`- Matched content: ${item.matchedContentAny.join(", ") || "-"}`);
+    lines.push(`- Forbidden id matches: ${item.forbiddenIdMatches.join(", ") || "-"}`);
+    lines.push(`- Forbidden term matches: ${item.forbiddenMatches.join(", ") || "-"}`);
+    lines.push(`- Top ids: ${item.topIds.join(", ") || "-"}`);
+    lines.push(`- Top snippet: ${item.topSnippet}`);
+    if (item.notes) lines.push(`- Notes: ${item.notes}`);
+    lines.push("");
+  }
+
+  return lines.join("\n");
+}
+
 function markdownContinuityReport(reports: ContinuityCaseReport[]): string {
   const { passed, average } = summarizeReports(reports);
 
@@ -513,6 +701,44 @@ export async function runRetrievalEval(
       if (cases.length > 1) {
         logInfo(
           `[INFO] retrieval-eval ${index + 1}/${cases.length} done: ${evalCase.name} ${formatPercent(report.score)} ${report.passed ? "pass" : "fail"}`,
+        );
+      }
+    } finally {
+      accessTracker.destroy();
+    }
+  }
+
+  return reports;
+}
+
+export async function runCanaryEval(
+  cases: CanaryEvalCase[],
+  deps: {
+    createEvalComponents?: EvalComponentFactory;
+  } = {},
+): Promise<CanaryCaseReport[]> {
+  const config = deps.createEvalComponents ? null : loadConfig();
+  const createEvalComponentsForCase = deps.createEvalComponents || createFreshEvalComponentsFactory(config!);
+  const reports: CanaryCaseReport[] = [];
+
+  for (const [index, evalCase] of cases.entries()) {
+    if (cases.length > 1) {
+      logInfo(`[INFO] canary-eval ${index + 1}/${cases.length}: ${evalCase.name}`);
+    }
+    const profileName = evalCase.profile || "default";
+    const { retriever, accessTracker } = createEvalComponentsForCase(profileName);
+    try {
+      const results = await retriever.retrieve({
+        query: evalCase.query,
+        limit: evalCase.limit || 8,
+        scopeFilter: evalCase.scope ? [evalCase.scope] : undefined,
+        source: "auto-recall",
+      });
+      const report = scoreCanaryCase(evalCase, results);
+      reports.push(report);
+      if (cases.length > 1) {
+        logInfo(
+          `[INFO] canary-eval ${index + 1}/${cases.length} done: ${evalCase.name} ${formatPercent(report.score)} ${report.passed ? "pass" : "fail"}`,
         );
       }
     } finally {
@@ -605,6 +831,25 @@ async function main() {
     }
 
     const output = markdownContinuityReport(reports);
+    writeOutput(args.outputPath, output);
+    console.log(output);
+    return;
+  }
+
+  if (args.mode === "canary") {
+    const cases = loadCases<CanaryEvalCase>("canary", args.casesPath);
+    const reports = await runCanaryEval(cases);
+    if (args.jsonMode) {
+      const payload = JSON.stringify({
+        mode: "canary",
+        generatedAt: new Date().toISOString(),
+        reports,
+      }, null, 2);
+      writeOutput(args.outputPath, payload);
+      console.log(payload);
+      return;
+    }
+    const output = markdownCanaryReport(reports);
     writeOutput(args.outputPath, output);
     console.log(output);
     return;

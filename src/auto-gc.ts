@@ -13,12 +13,16 @@ import type { MemoryStorePort } from "./memory-store-port.js";
 import {
   parseEvolution,
   computeDecayScore,
+  computeUsageAdjustedDecayScore,
   buildArchivedMetadata,
   isActiveMemory,
 } from "./memory-evolution.js";
 import { loadRetentionPolicy, shouldArchiveByPolicy } from "./retention-policy.js";
 import type { RetentionPolicy } from "./retention-policy.js";
 import type { AuditLogger } from "./audit-log.js";
+import * as envConfig from "./env-config.js";
+import { isUsageSignalActive } from "./usage-tracker.js";
+import { acquireLock, releaseLock, getLastDistillTime, stampLock, lockPathForKey } from "./distill-lock.js";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -86,15 +90,49 @@ export async function maybeRunGc(
     return { triggered: false, reason: "below_memory_threshold", archivedCount: 0, totalChecked: 0 };
   }
 
-  // Condition 2: enough time since last GC
-  const hoursSinceLastGc = (Date.now() - lastGcTimestamp) / 3_600_000;
+  // Condition 2: enough time since last GC. P0-1: the throttle is cross-process now —
+  // take the max of this process's in-memory timestamp and the shared gc-last stamp
+  // file's mtime. The old module-level var alone let each of the 11 mcp-server
+  // processes run gc on its own independent 24h clock.
+  const gcStampPath = lockPathForKey("gc-last");
+  const lastGc = Math.max(lastGcTimestamp, getLastDistillTime({ lockPath: gcStampPath }));
+  const hoursSinceLastGc = (Date.now() - lastGc) / 3_600_000;
   if (hoursSinceLastGc < config.minHoursSinceLastGc) {
     return { triggered: false, reason: "too_soon", archivedCount: 0, totalChecked: 0 };
   }
 
-  // All conditions met — run GC
-  lastGcTimestamp = Date.now();
+  // Concurrency guard: only one process scans the full corpus at a time. A process that
+  // passed the throttle in the same instant loses the O_EXCL race here and skips.
+  const gcRunLock = { lockPath: lockPathForKey("gc-run"), expireMs: 30 * 60_000 };
+  if (!acquireLock(gcRunLock)) {
+    return { triggered: false, reason: "locked_by_another_process", archivedCount: 0, totalChecked: 0 };
+  }
 
+  // All conditions met — run GC
+  lastGcTimestamp = Date.now(); // in-process immediate throttle
+
+  try {
+    const { archivedCount, totalChecked } = await runGcScan(store, config, retentionConfigDir, auditLogger);
+    // Stamp completion into the shared throttle marker (create-or-touch → mtime = now)
+    // so the other processes observe "last run" via getLastDistillTime.
+    stampLock({ lockPath: gcStampPath });
+    return { triggered: true, archivedCount, totalChecked };
+  } finally {
+    releaseLock(gcRunLock);
+  }
+}
+
+/**
+ * The full-corpus archive scan — the body of a triggered GC run. Extracted from
+ * maybeRunGc so the P0-1 lock/throttle wiring stays readable; the scan logic itself
+ * is unchanged.
+ */
+async function runGcScan(
+  store: MemoryStorePort,
+  config: AutoGcConfig,
+  retentionConfigDir: string | undefined,
+  auditLogger: AuditLogger | undefined,
+): Promise<{ archivedCount: number; totalChecked: number }> {
   const now = Date.now();
   let archivedCount = 0;
   let totalChecked = 0;
@@ -130,6 +168,7 @@ export async function maybeRunGc(
   }
 
   // Pass 2: archive sweep.
+  const useUsageAdjustedDecay = envConfig.usageDecay() && isUsageSignalActive();
   outer:
   for (let offset = 0; ; offset += GC_PAGE_SIZE) {
     const page = await store.listPage({ limit: GC_PAGE_SIZE, offset });
@@ -152,7 +191,9 @@ export async function maybeRunGc(
     let shouldArchive = false;
     if (ageDays >= config.minAgeDays) {
       const evo = parseEvolution(entry.metadata, entry.timestamp);
-      let decayScore = computeDecayScore(evo, importance, now, entry.metadata);
+      let decayScore = useUsageAdjustedDecay
+        ? computeUsageAdjustedDecayScore(evo, importance, now, entry.metadata)
+        : computeDecayScore(evo, importance, now, entry.metadata);
       // F3: Expired memories (validUntil < now) get 2x decay acceleration
       if (evo.validUntil != null && evo.validUntil < now) {
         decayScore *= 0.5; // Halve the score → archives faster
@@ -198,12 +239,19 @@ export async function maybeRunGc(
     if (page.length < GC_PAGE_SIZE) break;
   }
 
-  return { triggered: true, archivedCount, totalChecked };
+  return { archivedCount, totalChecked };
 }
 
 /**
- * Reset last GC timestamp (for testing).
+ * Reset last GC timestamp (for testing). Clears both the in-memory timestamp and the
+ * persisted cross-process throttle marker / run lock so tests start from a clean slate.
  */
 export function resetGcTimestamp(): void {
   lastGcTimestamp = 0;
+  try {
+    releaseLock({ lockPath: lockPathForKey("gc-last") });
+    releaseLock({ lockPath: lockPathForKey("gc-run") });
+  } catch {
+    /* ignore — nothing to clear */
+  }
 }

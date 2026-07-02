@@ -59,6 +59,8 @@ export const coreSummary = (): boolean => process.env.RECALLNEST_CORE_SUMMARY ==
 export const errorSignatureBoost = (): boolean =>
   process.env.RECALLNEST_ERROR_SIGNATURE_BOOST === "true";
 
+export const usageDecay = (): boolean => process.env.RECALLNEST_USAGE_DECAY === "true";
+
 // --- String settings with `||` default (empty string falls through) ---
 
 export const dataDir = (): string => process.env.RECALLNEST_DATA_DIR || "data";

@@ -1,9 +1,25 @@
-import { describe, expect, it, beforeEach } from "bun:test";
+import { describe, expect, it, beforeEach, beforeAll, afterAll } from "bun:test";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { runDream, formatDreamResult, type DreamResult } from "../dream-pipeline.js";
 import type { MemoryEntry, MemoryStore } from "../store.js";
 import type { LLMClient } from "../llm-client.js";
 import type { Embedder } from "../embedder.js";
 import { resetWriteCount } from "../activity-counter.js";
+
+// Isolate the activity-counter (default path = <dataDir>/activity-stats.json) to a temp
+// dir so these tests never read/write the repo's data/activity-stats.json that the
+// production dream scheduler uses.
+let __origDataDir: string | undefined;
+beforeAll(() => {
+  __origDataDir = process.env.RECALLNEST_DATA_DIR;
+  process.env.RECALLNEST_DATA_DIR = mkdtempSync(join(tmpdir(), "rn-dp-datadir-"));
+});
+afterAll(() => {
+  if (__origDataDir === undefined) delete process.env.RECALLNEST_DATA_DIR;
+  else process.env.RECALLNEST_DATA_DIR = __origDataDir;
+});
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -115,8 +131,8 @@ function createMockEmbedder(): Pick<Embedder, "embedPassage"> {
 
 describe("runDream", () => {
   beforeEach(() => {
-    // Reset activity counter between tests
-    resetWriteCount();
+    // Reset the activity counter for the test scope between tests (per-scope API).
+    resetWriteCount("project:test");
   });
 
   it("skips when write count is below threshold", async () => {

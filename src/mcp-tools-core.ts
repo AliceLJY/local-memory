@@ -15,6 +15,7 @@ import { matchesTemporalConstraint, type TemporalConstraint } from "./temporal-p
 import { buildManagedCheckpointObservation, buildManagedResumeObservation } from "./workflow-observation-managed.js";
 import { buildWorkflowObservationRecord } from "./workflow-observation-engine.js";
 import type { ToolRegistryDeps } from "./mcp-tool-deps.js";
+import type { RetrievalResult } from "./retriever.js";
 
 export function registerCoreTools(deps: ToolRegistryDeps): void {
   const { registerTool, getComponents, config, checkpointStore, conflictStore, workflowObservationStore, getKGExtractor, getKGStore } = deps;
@@ -22,6 +23,44 @@ export function registerCoreTools(deps: ToolRegistryDeps): void {
   const TOOL_TIERS = deps.toolTiers;
   /** P1-A: 60s 缓存的 scope 建议器,首次 0-hit 搜索时惰性初始化。 */
   let scopeSuggestFn: ((input: string) => Promise<string[]>) | null = null;
+  const MAX_RELATED_SCOPE_SIDECARS = 2;
+
+  function relatedScopesFor(scope?: string): string[] {
+    if (!scope) return [];
+    const configured = config.scopeRelations?.[scope];
+    if (!Array.isArray(configured)) return [];
+
+    const seen = new Set([scope]);
+    const related: string[] = [];
+    for (const candidate of configured) {
+      const normalized = typeof candidate === "string" ? candidate.replace(/\s+/g, " ").trim() : "";
+      if (!normalized || seen.has(normalized)) continue;
+      seen.add(normalized);
+      related.push(normalized);
+      if (related.length >= MAX_RELATED_SCOPE_SIDECARS) break;
+    }
+    return related;
+  }
+
+  function applyExplicitTemporalFilters(
+    results: RetrievalResult[],
+    params: { after?: string; before?: string; limit: number },
+  ): RetrievalResult[] {
+    const { after, before, limit } = params;
+    if (!after && !before) return results;
+
+    const constraint: TemporalConstraint = {
+      type: (after && before) ? "range" : (after ? "after" : "before"),
+      startMs: after ? new Date(after).getTime() || undefined : undefined,
+      endMs: before ? new Date(before).getTime() || undefined : undefined,
+      anchor: `${after || ""}..${before || ""}`,
+    };
+
+    if (!constraint.startMs && !constraint.endMs) return results;
+    return results
+      .filter(r => matchesTemporalConstraint(r.entry.timestamp, constraint))
+      .slice(0, limit);
+  }
 
   async function saveManagedObservation(observation: Parameters<typeof buildWorkflowObservationRecord>[0]): Promise<void> {
     try {
@@ -325,6 +364,7 @@ registerTool(
     scope: z.string().optional().describe("Optional explicit scope"),
     sessionId: z.string().min(1).max(160).optional().describe("Optional session identifier to infer session:<id> scope"),
     allScopes: z.boolean().default(false).describe("When true, explicitly allow cross-scope search"),
+    includeRelatedScopes: z.boolean().default(false).describe("When true, also query configured related scopes from scopeRelations and show them in a separate sidecar section. Requires an explicit or inferred scoped search; never changes the main result ranking."),
     category: DurableMemoryCategorySchema.optional().describe("Filter by memory category: profile (identity/background), preferences (habits/style), entities (projects/tools/people), events (past happenings), cases (problem-solution pairs), patterns (reusable workflows)"),
     profile: z.enum(["default", "writing", "debug", "fact-check"]).optional().describe("Retrieval profile"),
     render: z.enum(["verbatim", "highlight"]).default("verbatim").optional().describe("Result rendering mode: verbatim (default, original order) or highlight (reorder by contextual relevance to query)"),
@@ -342,7 +382,7 @@ registerTool(
     validAt: z.string().optional().describe("Query memories valid at a specific point in time (ISO date, e.g. '2025-06-15'). Returns only memories whose validity window covers this date."),
     includeExpired: z.boolean().default(false).optional().describe("When true, include expired memories in results (demoted 80%). Default: only active/non-expired."),
   },
-  async ({ query, limit, scope, sessionId, allScopes, category, profile: profileName, render, after, before, graph, includeArchived, detail_level, topicTag, reconstruct, validAt, includeExpired }) => {
+  async ({ query, limit, scope, sessionId, allScopes, includeRelatedScopes, category, profile: profileName, render, after, before, graph, includeArchived, detail_level, topicTag, reconstruct, validAt, includeExpired }) => {
     const { retriever, profile } = getComponents(profileName);
     const { llm } = getComponents();
     const kgStoreInstance = getKGStore();
@@ -396,20 +436,7 @@ registerTool(
     // P-omitted: 在 after/before filter 创建新数组、丢失 ResultSet.omitted 之前快照。
     const omittedInfo = (results as import("./retriever.js").RetrievalResultSet).omitted;
 
-    // Explicit temporal filtering from after/before params
-    if (after || before) {
-      const constraint: TemporalConstraint = {
-        type: (after && before) ? "range" : (after ? "after" : "before"),
-        startMs: after ? new Date(after).getTime() || undefined : undefined,
-        endMs: before ? new Date(before).getTime() || undefined : undefined,
-        anchor: `${after || ""}..${before || ""}`,
-      };
-      if (constraint.startMs || constraint.endMs) {
-        results = results
-          .filter(r => matchesTemporalConstraint(r.entry.timestamp, constraint))
-          .slice(0, limit);
-      }
-    }
+    results = applyExplicitTemporalFilters(results, { after, before, limit });
 
     // Apply context-aware rendering when requested
     if (render === "highlight" && results.length > 0) {
@@ -460,6 +487,57 @@ registerTool(
     }
 
     const level = detail_level ?? "normal";
+    const formatAtLevel = (items: RetrievalResult[]) => {
+      if (level === "brief") return formatBriefResults(items, { query });
+      if (level === "full") return formatFullResults(items, { query, profile: profile.name });
+      // P-fidelity (点4): 按相关性分配 L0/L1/L2 保真度 + token 预算（复用 collapseResults）。
+      if (level === "adaptive") return formatCollapsedResults(items, { query, profile: profile.name });
+      return formatSearchResults(items, { query, profile: profile.name });
+    };
+
+    const relatedScopeSections: string[] = [];
+    if (includeRelatedScopes && !allScopes && !scopeFallbackUsed) {
+      const selection = resolveScopeSelection({
+        scope,
+        sessionId,
+        allScopes,
+        operation: "search_memory",
+      });
+      const sidecarLimit = Math.min(3, limit);
+
+      for (const relatedScope of relatedScopesFor(selection.resolvedScope)) {
+        let relatedResults = await retriever.retrieve(buildRetrievalContext({
+          query,
+          limit: (after || before || topicTag) ? sidecarLimit * 3 : sidecarLimit,
+          category,
+          scope: relatedScope,
+          graph,
+          includeArchived,
+          topicTag,
+          source: "auto-recall",
+          validAt: validAt ? new Date(validAt).getTime() : undefined,
+          includeExpired: includeExpired ?? undefined,
+        }, {
+          operation: "search_memory:related_scope",
+        }));
+
+        relatedResults = applyExplicitTemporalFilters(relatedResults, { after, before, limit: sidecarLimit });
+        if (render === "highlight" && relatedResults.length > 0) {
+          const rendered = renderMemories(
+            relatedResults.map(r => ({ id: r.entry.id, text: r.entry.text, score: r.score, category: r.entry.category })),
+            query,
+            "highlight",
+          );
+          const idOrder = new Map(rendered.memories.map((m, i) => [m.id, i]));
+          relatedResults.sort((a, b) => (idOrder.get(a.entry.id) ?? 999) - (idOrder.get(b.entry.id) ?? 999));
+        }
+
+        if (relatedResults.length > 0) {
+          relatedScopeSections.push(`### ${relatedScope}\n${formatAtLevel(relatedResults)}`);
+        }
+      }
+    }
+
     const sections: string[] = [];
 
     // Phase 4: Read reconstruction from first-class field (no metadata hack)
@@ -479,18 +557,11 @@ registerTool(
       }
     }
 
-    let body: string;
-    if (level === "brief") {
-      body = formatBriefResults(results, { query });
-    } else if (level === "full") {
-      body = formatFullResults(results, { query, profile: profile.name });
-    } else if (level === "adaptive") {
-      // P-fidelity (点4): 按相关性分配 L0/L1/L2 保真度 + token 预算（复用 collapseResults）。
-      body = formatCollapsedResults(results, { query, profile: profile.name });
-    } else {
-      body = formatSearchResults(results, { query, profile: profile.name });
+    sections.push(formatAtLevel(results));
+
+    if (relatedScopeSections.length > 0) {
+      sections.push(`## Related scope results\n${relatedScopeSections.join("\n\n")}`);
     }
-    sections.push(body);
 
     // P-omitted: 因 limit 上限未返回的达标结果，明确告知调用方可提高 limit 看到更多。
     // 仅在普通检索下报告；after/before/topicTag 模式内部用 limit*3 拉取，omitted 语义不一致，跳过避免误导。

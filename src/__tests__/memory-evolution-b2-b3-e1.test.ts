@@ -6,6 +6,7 @@ import { describe, expect, test } from "bun:test";
 import {
   parseEvolution,
   computeDecayScore,
+  computeUsageAdjustedDecayScore,
   buildArchivedMetadata,
   isActiveMemory,
   patchEvolution,
@@ -142,6 +143,58 @@ describe("B-2: Archive Strategy", () => {
       expect(updates.length).toBe(0);
     });
 
+    test("usage-adjusted GC is gated and can archive cold high-frequency memories", async () => {
+      const savedUsageDecay = process.env.RECALLNEST_USAGE_DECAY;
+      const savedConstructive = process.env.RECALLNEST_CONSTRUCTIVE_RETRIEVAL;
+      try {
+        const now = Date.now();
+        const oldTimestamp = now - 180 * 86_400_000;
+        const coldMeta = JSON.stringify({
+          accessCount: 10,
+          evolution: {
+            status: "active",
+            version: 1,
+            accessCount: 10,
+            lastAccessedAt: now,
+            validFrom: oldTimestamp,
+            validUntil: null,
+          },
+        });
+        const config: AutoGcConfig = {
+          ...DEFAULT_AUTO_GC_CONFIG,
+          minMemoryCount: 1,
+          minHoursSinceLastGc: 0,
+          decayScoreThreshold: 0.15,
+          minAgeDays: 30,
+        };
+
+        delete process.env.RECALLNEST_USAGE_DECAY;
+        delete process.env.RECALLNEST_CONSTRUCTIVE_RETRIEVAL;
+        resetGcTimestamp();
+        const withoutFlag = makeStore([
+          { id: "cold-no-flag", importance: 0.05, timestamp: oldTimestamp, metadata: coldMeta },
+        ]);
+        const baseline = await maybeRunGc(withoutFlag.store as any, config);
+        expect(baseline.archivedCount).toBe(0);
+        expect(withoutFlag.updates).toHaveLength(0);
+
+        process.env.RECALLNEST_USAGE_DECAY = "true";
+        process.env.RECALLNEST_CONSTRUCTIVE_RETRIEVAL = "true";
+        resetGcTimestamp();
+        const withFlag = makeStore([
+          { id: "cold-with-flag", importance: 0.05, timestamp: oldTimestamp, metadata: coldMeta },
+        ]);
+        const adjusted = await maybeRunGc(withFlag.store as any, config);
+        expect(adjusted.archivedCount).toBe(1);
+        expect(withFlag.updates).toHaveLength(1);
+      } finally {
+        if (savedUsageDecay === undefined) delete process.env.RECALLNEST_USAGE_DECAY;
+        else process.env.RECALLNEST_USAGE_DECAY = savedUsageDecay;
+        if (savedConstructive === undefined) delete process.env.RECALLNEST_CONSTRUCTIVE_RETRIEVAL;
+        else process.env.RECALLNEST_CONSTRUCTIVE_RETRIEVAL = savedConstructive;
+      }
+    });
+
     test("skips recently created memories", async () => {
       resetGcTimestamp();
       const recentMeta = JSON.stringify({
@@ -243,5 +296,50 @@ describe("E-1: Multi-factor Retrieval Scoring", () => {
       validFrom: Date.now() - 180 * 86_400_000,
     };
     expect(computeDecayScore(recent, 0.5)).toBeGreaterThan(computeDecayScore(old, 0.5));
+  });
+});
+
+describe("P0 B-2: usage-adjusted GC scoring", () => {
+  const now = Date.now();
+  const oldColdEvo: EvolutionMetadata = {
+    status: "active",
+    version: 1,
+    accessCount: 10,
+    lastAccessedAt: now,
+    supersededBy: null,
+    supersedes: null,
+    evolutionNote: null,
+    consolidatedInto: null,
+    contributedToPattern: null,
+    sourceMemories: [],
+    validFrom: now - 180 * 86_400_000,
+    validUntil: null,
+    eventTime: null,
+  };
+
+  test("discounts frequency only for cold memories in GC scoring", () => {
+    const metadata = JSON.stringify({ accessCount: 10 });
+    const base = computeDecayScore(oldColdEvo, 0.05, now, metadata);
+    const adjusted = computeUsageAdjustedDecayScore(oldColdEvo, 0.05, now, metadata);
+
+    expect(base).toBeGreaterThan(0.15);
+    expect(adjusted).toBeLessThan(base);
+    expect(adjusted).toBeLessThan(0.15);
+  });
+
+  test("does not discount pending reminders or promoted memories", () => {
+    const pendingReminder = JSON.stringify({
+      accessCount: 10,
+      prospective: { status: "pending" },
+    });
+    const promoted = JSON.stringify({
+      accessCount: 10,
+      promotedTo: "memory:durable-target",
+    });
+
+    expect(computeUsageAdjustedDecayScore(oldColdEvo, 0.05, now, pendingReminder))
+      .toBe(computeDecayScore(oldColdEvo, 0.05, now, pendingReminder));
+    expect(computeUsageAdjustedDecayScore(oldColdEvo, 0.05, now, promoted))
+      .toBe(computeDecayScore(oldColdEvo, 0.05, now, promoted));
   });
 });

@@ -1,6 +1,6 @@
 import { describe, expect, it, beforeEach, afterEach } from "bun:test";
-import { existsSync, writeFileSync, mkdirSync, statSync, utimesSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, writeFileSync, readFileSync, mkdirSync, statSync, utimesSync } from "node:fs";
+import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 
 import {
@@ -9,6 +9,10 @@ import {
   rollbackLock,
   shouldDistill,
   getLastDistillTime,
+  withLock,
+  withWriteLock,
+  lockPathForKey,
+  stampLock,
   type DistillLockConfig,
 } from "../distill-lock.js";
 
@@ -54,7 +58,8 @@ describe("acquireLock", () => {
     acquireLock(cfg());
     const { readFileSync } = require("node:fs");
     const content = readFileSync(lockPath, "utf-8").trim();
-    expect(content).toBe(String(process.pid));
+    // Lock body is now `<pid>:<ownership-token>` (P2), so assert the PID prefix.
+    expect(content.startsWith(`${process.pid}:`)).toBe(true);
   });
 
   it("returns false when lock held by alive PID and not expired", () => {
@@ -74,7 +79,8 @@ describe("acquireLock", () => {
 
     const { readFileSync } = require("node:fs");
     const content = readFileSync(lockPath, "utf-8").trim();
-    expect(content).toBe(String(process.pid));
+    // Reclaimed lock records our `<pid>:<token>` now (P2 ownership token).
+    expect(content.startsWith(`${process.pid}:`)).toBe(true);
   });
 
   it("overwrites lock when mtime is expired even if PID alive", () => {
@@ -172,5 +178,128 @@ describe("getLastDistillTime", () => {
   it("returns 0 when lock file does not exist", () => {
     const result = getLastDistillTime(cfg());
     expect(result).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P0-1: acquireLock atomicity + named withLock / withWriteLock
+// ---------------------------------------------------------------------------
+
+describe("acquireLock atomicity (O_EXCL)", () => {
+  it("is exclusive: second acquire on a live-held lock fails", () => {
+    expect(acquireLock(cfg({ expireMs: 60_000 }))).toBe(true);
+    expect(acquireLock(cfg({ expireMs: 60_000 }))).toBe(false);
+  });
+});
+
+describe("withLock", () => {
+  it("runs fn and releases the lock afterwards", async () => {
+    const out = await withLock("wl-run", async () => 42, { lockDir: tempDir });
+    expect(out.ran).toBe(true);
+    if (out.ran) expect(out.result).toBe(42);
+    expect(existsSync(lockPathForKey("wl-run", tempDir))).toBe(false);
+  });
+
+  it("skips (ran:false) when a live process already holds the lock", async () => {
+    const p = lockPathForKey("wl-skip", tempDir);
+    mkdirSync(dirname(p), { recursive: true });
+    writeFileSync(p, String(process.pid), "utf-8"); // current pid = alive
+    let ran = false;
+    const out = await withLock(
+      "wl-skip",
+      async () => { ran = true; return 1; },
+      { lockDir: tempDir, expireMs: 60_000 },
+    );
+    expect(out.ran).toBe(false);
+    if (!out.ran) expect(out.reason).toBe("locked_by_another_process");
+    expect(ran).toBe(false);
+  });
+
+  it("does not block across different lock keys", async () => {
+    const held = lockPathForKey("wl-keyA", tempDir);
+    mkdirSync(dirname(held), { recursive: true });
+    writeFileSync(held, String(process.pid), "utf-8");
+    const out = await withLock("wl-keyB", async () => "ran", { lockDir: tempDir, expireMs: 60_000 });
+    expect(out.ran).toBe(true);
+  });
+
+  it("releases the lock even when fn throws", async () => {
+    await expect(
+      withLock("wl-throw", async () => { throw new Error("boom"); }, { lockDir: tempDir }),
+    ).rejects.toThrow("boom");
+    expect(existsSync(lockPathForKey("wl-throw", tempDir))).toBe(false);
+  });
+});
+
+describe("withWriteLock", () => {
+  it("throws when a live holder never releases (timeout)", async () => {
+    const p = lockPathForKey("ww-timeout", tempDir);
+    mkdirSync(dirname(p), { recursive: true });
+    writeFileSync(p, String(process.pid), "utf-8"); // alive, never released
+    await expect(
+      withWriteLock("ww-timeout", async () => 1, {
+        lockDir: tempDir,
+        expireMs: 60_000,
+        waitTimeoutMs: 150,
+        pollMs: 20,
+      }),
+    ).rejects.toThrow(/timed out/);
+  });
+
+  it("reclaims an expired lock and runs", async () => {
+    const p = lockPathForKey("ww-expired", tempDir);
+    mkdirSync(dirname(p), { recursive: true });
+    writeFileSync(p, String(process.pid), "utf-8");
+    const twoHoursAgo = new Date(Date.now() - 7_200_000);
+    utimesSync(p, twoHoursAgo, twoHoursAgo);
+    const result = await withWriteLock("ww-expired", async () => "done", {
+      lockDir: tempDir,
+      expireMs: 3_600_000,
+    });
+    expect(result).toBe("done");
+  });
+
+  it("returns fn result directly on a free lock", async () => {
+    const result = await withWriteLock("ww-free", async () => 7, { lockDir: tempDir });
+    expect(result).toBe(7);
+  });
+});
+
+describe("stampLock", () => {
+  it("touches an existing lock file's mtime to now", () => {
+    const p = lockPathForKey("stamp", tempDir);
+    mkdirSync(dirname(p), { recursive: true });
+    writeFileSync(p, String(process.pid), "utf-8");
+    utimesSync(p, new Date(Date.now() - 100_000), new Date(Date.now() - 100_000));
+    stampLock({ lockPath: p });
+    const st = statSync(p);
+    expect(Math.abs(st.mtimeMs - Date.now())).toBeLessThan(2000);
+  });
+
+  it("creates the marker file when absent (mtime ~ now)", () => {
+    const p = lockPathForKey("stamp-absent", tempDir);
+    expect(existsSync(p)).toBe(false);
+    stampLock({ lockPath: p });
+    expect(existsSync(p)).toBe(true);
+    expect(Math.abs(statSync(p).mtimeMs - Date.now())).toBeLessThan(2000);
+  });
+});
+
+describe("lock ownership token (release safety)", () => {
+  it("does not delete a lock reclaimed by another owner after expiry", () => {
+    const p = lockPathForKey("own-reclaimed", tempDir);
+    expect(acquireLock({ lockPath: p, expireMs: 60_000 })).toBe(true);
+    // Simulate: our lock expired mid-run, another process reclaimed it (its own token).
+    writeFileSync(p, "99999:other-owner-token", "utf-8");
+    releaseLock({ lockPath: p });
+    expect(existsSync(p)).toBe(true); // new owner's lock must survive our release
+    expect(readFileSync(p, "utf-8")).toContain("other-owner-token");
+  });
+
+  it("removes a lock we still own", () => {
+    const p = lockPathForKey("own-normal", tempDir);
+    expect(acquireLock({ lockPath: p, expireMs: 60_000 })).toBe(true);
+    releaseLock({ lockPath: p });
+    expect(existsSync(p)).toBe(false);
   });
 });
