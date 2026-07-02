@@ -66,6 +66,35 @@ describe("store P0-2 idempotency (upsert-backed store/storeBatch)", () => {
     expect(byId[0].text).toBe("v2");
   });
 
+  it("upsert failure leaves the prior row intact (mergeInsert is atomic — no delete+add loss)", async () => {
+    const store = makeStore(); // vectorDim 3
+    const scope = "project:upsert-test";
+    const id = deterministicId(scope, "atomic-anchor");
+    const good: MemoryEntry = {
+      id, text: "original", vector: [1, 0, 0], category: "entities", scope, importance: 0.5,
+      timestamp: Date.now(), metadata: "{}", language: "en", fts_text: "original",
+    };
+    await store.upsert(good);
+
+    // Inject a write failure. With the old delete-then-add path the delete would already
+    // have removed the row before add threw (row lost); the atomic mergeInsert touches
+    // nothing on failure, so the prior row must survive.
+    const table = (store as unknown as { table: { mergeInsert: unknown } }).table;
+    const orig = table.mergeInsert;
+    table.mergeInsert = () => {
+      throw new Error("simulated write failure");
+    };
+    try {
+      await expect(store.upsert({ ...good, text: "corrupt", fts_text: "corrupt" })).rejects.toThrow("simulated write failure");
+    } finally {
+      table.mergeInsert = orig;
+    }
+
+    const survivor = (await store.list([scope])).filter((r) => r.id === id);
+    expect(survivor.length).toBe(1);
+    expect(survivor[0].text).toBe("original"); // prior row preserved, not lost
+  });
+
   it("storeBatch() honors a caller-supplied id (idempotent re-run)", async () => {
     const store = makeStore();
     const scope = "project:upsert-test";

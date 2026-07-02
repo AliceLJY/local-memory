@@ -430,11 +430,10 @@ export class MemoryStore implements MemoryStorePort {
 
     try {
       await withWriteLock("store-write", async () => {
-        // P0-1/P0-2: idempotent batch write under the global store-write lock —
-        // delete any existing rows for these ids, then add the deduped set.
-        const inList = [...dedupedById.keys()].map(id => `'${escapeSqlLiteral(id)}'`).join(", ");
-        await this.table!.delete(`id IN (${inList})`).catch(() => undefined);
-        await this.table!.add(toWrite);
+        // P0-1/P0-2/P1: atomic idempotent batch write via mergeInsert (no delete+add
+        // window a crash could tear). toWrite is already in-batch deduped by id above,
+        // so the merge key matches ≤1 existing row (given no pre-existing dup-id rows).
+        await this.table!.mergeInsert("id").whenMatchedUpdateAll().whenNotMatchedInsertAll().execute(toWrite);
       }, { expireMs: 30_000 });
     } catch (err: any) {
       const code = err.code || "";
@@ -447,20 +446,22 @@ export class MemoryStore implements MemoryStorePort {
   }
 
   /**
-   * P0-1/P0-2: Idempotent write of a fully-formed entry, serialized across processes.
+   * P0-1/P0-2/P1: Idempotent, crash-atomic write of a fully-formed entry, serialized
+   * across processes.
    *
-   * The global `store-write` lock makes delete-then-add atomic across the 11
-   * mcp-server processes (matching upstream memory-lancedb-pro store.upsert), so two
-   * processes writing the same deterministic id can no longer both append (the P0-1
-   * dup-id race). "Same id overwrites" also gives content-addressed idempotency to
+   * Uses mergeInsert("id") (same primitive as update()) so the write is atomic — no
+   * delete+add window that a crash between the two steps could tear, losing the row
+   * (P1). The global `store-write` lock still serializes concurrent merges across the
+   * 11 mcp-server processes so two whenNotMatched inserts can't both fire for the same
+   * id (the P0-1 race). "Same id overwrites" gives content-addressed idempotency to
    * every store()/storeBatch() caller whose id is deterministicId(scope,text).
+   * Precondition: no pre-existing dup-id rows in the table (run the dedup migration
+   * scripts/cleanup-duplicate-ids.ts first) — else the merge key match is ambiguous.
    */
   async upsert(entry: MemoryEntry): Promise<MemoryEntry> {
     await this.ensureInitialized();
     await withWriteLock("store-write", async () => {
-      const safeId = escapeSqlLiteral(entry.id);
-      await this.table!.delete(`id = '${safeId}'`).catch(() => undefined);
-      await this.table!.add([entry]);
+      await this.table!.mergeInsert("id").whenMatchedUpdateAll().whenNotMatchedInsertAll().execute([entry]);
     }, { expireMs: 30_000 });
     return entry;
   }
