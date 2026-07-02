@@ -18,7 +18,7 @@ import {
   utimesSync,
   existsSync,
 } from "node:fs";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { join, dirname } from "node:path";
 import * as envConfig from "./env-config.js";
 
@@ -58,6 +58,17 @@ function isPidAlive(pid: number): boolean {
   }
 }
 
+// P2: in-process record of the ownership token we wrote into each lock file we hold.
+// releaseLock only removes a lock whose on-disk token still matches — so if our lock
+// expired mid-run and another process legitimately reclaimed it, our finally-release
+// won't delete the new owner's lock (which would break mutual exclusion).
+const heldTokens = new Map<string, string>();
+
+/** Parse the PID prefix from a lock file body (`<pid>` legacy or `<pid>:<token>`). */
+function parsePid(content: string): number {
+  return parseInt((content.split(":")[0] ?? "").trim(), 10);
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -81,7 +92,7 @@ export function acquireLock(cfg?: Partial<DistillLockConfig>): boolean {
   let existingPid = NaN;
   let mtime = 0;
   try {
-    existingPid = parseInt(readFileSync(lockPath, "utf-8").trim(), 10);
+    existingPid = parsePid(readFileSync(lockPath, "utf-8"));
     mtime = statSync(lockPath).mtimeMs;
   } catch {
     // Holder released between our failed create and this read — retry the create.
@@ -102,10 +113,15 @@ export function acquireLock(cfg?: Partial<DistillLockConfig>): boolean {
   return tryExclusiveCreate(lockPath);
 }
 
-/** Atomic O_EXCL create of the lock file with the current PID. false on EEXIST. */
+/**
+ * Atomic O_EXCL create of the lock file. Writes a unique ownership token (`<pid>:<uuid>`)
+ * and records it so releaseLock can verify we still own the lock. false on EEXIST.
+ */
 function tryExclusiveCreate(lockPath: string): boolean {
+  const token = `${process.pid}:${randomUUID()}`;
   try {
-    writeFileSync(lockPath, String(process.pid), { encoding: "utf-8", flag: "wx" });
+    writeFileSync(lockPath, token, { encoding: "utf-8", flag: "wx" });
+    heldTokens.set(lockPath, token);
     return true;
   } catch (err) {
     if ((err as { code?: unknown }).code === "EEXIST") return false;
@@ -113,12 +129,25 @@ function tryExclusiveCreate(lockPath: string): boolean {
   }
 }
 
-/** Release the distill lock by removing the lock file. */
+/**
+ * Release the distill lock. If we hold a known ownership token for this path, only
+ * remove the file when its on-disk token still matches ours — otherwise our lock was
+ * expired and reclaimed by another process, and deleting would evict the new owner.
+ * When we hold no token (e.g. a direct caller/test-written lock) fall back to removing.
+ */
 export function releaseLock(cfg?: Partial<DistillLockConfig>): void {
   const { lockPath } = resolveConfig(cfg);
-  if (existsSync(lockPath)) {
-    unlinkSync(lockPath);
+  const ourToken = heldTokens.get(lockPath);
+  heldTokens.delete(lockPath);
+  if (!existsSync(lockPath)) return;
+  if (ourToken !== undefined) {
+    try {
+      if (readFileSync(lockPath, "utf-8").trim() !== ourToken) return; // reclaimed by another owner
+    } catch {
+      return;
+    }
   }
+  unlinkSync(lockPath);
 }
 
 /**

@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach } from "bun:test";
-import { existsSync, writeFileSync, mkdirSync, statSync, utimesSync } from "node:fs";
+import { existsSync, writeFileSync, readFileSync, mkdirSync, statSync, utimesSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -58,7 +58,8 @@ describe("acquireLock", () => {
     acquireLock(cfg());
     const { readFileSync } = require("node:fs");
     const content = readFileSync(lockPath, "utf-8").trim();
-    expect(content).toBe(String(process.pid));
+    // Lock body is now `<pid>:<ownership-token>` (P2), so assert the PID prefix.
+    expect(content.startsWith(`${process.pid}:`)).toBe(true);
   });
 
   it("returns false when lock held by alive PID and not expired", () => {
@@ -78,7 +79,8 @@ describe("acquireLock", () => {
 
     const { readFileSync } = require("node:fs");
     const content = readFileSync(lockPath, "utf-8").trim();
-    expect(content).toBe(String(process.pid));
+    // Reclaimed lock records our `<pid>:<token>` now (P2 ownership token).
+    expect(content.startsWith(`${process.pid}:`)).toBe(true);
   });
 
   it("overwrites lock when mtime is expired even if PID alive", () => {
@@ -280,5 +282,24 @@ describe("stampLock", () => {
     stampLock({ lockPath: p });
     expect(existsSync(p)).toBe(true);
     expect(Math.abs(statSync(p).mtimeMs - Date.now())).toBeLessThan(2000);
+  });
+});
+
+describe("lock ownership token (release safety)", () => {
+  it("does not delete a lock reclaimed by another owner after expiry", () => {
+    const p = lockPathForKey("own-reclaimed", tempDir);
+    expect(acquireLock({ lockPath: p, expireMs: 60_000 })).toBe(true);
+    // Simulate: our lock expired mid-run, another process reclaimed it (its own token).
+    writeFileSync(p, "99999:other-owner-token", "utf-8");
+    releaseLock({ lockPath: p });
+    expect(existsSync(p)).toBe(true); // new owner's lock must survive our release
+    expect(readFileSync(p, "utf-8")).toContain("other-owner-token");
+  });
+
+  it("removes a lock we still own", () => {
+    const p = lockPathForKey("own-normal", tempDir);
+    expect(acquireLock({ lockPath: p, expireMs: 60_000 })).toBe(true);
+    releaseLock({ lockPath: p });
+    expect(existsSync(p)).toBe(false);
   });
 });
