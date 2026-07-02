@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { MemoryStore, deterministicId, type MemoryEntry } from "../store.js";
+import { getWriteCount } from "../activity-counter.js";
 
 /**
  * P0-2 回归：store()/storeBatch() 改走 upsert（delete+add 入全局 store-write 锁）后，
@@ -129,6 +130,44 @@ describe("store P0-2 idempotency (upsert-backed store/storeBatch)", () => {
     const target = rows.filter((r) => r.text === "dup-in-batch");
     expect(target.length).toBe(1);
     expect(target[0].importance).toBeCloseTo(0.8, 5); // last occurrence wins
+  });
+
+  // A store whose activity-stats sits in its own unique dir (dirname(dbPath)), so the
+  // per-scope counter assertions are isolated from other tests' shared tmproot writes.
+  function makeIsolatedStore(): { store: MemoryStore; statsPath: string } {
+    const dir = mkdtempSync(join(tmpdir(), "recallnest-count-"));
+    tmpDirs.push(dir);
+    const dbPath = join(dir, "lancedb");
+    return { store: new MemoryStore({ dbPath, vectorDim: 3 }), statsPath: join(dir, "activity-stats.json") };
+  }
+
+  it("store() increments the per-scope write counter once each (no double-count via upsert)", async () => {
+    const { store, statsPath } = makeIsolatedStore();
+    const scope = "cc:project:count-a";
+    await store.store({ text: "m1", vector: [1, 0, 0], category: "entities", scope, importance: 0.5, metadata: "{}" });
+    await store.store({ text: "m2", vector: [0, 1, 0], category: "entities", scope, importance: 0.5, metadata: "{}" });
+    // store()→upsert() counts once per call; two stores ⇒ 2 (not 4).
+    expect(getWriteCount(scope, { statsPath })).toBe(2);
+  });
+
+  it("storeBatch() counts per scope by number of entries in that scope", async () => {
+    const { store, statsPath } = makeIsolatedStore();
+    await store.storeBatch([
+      { text: "a", vector: [1, 0, 0], category: "entities", scope: "cc:s1", importance: 0.5, metadata: "{}" },
+      { text: "b", vector: [0, 1, 0], category: "entities", scope: "cc:s1", importance: 0.5, metadata: "{}" },
+      { text: "c", vector: [0, 0, 1], category: "entities", scope: "cc:s2", importance: 0.5, metadata: "{}" },
+    ]);
+    expect(getWriteCount("cc:s1", { statsPath })).toBe(2);
+    expect(getWriteCount("cc:s2", { statsPath })).toBe(1);
+  });
+
+  it("storeBatch() with an in-batch duplicate counts the collapsed row once", async () => {
+    const { store, statsPath } = makeIsolatedStore();
+    await store.storeBatch([
+      { text: "dup", vector: [1, 0, 0], category: "entities", scope: "cc:s3", importance: 0.3, metadata: "{}" },
+      { text: "dup", vector: [1, 0, 0], category: "entities", scope: "cc:s3", importance: 0.8, metadata: "{}" },
+    ]);
+    expect(getWriteCount("cc:s3", { statsPath })).toBe(1); // deduped to one row ⇒ counted once
   });
 
   it("storeBatch() without ids still stores distinct entries", async () => {

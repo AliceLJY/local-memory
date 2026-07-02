@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,6 +7,17 @@ import { resetWriteCount } from "../activity-counter.js";
 import { resetGcTimestamp } from "../auto-gc.js";
 import { runDream } from "../dream-pipeline.js";
 import { MemoryStore } from "../store.js";
+
+// Isolate the activity-counter default path away from the repo's data/activity-stats.json.
+let __origDataDir: string | undefined;
+beforeAll(() => {
+  __origDataDir = process.env.RECALLNEST_DATA_DIR;
+  process.env.RECALLNEST_DATA_DIR = mkdtempSync(join(tmpdir(), "rn-contracts-datadir-"));
+});
+afterAll(() => {
+  if (__origDataDir === undefined) delete process.env.RECALLNEST_DATA_DIR;
+  else process.env.RECALLNEST_DATA_DIR = __origDataDir;
+});
 
 const tmpDirs: string[] = [];
 
@@ -123,7 +134,7 @@ describe("MemoryStore interface contract", () => {
 
 describe("Dream pipeline store contract", () => {
   beforeEach(() => {
-    resetWriteCount();
+    resetWriteCount("project:contracts");
     resetGcTimestamp();
   });
 

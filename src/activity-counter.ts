@@ -45,8 +45,8 @@ export type DistillTier = "none" | "light" | "standard" | "deep";
 // ---------------------------------------------------------------------------
 
 interface ActivityStats {
-  writesSinceLastDistill: number;
-  lastResetAt: number;
+  /** Per-scope write counts since that scope's last dream/distill reset. */
+  scopes: Record<string, number>;
 }
 
 function resolveConfig(
@@ -57,12 +57,24 @@ function resolveConfig(
 
 function readStats(statsPath: string): ActivityStats {
   if (!existsSync(statsPath)) {
-    return { writesSinceLastDistill: 0, lastResetAt: Date.now() };
+    return { scopes: {} };
   }
   try {
-    return JSON.parse(readFileSync(statsPath, "utf-8"));
+    const parsed: unknown = JSON.parse(readFileSync(statsPath, "utf-8"));
+    // Robust against the legacy global format ({writesSinceLastDistill}) — no migration,
+    // just treat anything without a `scopes` map as empty (counts restart per scope).
+    if (
+      parsed !== null &&
+      typeof parsed === "object" &&
+      "scopes" in parsed &&
+      typeof (parsed as { scopes?: unknown }).scopes === "object" &&
+      (parsed as { scopes?: unknown }).scopes !== null
+    ) {
+      return { scopes: (parsed as { scopes: Record<string, number> }).scopes };
+    }
+    return { scopes: {} };
   } catch {
-    return { writesSinceLastDistill: 0, lastResetAt: Date.now() };
+    return { scopes: {} };
   }
 }
 
@@ -75,34 +87,49 @@ function writeStats(statsPath: string, stats: ActivityStats): void {
 // Public API
 // ---------------------------------------------------------------------------
 
-/** Increment write counter by n (default 1). Returns new count. */
+/** Increment a scope's write counter by n (default 1). Returns the scope's new count. */
 export function incrementWriteCount(
+  scope: string,
   n = 1,
   cfg?: Partial<ActivityCounterConfig>,
 ): number {
   const { statsPath } = resolveConfig(cfg);
   const stats = readStats(statsPath);
-  stats.writesSinceLastDistill += n;
+  stats.scopes[scope] = (stats.scopes[scope] ?? 0) + n;
   writeStats(statsPath, stats);
-  return stats.writesSinceLastDistill;
+  return stats.scopes[scope];
 }
 
-/** Read current write count without modifying. */
-export function getWriteCount(cfg?: Partial<ActivityCounterConfig>): number {
+/** Read a scope's current write count without modifying (0 if never written). */
+export function getWriteCount(scope: string, cfg?: Partial<ActivityCounterConfig>): number {
   const { statsPath } = resolveConfig(cfg);
-  return readStats(statsPath).writesSinceLastDistill;
+  return readStats(statsPath).scopes[scope] ?? 0;
 }
 
-/** Reset counter after successful distill. */
-export function resetWriteCount(cfg?: Partial<ActivityCounterConfig>): void {
+/** Reset one scope's counter after its successful dream/distill (leaves other scopes untouched). */
+export function resetWriteCount(scope: string, cfg?: Partial<ActivityCounterConfig>): void {
   const { statsPath } = resolveConfig(cfg);
-  writeStats(statsPath, { writesSinceLastDistill: 0, lastResetAt: Date.now() });
+  const stats = readStats(statsPath);
+  delete stats.scopes[scope];
+  writeStats(statsPath, stats);
 }
 
-/** Determine which distill tier the current write count warrants. */
-export function getDistillTier(cfg?: Partial<ActivityCounterConfig>): DistillTier {
+/** Scopes whose write count is at or above `threshold` — the dream scheduler's work list. */
+export function listScopesAboveThreshold(
+  threshold: number,
+  cfg?: Partial<ActivityCounterConfig>,
+): string[] {
+  const { statsPath } = resolveConfig(cfg);
+  const stats = readStats(statsPath);
+  return Object.entries(stats.scopes)
+    .filter(([, count]) => count >= threshold)
+    .map(([scope]) => scope);
+}
+
+/** Determine which distill tier a scope's write count warrants. */
+export function getDistillTier(scope: string, cfg?: Partial<ActivityCounterConfig>): DistillTier {
   const config = resolveConfig(cfg);
-  const count = getWriteCount(cfg);
+  const count = getWriteCount(scope, cfg);
   if (count >= config.deepThreshold) return "deep";
   if (count >= config.standardThreshold) return "standard";
   if (count >= config.lightThreshold) return "light";

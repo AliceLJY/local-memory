@@ -85,9 +85,12 @@ async function runDreamInner(params: {
   config?: Partial<DreamConfig>;
   /** Skip the minimum-writes gate (force run) */
   force?: boolean;
+  /** Override the activity-counter stats file (defaults to <dataDir>/activity-stats.json). */
+  activityStatsPath?: string;
 }): Promise<DreamResult> {
   const { store, llm, embedder, scope, force = false } = params;
   const config = { ...DEFAULT_DREAM_CONFIG, ...params.config };
+  const statsCfg = params.activityStatsPath ? { statsPath: params.activityStatsPath } : undefined;
   const phases: DreamPhaseResult[] = [];
 
   const stats = {
@@ -104,7 +107,7 @@ async function runDreamInner(params: {
   // =========================================================================
   // Phase 1: Orient — assess current memory state
   // =========================================================================
-  const writeCount = getWriteCount();
+  const writeCount = getWriteCount(scope, statsCfg);
   stats.writesSinceLastDream = writeCount;
 
   const storeStats = await store.stats([scope]);
@@ -168,7 +171,7 @@ async function runDreamInner(params: {
   if (active.length < config.minClusterSize) {
     phases.push({ phase: "consolidate", detail: "skipped — too few active entries" });
     phases.push({ phase: "prune", detail: "skipped — too few entries for GC" });
-    resetWriteCount();
+    resetWriteCount(scope, statsCfg);
     return { ran: true, reason: "completed_early", phases, stats };
   }
 
@@ -250,6 +253,8 @@ export async function runDream(params: {
   config?: Partial<DreamConfig>;
   /** Skip the minimum-writes gate (force run) */
   force?: boolean;
+  /** Override the activity-counter stats file (defaults to <dataDir>/activity-stats.json). */
+  activityStatsPath?: string;
 }): Promise<DreamResult> {
   const outcome = await withLock(
     `dream-${params.scope}`,

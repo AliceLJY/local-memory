@@ -5,12 +5,13 @@
 import type * as LanceDB from "@lancedb/lancedb";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, accessSync, constants, mkdirSync, realpathSync, lstatSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { logWarn } from "./stderr-log.js";
 import type { DurableMemoryCategory } from "./memory-schema.js";
 import { matchesScopeFilter } from "./scope-policy.js";
 import { detectEmotionIfEnabled } from "./emotion-detector.js";
 import { withWriteLock } from "./distill-lock.js";
+import { incrementWriteCount } from "./activity-counter.js";
 import type { MemoryStorePort, MemoryStoreStats, MemoryStoreUpdate } from "./memory-store-port.js";
 
 // ============================================================================
@@ -442,6 +443,13 @@ export class MemoryStore implements MemoryStorePort {
         `Failed to batch store ${entries.length} memories in "${this.config.dbPath}": ${code} ${message}`
       );
     }
+    // Per-scope write counts drive dream activation. Best-effort — never block writes.
+    try {
+      const statsPath = this.activityStatsPath();
+      const countByScope = new Map<string, number>();
+      for (const e of toWrite) countByScope.set(e.scope, (countByScope.get(e.scope) ?? 0) + 1);
+      for (const [scope, n] of countByScope) incrementWriteCount(scope, n, { statsPath });
+    } catch { /* activity tracking is best-effort */ }
     return toWrite.length;
   }
 
@@ -458,11 +466,20 @@ export class MemoryStore implements MemoryStorePort {
    * Precondition: no pre-existing dup-id rows in the table (run the dedup migration
    * scripts/cleanup-duplicate-ids.ts first) — else the merge key match is ambiguous.
    */
+  /** Path to this store's activity-counter stats file, beside the LanceDB dir. */
+  private activityStatsPath(): string {
+    return join(dirname(this.config.dbPath), "activity-stats.json");
+  }
+
   async upsert(entry: MemoryEntry): Promise<MemoryEntry> {
     await this.ensureInitialized();
     await withWriteLock("store-write", async () => {
       await this.table!.mergeInsert("id").whenMatchedUpdateAll().whenNotMatchedInsertAll().execute([entry]);
     }, { expireMs: 30_000 });
+    // Per-scope write count drives dream activation. Best-effort — never block a write.
+    try {
+      incrementWriteCount(entry.scope, 1, { statsPath: this.activityStatsPath() });
+    } catch { /* activity tracking is best-effort */ }
     return entry;
   }
 
