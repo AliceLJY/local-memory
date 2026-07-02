@@ -60,6 +60,42 @@ describe("runDream cross-process lock", () => {
     expect(result.reason).toBe("locked_by_another_process");
     expect(bodyRan).toBe(false); // runDreamInner never entered
   });
+
+  it("skips its consolidation phase when the scope's consolidate lock is held", async () => {
+    const scope = "project:dream-consolidate-test";
+    holdLock(`consolidate-${scope}`); // simulate a standalone consolidate_memories running
+
+    const activeMeta = JSON.stringify({
+      evolution: { status: "active", version: 1, accessCount: 0, lastAccessedAt: null, validFrom: Date.now(), validUntil: null },
+    });
+    const entries = [1, 2, 3].map((i) => ({
+      id: `dc-e${i}`, text: `t${i}`, vector: [1, 0, 0], category: "events", scope,
+      importance: 0.5, timestamp: Date.now(), metadata: activeMeta, language: "en", fts_text: `t${i}`,
+    }));
+    const store = {
+      stats: async () => ({ totalCount: 100, scopeCounts: {}, categoryCounts: {} }),
+      list: async () => entries,
+      listPage: async () => [],
+      update: async () => null,
+      patchMetadata: async () => null,
+      getById: async () => null,
+      vectorSearch: async () => [],
+    };
+
+    const result = await runDream({
+      store: store as any,
+      llm: null,
+      embedder: { embedPassage: async () => [0, 0, 0] },
+      scope,
+      force: true,
+    });
+
+    // Dream itself ran (its own dream lock was free), but the consolidation phase saw the
+    // held consolidate lock and skipped rather than running concurrently.
+    expect(result.ran).toBe(true);
+    const consolidatePhase = result.phases.find((p) => p.phase === "consolidate");
+    expect(consolidatePhase?.detail).toContain("skipped");
+  });
 });
 
 describe("maybeRunGc cross-process lock + throttle", () => {

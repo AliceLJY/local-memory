@@ -176,36 +176,44 @@ async function runDreamInner(params: {
   // Phase 3: Consolidate — cluster, merge, generate insights + patterns
   // =========================================================================
 
-  // 3a: Deterministic consolidation (merge near-duplicates, link clusters)
-  const engine = new ConsolidationEngine(store, {
-    ...DEFAULT_CONSOLIDATION_CONFIG,
-    clusterThreshold: config.clusterThreshold,
-    maxEntriesPerRun: config.maxEntriesPerRun,
-  });
-  const consolidation = await engine.run(scope);
-  stats.clustersFound += consolidation.clustersFound;
-  stats.mergedCount += consolidation.mergedCount;
-
-  // 3b: LLM-driven cluster consolidation (insights + patterns) — requires LLM
-  if (llm) {
-    const clusterResult = await clusterAndConsolidate({
-      entries: active,
-      embedder,
-      llm,
-      store,
-      scope,
-      minClusterSize: config.minClusterSize,
-      clusterThreshold: config.clusterThreshold - 0.07, // slightly lower for semantic clustering
-      extractPatterns: config.extractPatterns,
+  // P2 (codex): run the consolidation phase under the scope's consolidate lock so a
+  // standalone consolidate_memories on the same scope can't run concurrently with the
+  // dream's own consolidation. Nested inside the dream lock (dream → consolidate →
+  // store-write), consistent with the one-way lock order.
+  const consolidateOutcome = await withLock(`consolidate-${scope}`, async () => {
+    // 3a: Deterministic consolidation (merge near-duplicates, link clusters)
+    const engine = new ConsolidationEngine(store, {
+      ...DEFAULT_CONSOLIDATION_CONFIG,
+      clusterThreshold: config.clusterThreshold,
+      maxEntriesPerRun: config.maxEntriesPerRun,
     });
-    stats.clustersFound += clusterResult.clustersFound;
-    stats.insightsGenerated = clusterResult.insightsGenerated;
-    stats.patternsExtracted = clusterResult.patternsExtracted;
-  }
+    const consolidation = await engine.run(scope);
+    stats.clustersFound += consolidation.clustersFound;
+    stats.mergedCount += consolidation.mergedCount;
+
+    // 3b: LLM-driven cluster consolidation (insights + patterns) — requires LLM
+    if (llm) {
+      const clusterResult = await clusterAndConsolidate({
+        entries: active,
+        embedder,
+        llm,
+        store,
+        scope,
+        minClusterSize: config.minClusterSize,
+        clusterThreshold: config.clusterThreshold - 0.07, // slightly lower for semantic clustering
+        extractPatterns: config.extractPatterns,
+      });
+      stats.clustersFound += clusterResult.clustersFound;
+      stats.insightsGenerated = clusterResult.insightsGenerated;
+      stats.patternsExtracted = clusterResult.patternsExtracted;
+    }
+  }, { onBusy: "skip", expireMs: 600_000 });
 
   phases.push({
     phase: "consolidate",
-    detail: `${stats.clustersFound} clusters, ${stats.mergedCount} merged, ${stats.insightsGenerated} insights, ${stats.patternsExtracted} patterns`,
+    detail: consolidateOutcome.ran
+      ? `${stats.clustersFound} clusters, ${stats.mergedCount} merged, ${stats.insightsGenerated} insights, ${stats.patternsExtracted} patterns`
+      : `skipped — another process holds the consolidate lock for scope ${scope}`,
   });
 
   // =========================================================================
