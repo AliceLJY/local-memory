@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, eval-canary-p0]
   pull_request:
-    branches: [main]
+    branches: [main, eval-canary-p0]
 
 jobs:
   check:
@@ -24,5 +24,12 @@ jobs:
       - name: Doctor (CI mode)
         run: bun run src/cli.ts doctor --ci
 
+      - name: Test suite
+        run: bun test
+
       - name: TypeScript check
-        run: bun build src/cli.ts --target bun --no-bundle --outdir /tmp/check 2>&1 || true
+        # bundle-to-outdir so the exit code is meaningful: 0 on success, non-0 on a real
+        # import/transpile error anywhere in the graph. (The old `--no-bundle` single-entry
+        # form always exited 1 via a bun output-filename quirk, which is why `|| true`
+        # was masking it — it was hiding a broken command, not real failures.)
+        run: bun build src/cli.ts --target bun --outdir /tmp/ts-check
