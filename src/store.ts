@@ -10,6 +10,7 @@ import { logWarn } from "./stderr-log.js";
 import type { DurableMemoryCategory } from "./memory-schema.js";
 import { matchesScopeFilter } from "./scope-policy.js";
 import { detectEmotionIfEnabled } from "./emotion-detector.js";
+import { withWriteLock } from "./distill-lock.js";
 import type { MemoryStorePort, MemoryStoreStats, MemoryStoreUpdate } from "./memory-store-port.js";
 
 // ============================================================================
@@ -378,7 +379,10 @@ export class MemoryStore implements MemoryStorePort {
     }
 
     try {
-      await this.table!.add([fullEntry]);
+      // P0-2: go through upsert (delete+add under the global store-write lock) rather
+      // than a bare table.add — with the deterministic id above, storing the same
+      // (scope,text) twice now yields one row, not a dup-id pair (fixes the append bug).
+      return await this.upsert(fullEntry);
     } catch (err: any) {
       const code = err.code || "";
       const message = err.message || String(err);
@@ -386,20 +390,21 @@ export class MemoryStore implements MemoryStorePort {
         `Failed to store memory in "${this.config.dbPath}": ${code} ${message}`
       );
     }
-    return fullEntry;
   }
 
   /**
    * Batch store multiple entries at once — much faster than individual store() calls.
    * LanceDB handles bulk inserts efficiently with a single index update.
    */
-  async storeBatch(entries: Omit<MemoryEntry, "id" | "timestamp">[]): Promise<number> {
+  async storeBatch(entries: (Omit<MemoryEntry, "id" | "timestamp"> & { id?: string })[]): Promise<number> {
     if (entries.length === 0) return 0;
     await this.ensureInitialized();
 
     const fullEntries: MemoryEntry[] = entries.map(entry => ({
       ...entry,
-      id: deterministicId(entry.scope, entry.text),
+      // P0-2: honor a caller-supplied id (consolidation insight/pattern idempotency),
+      // else the deterministic content id — unified with store() (was: always recompute).
+      id: entry.id ?? deterministicId(entry.scope, entry.text),
       timestamp: Date.now(),
       metadata: entry.metadata || "{}",
       language: entry.language || "en",
@@ -417,7 +422,15 @@ export class MemoryStore implements MemoryStorePort {
     });
 
     try {
-      await this.table!.add(enrichedEntries);
+      await withWriteLock("store-write", async () => {
+        // P0-1/P0-2: idempotent batch write under the global store-write lock —
+        // delete any existing rows for these ids, then add. Dedup ids within the
+        // batch so the delete IN-clause matches exactly the rows we re-add.
+        const ids = [...new Set(enrichedEntries.map(e => e.id))];
+        const inList = ids.map(id => `'${escapeSqlLiteral(id)}'`).join(", ");
+        await this.table!.delete(`id IN (${inList})`).catch(() => undefined);
+        await this.table!.add(enrichedEntries);
+      }, { expireMs: 30_000 });
     } catch (err: any) {
       const code = err.code || "";
       const message = err.message || String(err);
@@ -426,6 +439,25 @@ export class MemoryStore implements MemoryStorePort {
       );
     }
     return fullEntries.length;
+  }
+
+  /**
+   * P0-1/P0-2: Idempotent write of a fully-formed entry, serialized across processes.
+   *
+   * The global `store-write` lock makes delete-then-add atomic across the 11
+   * mcp-server processes (matching upstream memory-lancedb-pro store.upsert), so two
+   * processes writing the same deterministic id can no longer both append (the P0-1
+   * dup-id race). "Same id overwrites" also gives content-addressed idempotency to
+   * every store()/storeBatch() caller whose id is deterministicId(scope,text).
+   */
+  async upsert(entry: MemoryEntry): Promise<MemoryEntry> {
+    await this.ensureInitialized();
+    await withWriteLock("store-write", async () => {
+      const safeId = escapeSqlLiteral(entry.id);
+      await this.table!.delete(`id = '${safeId}'`).catch(() => undefined);
+      await this.table!.add([entry]);
+    }, { expireMs: 30_000 });
+    return entry;
   }
 
   /**
