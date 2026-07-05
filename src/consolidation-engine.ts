@@ -102,8 +102,15 @@ export function tripleJaccard(
   return inter / (a.size + b.size - inter);
 }
 
-/** Weight of the mention-frequency boost in canonical selection (multiplicative, log-damped). */
-const MENTION_ALPHA = 0.3;
+/**
+ * Mention-frequency boost in canonical selection: tie-breaker ONLY, never an
+ * override of a clear canonicalScore gap (an entry with one hot triple must
+ * not demote a substantially more important memory to consolidated status).
+ * α=0.06 keeps the boost differentiating (m=1 → 1.042, m=9 → 1.138) while the
+ * 1.1 cap bounds the maximum flip at ~10% of the base score — effectively ties.
+ */
+const MENTION_ALPHA = 0.06;
+const MENTION_BOOST_CAP = 1.1;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -256,7 +263,7 @@ export class ConsolidationEngine {
         // Determine canonical: highest canonicalScore, frequency-boosted when
         // KG evidence exists (memories carrying often-mentioned facts win ties)
         const mentionBoost = (e: MemoryEntry) =>
-          1 + MENTION_ALPHA * Math.log((maxMentionByMember.get(e.id) ?? 0) + 1);
+          Math.min(MENTION_BOOST_CAP, 1 + MENTION_ALPHA * Math.log((maxMentionByMember.get(e.id) ?? 0) + 1));
         const sorted = [...memberEntries].sort(
           (a, b) => canonicalScore(b) * mentionBoost(b) - canonicalScore(a) * mentionBoost(a),
         );

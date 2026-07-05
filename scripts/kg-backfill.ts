@@ -157,7 +157,9 @@ async function main() {
   const startedAt = Date.now();
   let cursor = 0;
 
-  async function worker(): Promise<void> {
+  async function worker(startDelayMs: number): Promise<void> {
+    // Stagger start so --rate holds from the first second (no initial burst)
+    if (startDelayMs > 0) await sleep(startDelayMs);
     while (!aborted) {
       const idx = cursor++;
       if (idx >= toProcess.length) return;
@@ -185,7 +187,8 @@ async function main() {
     }
   }
 
-  await Promise.all(Array.from({ length: Math.max(1, concurrency) }, () => worker()));
+  const workers = Math.max(1, concurrency);
+  await Promise.all(Array.from({ length: workers }, (_, i) => worker((i * intervalMs) / workers)));
   if (aborted) process.exit(1);
 
   const kgCount = await kgStore.countTriples();

@@ -16,7 +16,7 @@
  *   bun scripts/kg-jaccard-calibrate.ts --scope global --per-band 60
  */
 
-import { loadDotEnv, loadConfig, expandHome, createComponents } from "../src/runtime-config.js";
+import { loadDotEnv, loadConfig, createStoreOnly } from "../src/runtime-config.js";
 import { KGStore } from "../src/kg-store.js";
 import { tripleJaccard } from "../src/consolidation-engine.js";
 import { isActiveMemory } from "../src/memory-evolution.js";
@@ -49,7 +49,8 @@ function pct(sorted: number[], p: number): number {
 }
 
 async function main() {
-  const { store, embedder: _embedder } = createComponents(config);
+  // Read-only workload — store-only avoids requiring embedding credentials
+  const store = createStoreOnly(config);
   const kg = new KGStore({ dbPath: store.dbPath });
 
   const bands: Band[] = [

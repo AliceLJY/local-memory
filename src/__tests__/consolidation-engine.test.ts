@@ -268,6 +268,31 @@ describe("ConsolidationEngine", () => {
       const bUpdates = updates.filter(u => u.id === "b").map(u => JSON.parse(u.metadata));
       expect(bUpdates.every(m => !m.evolution?.consolidatedInto)).toBe(true);
     });
+
+    it("mention boost must NOT override a clear importance gap (tie-breaker only)", async () => {
+      // A is substantially more important; B carries an extremely frequent triple.
+      // The capped boost (≤1.1) must not demote A to consolidated status.
+      const entryA = makeEntry({ id: "a", text: "the important synthesis", vector: [1, 0, 0], importance: 0.9 });
+      const entryB = makeEntry({ id: "b", text: "minor note repeating a hot fact", vector: [0.99, 0.1, 0], importance: 0.5 });
+      const simMap = new Map([
+        ["a", new Map([["b", 0.95]])],
+        ["b", new Map([["a", 0.95]])],
+      ]);
+      const kg = createMockKGSource({
+        a: [],
+        b: [t("hot", 500), t("tb", 1)], // absurdly frequent fact on the weak side
+      });
+      const { store, updates } = createMockStore([entryA, entryB], simMap);
+      const engine = new ConsolidationEngine(store, DEFAULT_CONSOLIDATION_CONFIG, kg);
+      const result = await engine.run("project:test");
+
+      expect(result.mergedCount).toBe(1);
+      // A stays canonical: B is the one marked consolidatedInto A
+      const finalMetaB = JSON.parse(updates.filter(u => u.id === "b").at(-1)!.metadata);
+      expect(finalMetaB.evolution?.consolidatedInto).toBe("a");
+      const aUpdates = updates.filter(u => u.id === "a").map(u => JSON.parse(u.metadata));
+      expect(aUpdates.every(m => !m.evolution?.consolidatedInto)).toBe(true);
+    });
   });
 });
 
