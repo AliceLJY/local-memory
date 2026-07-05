@@ -75,7 +75,7 @@ function escapeSql(value: string): string {
 const SOURCE_IDS_CAP = 200;
 
 /** Parse the JSON source id list, falling back to the legacy single-id column. */
-function parseSourceIds(raw: string | undefined | null, fallbackId?: string): string[] {
+export function parseSourceIds(raw: string | undefined | null, fallbackId?: string): string[] {
   if (raw) {
     try {
       const arr = JSON.parse(raw);
@@ -156,7 +156,9 @@ export class KGStore {
       const fields = new Set(schema.fields.map((f) => f.name));
       const missing: Array<{ name: string; valueSql: string }> = [];
       if (!fields.has("mention_count")) missing.push({ name: "mention_count", valueSql: "1" });
-      if (!fields.has("first_seen")) missing.push({ name: "first_seen", valueSql: `"timestamp"` });
+      // Constant 0 (not a column reference — SQL-dialect-proof); rowToTriple treats
+      // first_seen<=0 as "unknown" and falls back to the row's timestamp.
+      if (!fields.has("first_seen")) missing.push({ name: "first_seen", valueSql: "0" });
       if (!fields.has("source_memory_ids")) {
         missing.push({ name: "source_memory_ids", valueSql: `concat('["', source_memory_id, '"]')` });
       }
@@ -488,9 +490,10 @@ function rowToTriple(row: Record<string, unknown>): KGTriple {
     source_memory_id: sourceMemoryId,
     source_text: row.source_text as string,
     timestamp: Number(row.timestamp),
-    // Legacy-row fallbacks (pre-mention-count schema)
+    // Legacy-row fallbacks (pre-mention-count schema; first_seen<=0 = migrated placeholder)
     mention_count: row.mention_count != null ? Number(row.mention_count) : 1,
-    first_seen: row.first_seen != null ? Number(row.first_seen) : Number(row.timestamp),
+    first_seen:
+      row.first_seen != null && Number(row.first_seen) > 0 ? Number(row.first_seen) : Number(row.timestamp),
     source_memory_ids:
       typeof row.source_memory_ids === "string" && row.source_memory_ids.length > 0
         ? row.source_memory_ids

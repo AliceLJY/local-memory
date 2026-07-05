@@ -33,6 +33,7 @@ import {
   tokenize,
 } from "./multi-vector.js";
 import { parseTemporalQuery, matchesTemporalConstraint, type TemporalConstraint } from "./temporal-parser.js";
+import { parseSourceIds } from "./kg-store.js";
 import type { KGStore } from "./kg-store.js";
 import { isKGModeEnabled } from "./kg-extractor.js";
 import { detectEntities } from "./query-entity-detector.js";
@@ -1405,9 +1406,13 @@ export class MemoryRetriever {
           const objectScore = entityScoreMap.get(triple.object) ?? 0;
           const tripleScore = Math.max(subjectScore, objectScore) * triple.confidence;
 
-          if (tripleScore > 0 && triple.source_memory_id) {
-            const existing = memoryScoreMap.get(triple.source_memory_id) ?? 0;
-            memoryScoreMap.set(triple.source_memory_id, Math.max(existing, tripleScore));
+          if (tripleScore > 0) {
+            // All contributing memories share the fact's score — not just the
+            // first contributor (multi-source triples after mention counting)
+            for (const mid of parseSourceIds(triple.source_memory_ids, triple.source_memory_id)) {
+              const existing = memoryScoreMap.get(mid) ?? 0;
+              memoryScoreMap.set(mid, Math.max(existing, tripleScore));
+            }
           }
         }
       }
@@ -1943,8 +1948,10 @@ export class MemoryRetriever {
         const existingIds = new Set(results.map(r => r.entry.id));
         for (const n of neighborhood) {
           for (const t of n.triples) {
-            if (t.source_memory_id && !existingIds.has(t.source_memory_id)) {
-              sourceIds.add(t.source_memory_id);
+            // Expand through ALL contributing memories of each fact, not just
+            // the first contributor (multi-source triples after mention counting)
+            for (const mid of parseSourceIds(t.source_memory_ids, t.source_memory_id)) {
+              if (!existingIds.has(mid)) sourceIds.add(mid);
             }
           }
         }

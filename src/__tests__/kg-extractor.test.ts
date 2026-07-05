@@ -149,6 +149,14 @@ describe("KGExtractor.extract", () => {
     expect((await ext.extract("Some text here")).length).toBe(0);
   });
 
+  it("propagates LLM transport failure (not silently zero triples)", async () => {
+    const llm = createMockLlm(null);
+    llm.chatJson = async () => { throw new Error("rate limited"); };
+    const ext = new KGExtractor({ llmClient: llm, kgStore: createMockKGStore() });
+    // Backfill relies on this to avoid journaling failed extractions as processed
+    await expect(ext.extract("Some text long enough here")).rejects.toThrow("rate limited");
+  });
+
   it("skips short text", async () => {
     const llm = createMockLlm({ triples: [] });
     const ext = new KGExtractor({ llmClient: llm, kgStore: createMockKGStore() });

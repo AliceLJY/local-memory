@@ -164,8 +164,11 @@ export class KGExtractor {
         prompt,
       );
     } catch (err) {
+      // Transport/API failure is NOT "zero triples" — propagate so callers can
+      // distinguish (backfill must not journal it as processed). The capture
+      // path's fire-and-forget .catch() keeps memory writes unaffected.
       logWarn(`[KG] LLM extraction failed: ${String(err)}`);
-      return [];
+      throw err instanceof Error ? err : new Error(String(err));
     }
 
     if (!response?.triples || !Array.isArray(response.triples)) {
