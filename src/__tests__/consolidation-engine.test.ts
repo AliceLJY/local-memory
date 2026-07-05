@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 
-import { ConsolidationEngine, DEFAULT_CONSOLIDATION_CONFIG, formatConsolidationResult, type ConsolidationResult } from "../consolidation-engine.js";
+import { ConsolidationEngine, DEFAULT_CONSOLIDATION_CONFIG, formatConsolidationResult, tripleJaccard, type ConsolidationResult, type ConsolidationTripleEvidence } from "../consolidation-engine.js";
 import type { MemoryEntry, MemorySearchResult } from "../store.js";
 
 function makeEntry(overrides: Partial<MemoryEntry> & { id: string; text: string }): MemoryEntry {

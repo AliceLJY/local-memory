@@ -246,6 +246,37 @@ describe("KGStore", () => {
     });
   });
 
+  describe("getTriplesBySourceMemories", () => {
+    it("maps each memory id to the triples it contributed", async () => {
+      const store = new KGStore({ dbPath: workDir });
+      await store.createTriples([
+        makeTriple({ source_memory_id: "mem-001", subject: "Alice", object: "Python" }),
+        makeTriple({ source_memory_id: "mem-001", subject: "Alice", object: "Go" }),
+        makeTriple({ source_memory_id: "mem-002", subject: "Bob", object: "Rust" }),
+      ]);
+      const map = await store.getTriplesBySourceMemories(["mem-001", "mem-002", "mem-404"]);
+      expect(map.get("mem-001")?.length).toBe(2);
+      expect(map.get("mem-002")?.length).toBe(1);
+      expect(map.has("mem-404")).toBe(false);
+    });
+
+    it("a multi-source triple appears under every contributing memory", async () => {
+      const store = new KGStore({ dbPath: workDir });
+      await store.createTriple(makeTriple({ source_memory_id: "mem-001" }));
+      await store.createTriple(makeTriple({ source_memory_id: "mem-002" }));
+      const map = await store.getTriplesBySourceMemories(["mem-001", "mem-002"]);
+      expect(map.get("mem-001")?.length).toBe(1);
+      expect(map.get("mem-002")?.length).toBe(1);
+      expect(map.get("mem-001")?.[0].id).toBe(map.get("mem-002")?.[0].id);
+      expect(map.get("mem-001")?.[0].mention_count).toBe(2);
+    });
+
+    it("returns empty map for empty input", async () => {
+      const store = new KGStore({ dbPath: workDir });
+      expect((await store.getTriplesBySourceMemories([])).size).toBe(0);
+    });
+  });
+
   describe("entity queries", () => {
     it("getAllEntities returns unique entities", async () => {
       const store = new KGStore({ dbPath: workDir });

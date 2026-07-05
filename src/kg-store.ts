@@ -366,6 +366,35 @@ export class KGStore {
     return results;
   }
 
+  /**
+   * Batch reverse lookup: which triples did each of these memories contribute?
+   * Used by the consolidation engine as a second merge-evidence source.
+   * A multi-source triple appears under every contributing memory id.
+   */
+  async getTriplesBySourceMemories(memoryIds: string[]): Promise<Map<string, KGTriple[]>> {
+    const result = new Map<string, KGTriple[]>();
+    if (memoryIds.length === 0) return result;
+    await this.ensureInitialized();
+
+    const conds = memoryIds.map((id) => {
+      const safe = escapeSql(id);
+      return `source_memory_id = '${safe}' OR source_memory_ids LIKE '%"${safe}"%'`;
+    });
+    const rows = await this.table!.query().where(conds.join(" OR ")).limit(100000).toArray();
+
+    for (const row of rows) {
+      const t = rowToTriple(row);
+      const contributors = parseSourceIds(t.source_memory_ids, t.source_memory_id);
+      for (const mid of memoryIds) {
+        if (!contributors.includes(mid)) continue; // LIKE prefilter false positive guard
+        const list = result.get(mid);
+        if (list) list.push(t);
+        else result.set(mid, [t]);
+      }
+    }
+    return result;
+  }
+
   // --------------------------------------------------------------------------
   // Read — Entity listing
   // --------------------------------------------------------------------------
