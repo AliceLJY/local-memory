@@ -67,6 +67,59 @@ describe("KGStore", () => {
     });
   });
 
+  describe("mention counting", () => {
+    it("new triple starts at mention_count 1 with its source recorded", async () => {
+      const store = new KGStore({ dbPath: workDir });
+      const t = await store.createTriple(makeTriple());
+      expect(t.mention_count).toBe(1);
+      expect(t.first_seen).toBeGreaterThan(0);
+      expect(JSON.parse(t.source_memory_ids)).toEqual(["mem-001"]);
+    });
+
+    it("same triple from a different source memory increments count", async () => {
+      const store = new KGStore({ dbPath: workDir });
+      const t1 = await store.createTriple(makeTriple({ source_memory_id: "mem-001" }));
+      const t2 = await store.createTriple(makeTriple({ source_memory_id: "mem-002" }));
+      expect(t2.id).toBe(t1.id);
+      expect(t2.mention_count).toBe(2);
+      expect(JSON.parse(t2.source_memory_ids).sort()).toEqual(["mem-001", "mem-002"]);
+      expect(t2.first_seen).toBe(t1.first_seen);
+      expect(await store.countTriples()).toBe(1);
+    });
+
+    it("same triple from the same source memory does NOT increment count", async () => {
+      const store = new KGStore({ dbPath: workDir });
+      const t1 = await store.createTriple(makeTriple({ confidence: 0.8 }));
+      const t2 = await store.createTriple(makeTriple({ confidence: 0.95 }));
+      expect(t2.mention_count).toBe(1);
+      expect(JSON.parse(t2.source_memory_ids)).toEqual(["mem-001"]);
+      // confidence keeps the max seen
+      expect(t2.confidence).toBe(0.95);
+      const again = await store.createTriple(makeTriple({ confidence: 0.5 }));
+      expect(again.confidence).toBe(0.95);
+    });
+
+    it("batch with same triple from different sources counts each source once", async () => {
+      const store = new KGStore({ dbPath: workDir });
+      const triples = await store.createTriples([
+        makeTriple({ source_memory_id: "mem-001" }),
+        makeTriple({ source_memory_id: "mem-002" }),
+        makeTriple({ source_memory_id: "mem-002" }), // duplicate source in batch
+      ]);
+      expect(triples.length).toBe(1);
+      expect(triples[0].mention_count).toBe(2);
+      expect(await store.countTriples()).toBe(1);
+    });
+
+    it("count survives across batch and single writes", async () => {
+      const store = new KGStore({ dbPath: workDir });
+      await store.createTriples([makeTriple({ source_memory_id: "mem-001" })]);
+      await store.createTriples([makeTriple({ source_memory_id: "mem-002" })]);
+      const t = await store.createTriple(makeTriple({ source_memory_id: "mem-003" }));
+      expect(t.mention_count).toBe(3);
+    });
+  });
+
   describe("createTriples (batch)", () => {
     it("stores multiple triples", async () => {
       const store = new KGStore({ dbPath: workDir });
@@ -172,6 +225,24 @@ describe("KGStore", () => {
       ]);
       await store.deleteBySource("mem-001");
       expect(await store.countTriples()).toBe(1);
+    });
+
+    it("multi-source triple survives forgetting one source (count decremented)", async () => {
+      const store = new KGStore({ dbPath: workDir });
+      await store.createTriple(makeTriple({ source_memory_id: "mem-001" }));
+      await store.createTriple(makeTriple({ source_memory_id: "mem-002" }));
+
+      await store.deleteBySource("mem-001");
+      // Fact still evidenced by mem-002 — row survives with decremented count
+      expect(await store.countTriples()).toBe(1);
+      const edges = await store.getOutgoingEdges("Alice");
+      expect(edges.length).toBe(1);
+      expect(edges[0].mention_count).toBe(1);
+      expect(JSON.parse(edges[0].source_memory_ids)).toEqual(["mem-002"]);
+
+      await store.deleteBySource("mem-002");
+      // Last evidence gone — row deleted
+      expect(await store.countTriples()).toBe(0);
     });
   });
 
