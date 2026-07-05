@@ -40,7 +40,8 @@ const dryRun = process.argv.includes("--dry-run");
 const minImportance = Number(argValue("--min-importance") ?? "0.8");
 const scopeFilter = argValue("--scope");
 const limit = Number(argValue("--limit") ?? "0"); // 0 = no limit
-const rate = Number(argValue("--rate") ?? "2"); // LLM calls per second
+const rate = Number(argValue("--rate") ?? "2"); // GLOBAL LLM calls per second target
+const concurrency = Number(argValue("--concurrency") ?? "1"); // parallel extraction workers
 
 const JOURNAL_DIR = "data/kg-backfill-journals";
 
@@ -149,30 +150,43 @@ async function main() {
   let done = 0;
   let totalTriples = 0;
   let failures = 0;
-  const intervalMs = Math.max(1000 / rate, 50);
+  let aborted = false;
+  // Throughput is LLM-latency-bound (~3s/call serial), so concurrency is the
+  // real lever; the per-worker sleep keeps the GLOBAL rate ≈ --rate.
+  const intervalMs = Math.max((1000 / rate) * concurrency, 50);
   const startedAt = Date.now();
+  let cursor = 0;
 
-  for (const c of toProcess) {
-    try {
-      const stored = await extractor.extractAndStore(c.text, c.id, c.scope);
-      totalTriples += stored;
-      const line: JournalLine = { memoryId: c.id, scope: c.scope, triplesStored: stored, ts: new Date().toISOString() };
-      appendFileSync(journalPath, JSON.stringify(line) + "\n");
-    } catch (err) {
-      failures++;
-      console.error(`  FAIL ${c.id.slice(0, 8)}…: ${err instanceof Error ? err.message : String(err)}`);
-      if (failures >= 10 && failures > done * 0.5) {
-        console.error("  Too many consecutive failures — aborting (journal preserves progress).");
-        process.exit(1);
+  async function worker(): Promise<void> {
+    while (!aborted) {
+      const idx = cursor++;
+      if (idx >= toProcess.length) return;
+      const c = toProcess[idx];
+      try {
+        const stored = await extractor.extractAndStore(c.text, c.id, c.scope);
+        totalTriples += stored;
+        const line: JournalLine = { memoryId: c.id, scope: c.scope, triplesStored: stored, ts: new Date().toISOString() };
+        appendFileSync(journalPath, JSON.stringify(line) + "\n");
+      } catch (err) {
+        failures++;
+        console.error(`  FAIL ${c.id.slice(0, 8)}…: ${err instanceof Error ? err.message : String(err)}`);
+        if (failures >= 10 && failures > done * 0.5) {
+          console.error("  Too many failures — aborting (journal preserves progress).");
+          aborted = true;
+          return;
+        }
       }
+      done++;
+      if (done % 20 === 0 || done === toProcess.length) {
+        const elapsed = Math.round((Date.now() - startedAt) / 1000);
+        process.stdout.write(`  ${done}/${toProcess.length} memories | ${totalTriples} triples | ${failures} failures | ${elapsed}s\r`);
+      }
+      if (cursor < toProcess.length) await sleep(intervalMs);
     }
-    done++;
-    if (done % 20 === 0 || done === toProcess.length) {
-      const elapsed = Math.round((Date.now() - startedAt) / 1000);
-      process.stdout.write(`  ${done}/${toProcess.length} memories | ${totalTriples} triples | ${failures} failures | ${elapsed}s\r`);
-    }
-    if (done < toProcess.length) await sleep(intervalMs);
   }
+
+  await Promise.all(Array.from({ length: Math.max(1, concurrency) }, () => worker()));
+  if (aborted) process.exit(1);
 
   const kgCount = await kgStore.countTriples();
   console.log(`\n\n  Done. ${done} memories processed, ${totalTriples} triples stored (${failures} failures).`);

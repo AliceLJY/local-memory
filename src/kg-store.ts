@@ -93,8 +93,18 @@ export class KGStore {
   private db: LanceDB.Connection | null = null;
   private table: LanceDB.Table | null = null;
   private initPromise: Promise<void> | null = null;
+  /** In-process write serialization: concurrent workers (e.g. backfill
+   * --concurrency) would otherwise race read-modify-write AND collide on
+   * LanceDB optimistic commits. Cross-process races stay best-effort. */
+  private writeChain: Promise<unknown> = Promise.resolve();
 
   constructor(private readonly config: KGStoreConfig) {}
+
+  private withWriteLock<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.writeChain.then(fn, fn);
+    this.writeChain = run.catch(() => {});
+    return run;
+  }
 
   // --------------------------------------------------------------------------
   // Initialization
@@ -218,7 +228,10 @@ export class KGStore {
   async createTriples(triples: KGTripleInput[]): Promise<KGTriple[]> {
     if (triples.length === 0) return [];
     await this.ensureInitialized();
+    return this.withWriteLock(() => this.createTriplesLocked(triples));
+  }
 
+  private async createTriplesLocked(triples: KGTripleInput[]): Promise<KGTriple[]> {
     const now = Date.now();
 
     // 1. Aggregate within batch: same triple id → union of contributing sources
@@ -476,13 +489,15 @@ export class KGStore {
       }
     }
 
-    if (toUpdate.length > 0) {
-      await this.table!.mergeInsert("id").whenMatchedUpdateAll().whenNotMatchedInsertAll().execute(toUpdate);
-    }
-    if (toDelete.length > 0) {
-      const idList = toDelete.map((id) => `'${escapeSql(id)}'`).join(", ");
-      await this.table!.delete(`id IN (${idList})`);
-    }
+    await this.withWriteLock(async () => {
+      if (toUpdate.length > 0) {
+        await this.table!.mergeInsert("id").whenMatchedUpdateAll().whenNotMatchedInsertAll().execute(toUpdate);
+      }
+      if (toDelete.length > 0) {
+        const idList = toDelete.map((id) => `'${escapeSql(id)}'`).join(", ");
+        await this.table!.delete(`id IN (${idList})`);
+      }
+    });
   }
 
   /** Delete all triples in scope */
