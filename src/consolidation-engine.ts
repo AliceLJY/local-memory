@@ -37,12 +37,22 @@ export interface ConsolidationConfig {
   mergeThreshold: number;
   /** Maximum entries to scan per consolidation run (default 500) */
   maxEntriesPerRun: number;
+  /**
+   * KG evidence: triple-set Jaccard at/above this merges a grey-zone pair
+   * (vector sim between clusterThreshold and mergeThreshold). Default 0.5 —
+   * provisional until calibrated on production data (plan Q3).
+   */
+  tripleJaccardThreshold?: number;
+  /** KG evidence: both sides need at least this many triples to qualify (default 2) */
+  minTriplesForEvidence?: number;
 }
 
 export const DEFAULT_CONSOLIDATION_CONFIG: ConsolidationConfig = {
   clusterThreshold: 0.82,
   mergeThreshold: 0.92,
   maxEntriesPerRun: 500,
+  tripleJaccardThreshold: 0.5,
+  minTriplesForEvidence: 2,
 };
 
 export interface ConflictEvent {
@@ -56,9 +66,44 @@ export interface ConsolidationResult {
   clustersFound: number;
   mergedCount: number;
   relationsAdded: number;
+  /** Of mergedCount, how many were below mergeThreshold and merged on KG triple evidence */
+  tripleEvidenceMerges: number;
   conflictsDetected: ConflictEvent[];
   scope: string;
 }
+
+// ---------------------------------------------------------------------------
+// KG evidence source (duck-typed subset of KGStore)
+// ---------------------------------------------------------------------------
+
+/** The two triple fields consolidation needs — structurally satisfied by KGTriple. */
+export interface ConsolidationTripleEvidence {
+  id: string;
+  mention_count: number;
+}
+
+export interface ConsolidationKGSource {
+  getTriplesBySourceMemories(memoryIds: string[]): Promise<Map<string, ConsolidationTripleEvidence[]>>;
+}
+
+/**
+ * Jaccard overlap of two triple-id sets. Below `minSize` on either side the
+ * evidence is considered too weak and 0 is returned (a single shared triple
+ * must not merge two memories on its own).
+ */
+export function tripleJaccard(
+  a: ReadonlySet<string> | undefined,
+  b: ReadonlySet<string> | undefined,
+  minSize = 2,
+): number {
+  if (!a || !b || a.size < minSize || b.size < minSize) return 0;
+  let inter = 0;
+  for (const x of a) if (b.has(x)) inter++;
+  return inter / (a.size + b.size - inter);
+}
+
+/** Weight of the mention-frequency boost in canonical selection (multiplicative, log-damped). */
+const MENTION_ALPHA = 0.3;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -120,17 +165,25 @@ export class ConsolidationEngine {
   constructor(
     private store: ConsolidationStore,
     private config: ConsolidationConfig = DEFAULT_CONSOLIDATION_CONFIG,
+    /** Optional KG evidence source — absent = pure vector behavior, unchanged */
+    private kgSource: ConsolidationKGSource | null = null,
   ) {}
 
   async run(scope: string): Promise<ConsolidationResult> {
-    const { clusterThreshold, mergeThreshold, maxEntriesPerRun } = this.config;
+    const {
+      clusterThreshold,
+      mergeThreshold,
+      maxEntriesPerRun,
+      tripleJaccardThreshold = 0.5,
+      minTriplesForEvidence = 2,
+    } = this.config;
 
     // 1. Fetch entries in scope
     const entries = await this.store.list([scope], undefined, maxEntriesPerRun, 0);
     const active = entries.filter(isActive);
 
     if (active.length === 0) {
-      return { originalCount: 0, clustersFound: 0, mergedCount: 0, relationsAdded: 0, conflictsDetected: [], scope };
+      return { originalCount: 0, clustersFound: 0, mergedCount: 0, relationsAdded: 0, tripleEvidenceMerges: 0, conflictsDetected: [], scope };
     }
 
     // 2. Group by category
@@ -144,6 +197,7 @@ export class ConsolidationEngine {
     let clustersFound = 0;
     let mergedCount = 0;
     let relationsAdded = 0;
+    let tripleEvidenceMerges = 0;
     const conflictsDetected: ConflictEvent[] = [];
 
     // 3. Cluster within each category
@@ -185,8 +239,27 @@ export class ConsolidationEngine {
         }
         if (memberEntries.length < 2) continue;
 
-        // Determine canonical: highest canonicalScore
-        const sorted = [...memberEntries].sort((a, b) => canonicalScore(b) - canonicalScore(a));
+        // KG triple evidence for this cluster (single batch query; best-effort —
+        // on failure consolidation proceeds vector-only)
+        const tripleIdsByMember = new Map<string, Set<string>>();
+        const maxMentionByMember = new Map<string, number>();
+        if (this.kgSource) {
+          try {
+            const triplesByMember = await this.kgSource.getTriplesBySourceMemories(memberEntries.map(e => e.id));
+            for (const [mid, triples] of triplesByMember) {
+              tripleIdsByMember.set(mid, new Set(triples.map(t => t.id)));
+              maxMentionByMember.set(mid, triples.reduce((m, t) => Math.max(m, t.mention_count), 0));
+            }
+          } catch { /* KG evidence is best-effort */ }
+        }
+
+        // Determine canonical: highest canonicalScore, frequency-boosted when
+        // KG evidence exists (memories carrying often-mentioned facts win ties)
+        const mentionBoost = (e: MemoryEntry) =>
+          1 + MENTION_ALPHA * Math.log((maxMentionByMember.get(e.id) ?? 0) + 1);
+        const sorted = [...memberEntries].sort(
+          (a, b) => canonicalScore(b) * mentionBoost(b) - canonicalScore(a) * mentionBoost(a),
+        );
         const canonical = sorted[0];
 
         if (!canonical.vector?.length) continue;
@@ -201,7 +274,16 @@ export class ConsolidationEngine {
         for (const member of sorted.slice(1)) {
           const sim = scoreMap.get(member.id) ?? clusterThreshold;
 
-          if (sim >= mergeThreshold) {
+          // Second evidence source: two memories whose extracted fact sets
+          // overlap heavily are duplicates even when vector sim sits in the
+          // grey zone (the "pairwise near-duplicates" the 0.92 bar misses).
+          const jaccard = tripleJaccard(
+            tripleIdsByMember.get(canonical.id),
+            tripleIdsByMember.get(member.id),
+            minTriplesForEvidence,
+          );
+
+          if (sim >= mergeThreshold || jaccard >= tripleJaccardThreshold) {
             // Tier 3.3: Version coexistence — both stay but grouped.
             await createVersionGroup(this.store, canonical, member, scope);
             // C-1: Also mark the weaker entry as consolidated via evolution metadata
@@ -216,6 +298,7 @@ export class ConsolidationEngine {
               await this.store.update(canonical.id, { metadata: updatedCanon }, [scope]);
             }
             mergedCount++;
+            if (sim < mergeThreshold) tripleEvidenceMerges++;
           } else {
             // Link: add clustered_with relation
             const memberMeta = parseMetadata(member);
@@ -247,7 +330,7 @@ export class ConsolidationEngine {
       }
     }
 
-    return { originalCount: active.length, clustersFound, mergedCount, relationsAdded, conflictsDetected, scope };
+    return { originalCount: active.length, clustersFound, mergedCount, relationsAdded, tripleEvidenceMerges, conflictsDetected, scope };
   }
 }
 
@@ -500,7 +583,7 @@ export function formatConsolidationResult(result: ConsolidationResult): string {
     `Consolidation complete for scope: ${result.scope}`,
     `Scanned: ${result.originalCount} active entries`,
     `Clusters found: ${result.clustersFound}`,
-    `Merged (versioned): ${result.mergedCount}`,
+    `Merged (versioned): ${result.mergedCount}${result.tripleEvidenceMerges > 0 ? ` (${result.tripleEvidenceMerges} on triple evidence)` : ""}`,
     `Relations added: ${result.relationsAdded}`,
     `Conflicts detected: ${result.conflictsDetected.length}`,
   ];

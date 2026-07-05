@@ -19,7 +19,7 @@ import type { ToolRegistryDeps } from "./mcp-tool-deps.js";
 import { withLock } from "./distill-lock.js";
 
 export function registerGovernanceTools(deps: ToolRegistryDeps): void {
-  const { registerTool, getComponents, conflictStore, workflowObservationStore, getKGExtractor } = deps;
+  const { registerTool, getComponents, conflictStore, workflowObservationStore, getKGExtractor, getKGStore } = deps;
 
 registerTool(
   "workflow_observe",
@@ -333,7 +333,7 @@ registerTool(
         vectorSearch: store.vectorSearch.bind(store),
         update: async () => null, // no-op in dry-run
       };
-      const engine = new ConsolidationEngine(readOnlyStore, { clusterThreshold, mergeThreshold, maxEntriesPerRun: maxEntries });
+      const engine = new ConsolidationEngine(readOnlyStore, { clusterThreshold, mergeThreshold, maxEntriesPerRun: maxEntries }, getKGStore());
       const result = await engine.run(scope);
       return {
         content: [{
@@ -349,7 +349,7 @@ registerTool(
     const outcome = await withLock(
       `consolidate-${scope}`,
       async () => {
-        const engine = new ConsolidationEngine(store, { clusterThreshold, mergeThreshold, maxEntriesPerRun: maxEntries });
+        const engine = new ConsolidationEngine(store, { clusterThreshold, mergeThreshold, maxEntriesPerRun: maxEntries }, getKGStore());
         return engine.run(scope);
       },
       { onBusy: "skip", expireMs: 600_000 },

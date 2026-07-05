@@ -17,7 +17,7 @@
 import type { MemoryStorePort } from "./memory-store-port.js";
 import type { LLMClient } from "./llm-client.js";
 import type { Embedder } from "./embedder.js";
-import { ConsolidationEngine, clusterAndConsolidate, DEFAULT_CONSOLIDATION_CONFIG } from "./consolidation-engine.js";
+import { ConsolidationEngine, clusterAndConsolidate, DEFAULT_CONSOLIDATION_CONFIG, type ConsolidationKGSource } from "./consolidation-engine.js";
 import { maybeRunGc, type GcResult, type AutoGcConfig, DEFAULT_AUTO_GC_CONFIG } from "./auto-gc.js";
 import { getWriteCount, resetWriteCount } from "./activity-counter.js";
 import { deriveUsageStatus, getUsageMetadata, isUsageSignalActive } from "./usage-tracker.js";
@@ -87,6 +87,8 @@ async function runDreamInner(params: {
   force?: boolean;
   /** Override the activity-counter stats file (defaults to <dataDir>/activity-stats.json). */
   activityStatsPath?: string;
+  /** Optional KG evidence source for triple-overlap merging (null/absent = vector-only) */
+  kgStore?: ConsolidationKGSource | null;
 }): Promise<DreamResult> {
   const { store, llm, embedder, scope, force = false } = params;
   const config = { ...DEFAULT_DREAM_CONFIG, ...params.config };
@@ -189,7 +191,7 @@ async function runDreamInner(params: {
       ...DEFAULT_CONSOLIDATION_CONFIG,
       clusterThreshold: config.clusterThreshold,
       maxEntriesPerRun: config.maxEntriesPerRun,
-    });
+    }, params.kgStore ?? null);
     const consolidation = await engine.run(scope);
     stats.clustersFound += consolidation.clustersFound;
     stats.mergedCount += consolidation.mergedCount;
@@ -255,6 +257,8 @@ export async function runDream(params: {
   force?: boolean;
   /** Override the activity-counter stats file (defaults to <dataDir>/activity-stats.json). */
   activityStatsPath?: string;
+  /** Optional KG evidence source for triple-overlap merging (null/absent = vector-only) */
+  kgStore?: ConsolidationKGSource | null;
 }): Promise<DreamResult> {
   const outcome = await withLock(
     `dream-${params.scope}`,

@@ -160,6 +160,132 @@ describe("ConsolidationEngine", () => {
 
     expect(result.originalCount).toBe(1); // only active
   });
+
+  describe("KG triple evidence (second merge-evidence source)", () => {
+    function createMockKGSource(byMemory: Record<string, ConsolidationTripleEvidence[]>) {
+      return {
+        async getTriplesBySourceMemories(memoryIds: string[]) {
+          const result = new Map<string, ConsolidationTripleEvidence[]>();
+          for (const id of memoryIds) {
+            if (byMemory[id]) result.set(id, byMemory[id]);
+          }
+          return result;
+        },
+      };
+    }
+    const t = (id: string, mention = 1): ConsolidationTripleEvidence => ({ id, mention_count: mention });
+
+    function greyZonePair() {
+      const entryA = makeEntry({ id: "a", text: "Alice's main machine is the MacBook", vector: [1, 0, 0], importance: 0.9 });
+      const entryB = makeEntry({ id: "b", text: "Alice uses a MacBook as her primary computer", vector: [0.9, 0.1, 0], importance: 0.5 });
+      const simMap = new Map([
+        ["a", new Map([["b", 0.85]])], // grey zone: above cluster 0.82, below merge 0.92
+        ["b", new Map([["a", 0.85]])],
+      ]);
+      return { entryA, entryB, simMap };
+    }
+
+    it("merges a grey-zone pair when triple sets overlap", async () => {
+      const { entryA, entryB, simMap } = greyZonePair();
+      const kg = createMockKGSource({
+        a: [t("t1"), t("t2")],
+        b: [t("t1"), t("t2")], // Jaccard 1.0
+      });
+      const { store, updates } = createMockStore([entryA, entryB], simMap);
+      const engine = new ConsolidationEngine(store, DEFAULT_CONSOLIDATION_CONFIG, kg);
+      const result = await engine.run("project:test");
+
+      expect(result.mergedCount).toBe(1);
+      expect(result.tripleEvidenceMerges).toBe(1);
+      expect(result.relationsAdded).toBe(0);
+      const metaB = JSON.parse(updates.find(u => u.id === "b")!.metadata);
+      expect(metaB.version_group).toBeTruthy();
+    });
+
+    it("does not merge a grey-zone pair when triple sets are disjoint", async () => {
+      const { entryA, entryB, simMap } = greyZonePair();
+      const kg = createMockKGSource({
+        a: [t("t1"), t("t2")],
+        b: [t("t3"), t("t4")], // Jaccard 0
+      });
+      const { store } = createMockStore([entryA, entryB], simMap);
+      const engine = new ConsolidationEngine(store, DEFAULT_CONSOLIDATION_CONFIG, kg);
+      const result = await engine.run("project:test");
+
+      expect(result.mergedCount).toBe(0);
+      expect(result.tripleEvidenceMerges).toBe(0);
+      expect(result.relationsAdded).toBe(1); // falls back to link, current behavior
+    });
+
+    it("requires minTriplesForEvidence on both sides — a single shared triple is too weak", async () => {
+      const { entryA, entryB, simMap } = greyZonePair();
+      const kg = createMockKGSource({
+        a: [t("t1")],
+        b: [t("t1")], // overlap 1.0 but only one triple each — below default minTriplesForEvidence 2
+      });
+      const { store } = createMockStore([entryA, entryB], simMap);
+      const engine = new ConsolidationEngine(store, DEFAULT_CONSOLIDATION_CONFIG, kg);
+      const result = await engine.run("project:test");
+
+      expect(result.mergedCount).toBe(0);
+      expect(result.relationsAdded).toBe(1);
+    });
+
+    it("without a kgSource the grey zone links exactly as before", async () => {
+      const { entryA, entryB, simMap } = greyZonePair();
+      const { store } = createMockStore([entryA, entryB], simMap);
+      const engine = new ConsolidationEngine(store, DEFAULT_CONSOLIDATION_CONFIG);
+      const result = await engine.run("project:test");
+
+      expect(result.mergedCount).toBe(0);
+      expect(result.tripleEvidenceMerges).toBe(0);
+      expect(result.relationsAdded).toBe(1);
+    });
+
+    it("mention frequency boosts canonical selection", async () => {
+      // Same importance — the mention boost must be what flips the canonical
+      const entryA = makeEntry({ id: "a", text: "fact mentioned once", vector: [1, 0, 0], importance: 0.7 });
+      const entryB = makeEntry({ id: "b", text: "fact mentioned many times", vector: [0.99, 0.1, 0], importance: 0.7 });
+      const simMap = new Map([
+        ["a", new Map([["b", 0.95]])], // merge zone
+        ["b", new Map([["a", 0.95]])],
+      ]);
+      const kg = createMockKGSource({
+        a: [t("ta", 1), t("tx", 1)],
+        b: [t("tb", 9), t("ty", 1)], // b carries a fact mentioned 9 times → higher canonical score
+      });
+      const { store, updates } = createMockStore([entryA, entryB], simMap);
+      const engine = new ConsolidationEngine(store, DEFAULT_CONSOLIDATION_CONFIG, kg);
+      const result = await engine.run("project:test");
+
+      expect(result.mergedCount).toBe(1);
+      // B is canonical (the boost flipped the tie): A is the member, marked
+      // consolidatedInto B. version_rank can't witness this — computeVersionRank
+      // ignores the engine's canonical pick when importance ties.
+      const finalMetaA = JSON.parse(updates.filter(u => u.id === "a").at(-1)!.metadata);
+      expect(finalMetaA.evolution?.consolidatedInto).toBe("b");
+      // And B was never marked consolidated into anything
+      const bUpdates = updates.filter(u => u.id === "b").map(u => JSON.parse(u.metadata));
+      expect(bUpdates.every(m => !m.evolution?.consolidatedInto)).toBe(true);
+    });
+  });
+});
+
+describe("tripleJaccard", () => {
+  const set = (...ids: string[]) => new Set(ids);
+
+  it("computes intersection over union", () => {
+    expect(tripleJaccard(set("a", "b"), set("a", "b"))).toBe(1);
+    expect(tripleJaccard(set("a", "b"), set("b", "c"))).toBeCloseTo(1 / 3);
+    expect(tripleJaccard(set("a", "b"), set("c", "d"))).toBe(0);
+  });
+
+  it("returns 0 below the min-size floor (either side)", () => {
+    expect(tripleJaccard(set("a"), set("a"))).toBe(0); // default minSize 2
+    expect(tripleJaccard(set("a"), set("a"), 1)).toBe(1);
+    expect(tripleJaccard(undefined, set("a", "b"))).toBe(0);
+    expect(tripleJaccard(set("a", "b"), undefined)).toBe(0);
+  });
 });
 
 describe("formatConsolidationResult", () => {
@@ -169,6 +295,7 @@ describe("formatConsolidationResult", () => {
       clustersFound: 5,
       mergedCount: 3,
       relationsAdded: 7,
+      tripleEvidenceMerges: 1,
       conflictsDetected: [{ memoryA: "aaaa-bbbb", memoryB: "cccc-dddd", type: "heuristic_contradiction" }],
       scope: "project:test",
     };

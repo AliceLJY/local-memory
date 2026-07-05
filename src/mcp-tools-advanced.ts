@@ -628,6 +628,7 @@ registerTool(
       embedder: components.embedder,
       scope: resolvedScope,
       force,
+      kgStore: getKGStore(),
     });
     return {
       content: [{ type: "text" as const, text: formatDreamResult(result) }],

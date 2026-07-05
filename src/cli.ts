@@ -21,6 +21,8 @@ import { distillResults, formatExplainResults, formatSearchResults, selectBriefS
 import { archiveDirtyBriefAsset, assetSummaryLine, buildBriefAsset, buildPinAsset, getExportsDir, listDirtyBriefAssets, listMemoryAssets, listPinAssets, pinSummaryLine, saveBriefAsset, savePinAsset, writeExportArtifact } from "./memory-assets.js";
 import { indexAsset, indexPinnedAsset } from "./asset-sync.js";
 import { createComponents, createStoreOnly, expandHome, loadConfig, loadDotEnv, type LocalMemoryConfig } from "./runtime-config.js";
+import { KGStore } from "./kg-store.js";
+import { isKGModeEnabled } from "./kg-extractor.js";
 import {
   formatDedupReasonSummary,
   getDedupSkipRate,
@@ -1582,6 +1584,8 @@ program
     const { store, embedder, llm } = createComponents(config);
     // Same activity-stats file the store writes per-scope counts to (beside the LanceDB dir).
     const activityStatsPath = join(dirname(store.dbPath), "activity-stats.json");
+    // KG evidence for triple-overlap merging — same gate as the MCP server
+    const kgStore = isKGModeEnabled() ? new KGStore({ dbPath: store.dbPath }) : null;
 
     if (options.auto) {
       const scopes = listScopesAboveThreshold(DEFAULT_DREAM_CONFIG.minWritesForDream, { statsPath: activityStatsPath });
@@ -1594,7 +1598,7 @@ program
       let anyFailed = false;
       for (const scope of scopes) {
         try {
-          const result = await runDream({ store, llm, embedder, scope, force: Boolean(options.force), activityStatsPath });
+          const result = await runDream({ store, llm, embedder, scope, force: Boolean(options.force), activityStatsPath, kgStore });
           console.log(`[scope=${scope}] ${formatDreamResult(result)}`);
         } catch (err) {
           anyFailed = true;
@@ -1614,6 +1618,7 @@ program
         scope: options.scope,
         force: Boolean(options.force),
         activityStatsPath,
+        kgStore,
       });
 
       console.log(formatDreamResult(result));
