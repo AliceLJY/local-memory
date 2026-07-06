@@ -77,6 +77,9 @@ type PatternHandler = (match: RegExpMatchArray) => { constraint: TemporalConstra
 interface TemporalPattern {
   pattern: RegExp;
   handler: PatternHandler;
+  /** F3 writer: safe to extract as an absolute event time from memory text
+   *  (no Date.now() dependency, unlike relative anchors). */
+  absolute?: boolean;
 }
 
 function now(): Date {
@@ -110,6 +113,7 @@ const PATTERNS: TemporalPattern[] = [
 
   // --- Absolute year+month (ZH): "2023年三月" / "2023年3月" ---
   {
+    absolute: true,
     pattern: /(\d{4})年([\u4e00-\u9fff]+月|\d{1,2}月)/,
     handler: (m) => {
       const year = parseInt(m[1], 10);
@@ -135,6 +139,7 @@ const PATTERNS: TemporalPattern[] = [
 
   // --- Absolute year+month (EN): "March 2023" / "2023 March" ---
   {
+    absolute: true,
     pattern: /\b(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec)\s+(\d{4})\b/i,
     handler: (m) => {
       const month = MONTH_MAP_EN[m[1].toLowerCase()];
@@ -149,6 +154,7 @@ const PATTERNS: TemporalPattern[] = [
 
   // --- Absolute year (ZH): "2023年" (standalone, not followed by month) ---
   {
+    absolute: true,
     pattern: /(\d{4})年(?:的(?:记忆|事|内容|对话))?/,
     handler: (m) => {
       const year = parseInt(m[1], 10);
@@ -161,6 +167,7 @@ const PATTERNS: TemporalPattern[] = [
 
   // --- "in YYYY" / "from YYYY" ---
   {
+    absolute: true,
     pattern: /\b(?:in|from|during)\s+(\d{4})\b/i,
     handler: (m) => {
       const year = parseInt(m[1], 10);
@@ -315,4 +322,29 @@ export function temporalWhereClause(constraint: TemporalConstraint): string | nu
   if (constraint.startMs) conditions.push(`timestamp >= ${constraint.startMs}`);
   if (constraint.endMs) conditions.push(`timestamp <= ${constraint.endMs}`);
   return conditions.length > 0 ? conditions.join(" AND ") : null;
+}
+
+/**
+ * F3 writer: extract an ABSOLUTE event time from memory TEXT (not a query).
+ *
+ * Only patterns flagged `absolute` are scanned — relative anchors ("上周" /
+ * "last month") resolve against Date.now() and would mis-anchor when applied
+ * to historical memory text, so they are deliberately skipped in this pass.
+ * Returns the START of the matched period as the event time, plus the matched
+ * anchor string (for dry-run auditability), or null when no absolute anchor
+ * is present.
+ */
+export function extractEventTimeFromText(
+  text: string,
+): { eventTime: number; anchor: string } | null {
+  for (const { pattern, handler, absolute } of PATTERNS) {
+    if (!absolute) continue;
+    const match = text.match(pattern);
+    if (!match) continue;
+    const { constraint, matchedText } = handler(match);
+    if (constraint.startMs != null) {
+      return { eventTime: constraint.startMs, anchor: matchedText };
+    }
+  }
+  return null;
 }
