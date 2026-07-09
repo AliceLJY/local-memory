@@ -161,3 +161,45 @@ describe("isNoise — bridge/distill context JSON fragments", () => {
     expect(isNoise(`"next_check_hint": "tomorrow_morning"`)).toBe(true);
   });
 });
+
+// Regression (2026-07-10): the English greeting pattern lacked a word boundary,
+// so `^hi` matched any text starting with "hi…" — hippo-wiki, history, highlight,
+// hidden state, Hippocampus. Alice's core project is named hippo; every memory
+// opening with it was silently rejected. Fixed by anchoring with \b.
+describe("isNoise — greeting word boundary regression", () => {
+  it("keeps text starting with hippo-wiki", () => {
+    expect(isNoise("hippo-wiki 的索引层已清零，8 个现役工具正文补齐")).toBe(false);
+  });
+  it("keeps text starting with history", () => {
+    expect(isNoise("history 记录显示这个 commit 有问题，需要 revert")).toBe(false);
+  });
+  it("keeps text starting with highlight", () => {
+    expect(isNoise("highlight 一下：这里有个 bug，修复方案是加词边界")).toBe(false);
+  });
+  it("keeps text starting with hidden state", () => {
+    expect(isNoise("hidden state 是 agent 的核心，不能只看输出")).toBe(false);
+  });
+  it("keeps text starting with Hippocampus", () => {
+    expect(isNoise("Hippocampus 海马体的记忆巩固机制值得借鉴")).toBe(false);
+  });
+  it("keeps text starting with heyday", () => {
+    expect(isNoise("heyday 时期的架构决策现在看仍然成立")).toBe(false);
+  });
+
+  // Real greetings must still be filtered after the fix
+  it("still filters hey there", () => {
+    expect(isNoise("hey there")).toBe(true);
+  });
+  it("still filters hello world", () => {
+    expect(isNoise("hello world")).toBe(true);
+  });
+  it("still filters greetings from mini", () => {
+    expect(isNoise("greetings from mini")).toBe(true);
+  });
+  it("still filters hi followed by a comma", () => {
+    expect(isNoise("hi, 能帮我看下吗")).toBe(true);
+  });
+  it("still filters good morning with trailing words", () => {
+    expect(isNoise("good morning everyone")).toBe(true);
+  });
+});

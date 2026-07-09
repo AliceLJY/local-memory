@@ -125,6 +125,7 @@ registerTool(
         text: [
           `Stored memory ${stored.id.slice(0, 8)}`,
           `Disposition: ${stored.disposition}`,
+          ...(stored.rejectionReason ? [`Rejection reason: ${stored.rejectionReason}`] : []),
           `Category: ${stored.category}`,
           `Scope: ${stored.resolvedScope}`,
           `Canonical key: ${stored.canonicalKey}`,

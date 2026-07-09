@@ -1192,3 +1192,47 @@ describe("promoteMemory", () => {
     expect(storedEntries).toHaveLength(2);
   });
 });
+
+// Regression (2026-07-10): admission rejections used to drop admission.reason
+// entirely — MCP responses showed only "Disposition: rejected" with no way to
+// tell which of the four gates fired. rejectionReason must survive to the record.
+describe("persistMemory — admission rejection reason passthrough", () => {
+  it("surfaces rejectionReason when the noise filter rejects", async () => {
+    const { deps } = createDeps();
+    const result = await persistMemory(deps as any, {
+      text: "hello world, how are you today?",
+      category: "events",
+      importance: 0.7,
+      scope: TEST_SCOPE,
+      source: "manual",
+    });
+    expect(result.disposition).toBe("rejected");
+    expect(result.rejectionReason).toBe("noise_detected");
+  });
+
+  it("surfaces rejectionReason for too-short text", async () => {
+    const { deps } = createDeps();
+    const result = await persistMemory(deps as any, {
+      text: "短",
+      category: "events",
+      importance: 0.7,
+      scope: TEST_SCOPE,
+      source: "manual",
+    });
+    expect(result.disposition).toBe("rejected");
+    expect(result.rejectionReason).toBe("text_too_short");
+  });
+
+  it("stores a hippo-prefixed memory instead of rejecting it as a greeting", async () => {
+    const { deps } = createDeps();
+    const result = await persistMemory(deps as any, {
+      text: "hippo-wiki 的索引层已清零并写完 8 个现役工具正文",
+      category: "events",
+      importance: 0.7,
+      scope: TEST_SCOPE,
+      source: "manual",
+    });
+    expect(result.disposition).not.toBe("rejected");
+    expect(result.rejectionReason).toBeUndefined();
+  });
+});

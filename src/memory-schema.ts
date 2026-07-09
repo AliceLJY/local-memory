@@ -131,12 +131,16 @@ export const StoreMemoryInputSchema = z.object({
   privacyTier: PrivacyTierSchema.default("durable"),
 });
 
+// Keep in sync with RejectionReason in admission-control.ts
+export const RejectionReasonSchema = z.enum(["text_too_short", "noise_detected", "importance_too_low", "rate_limited"]);
+
 export const StoredMemoryRecordSchema = StoreMemoryInputSchema.extend({
   id: identifierSchema("id", 128),
   resolvedScope: identifierSchema("resolvedScope", 160),
   storedAt: z.string().datetime(),
   disposition: WriteDispositionSchema.default("stored"),
   conflictId: identifierSchema("conflictId", 128).optional(),
+  rejectionReason: RejectionReasonSchema.optional(),
 });
 
 export const CaptureMemoryItemSchema = z.object({

@@ -45,7 +45,7 @@ const META_QUESTION_PATTERNS = [
 
 // Session boilerplate (anchored to prevent false positives on real content)
 const BOILERPLATE_PATTERNS = [
-  /^(hi|hello|hey|good morning|good evening|greetings)/i,
+  /^(hi|hello|hey|good morning|good evening|greetings)\b/i,
   /^fresh session/i,
   /^new session/i,
   /^HEARTBEAT/i,

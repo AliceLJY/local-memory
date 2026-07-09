@@ -823,6 +823,7 @@ export async function persistMemory(
       resolvedScope: admissionScope,
       storedAt: new Date().toISOString(),
       disposition: "rejected" as const,
+      ...(admission.reason ? { rejectionReason: admission.reason } : {}),
     };
   }
 
