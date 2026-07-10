@@ -752,8 +752,10 @@ describe("F-3 integration: PII detection + persistMemory", () => {
     expect(result.id).toBeDefined();
     expect(result.disposition).toBe("stored");
     expect(storedEntries.length).toBe(1);
-    // The stored text is the original text (not redacted)
-    expect(storedEntries[0].text).toBe(sensitiveText);
+    // F-3b (2026-07-10): stored text is scrubbed — secrets must not reach
+    // storage/embedding/logs. Key names survive for readability.
+    expect(storedEntries[0].text).toContain("password=[REDACTED:password]");
+    expect(storedEntries[0].text).not.toContain("SuperSecret123");
   });
 });
 

@@ -5,6 +5,7 @@
  */
 
 import { logInfo } from "./stderr-log.js";
+import { redactForLog } from "./pii-detector.js";
 
 // Agent-side denial patterns
 const DENIAL_PATTERNS = [
@@ -150,21 +151,21 @@ export function isNoise(text: string, options: NoiseFilterOptions = {}): boolean
   }
 
   if (opts.filterDenials && DENIAL_PATTERNS.some(p => p.test(trimmed))) {
-    logInfo(`[INFO] noise-filter: denial pattern matched: "${trimmed.slice(0, 60)}..."`);
+    logInfo(`[INFO] noise-filter: denial pattern matched: "${redactForLog(trimmed)}..."`);
     return true;
   }
   if (opts.filterMetaQuestions && META_QUESTION_PATTERNS.some(p => p.test(trimmed))) {
-    logInfo(`[INFO] noise-filter: meta-question filtered: "${trimmed.slice(0, 60)}..."`);
+    logInfo(`[INFO] noise-filter: meta-question filtered: "${redactForLog(trimmed)}..."`);
     return true;
   }
   if (opts.filterBoilerplate) {
     if (BOILERPLATE_PATTERNS.some(p => p.test(trimmed))) {
-      logInfo(`[INFO] noise-filter: boilerplate filtered: "${trimmed.slice(0, 60)}..."`);
+      logInfo(`[INFO] noise-filter: boilerplate filtered: "${redactForLog(trimmed)}..."`);
       return true;
     }
     if (trimmed.length <= BOILERPLATE_MAX_LENGTH &&
         SHORT_BOILERPLATE_PATTERNS.some(p => p.test(trimmed))) {
-      logInfo(`[INFO] noise-filter: short boilerplate filtered: "${trimmed}"`);
+      logInfo(`[INFO] noise-filter: short boilerplate filtered: "${redactForLog(trimmed)}"`);
       return true;
     }
   }
@@ -175,17 +176,17 @@ export function isNoise(text: string, options: NoiseFilterOptions = {}): boolean
   }
   // Diagnostic artifact noise (synced from upstream v1.1.0-beta.3)
   if (DIAGNOSTIC_ARTIFACT_PATTERNS.some(p => p.test(trimmed))) {
-    logInfo(`[INFO] noise-filter: diagnostic artifact filtered: "${trimmed.slice(0, 60)}..."`);
+    logInfo(`[INFO] noise-filter: diagnostic artifact filtered: "${redactForLog(trimmed)}..."`);
     return true;
   }
   // CC bridge injected agent prompts (reply/self-decision templates leaked as user turns)
   if (opts.filterAgentPrompts && AGENT_PROMPT_PATTERNS.some(p => p.test(trimmed))) {
-    logInfo(`[INFO] noise-filter: agent prompt filtered: "${trimmed.slice(0, 60)}..."`);
+    logInfo(`[INFO] noise-filter: agent prompt filtered: "${redactForLog(trimmed)}..."`);
     return true;
   }
   // Severed bridge/distill context-JSON fragments (orphaned field-lines from chunking)
   if (opts.filterAgentPrompts && CONTEXT_JSON_FRAGMENT_PATTERNS.some(p => p.test(trimmed))) {
-    logInfo(`[INFO] noise-filter: context JSON fragment filtered: "${trimmed.slice(0, 60)}..."`);
+    logInfo(`[INFO] noise-filter: context JSON fragment filtered: "${redactForLog(trimmed)}..."`);
     return true;
   }
 

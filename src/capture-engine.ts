@@ -56,7 +56,7 @@ import {
 import { matchPreference, applyPreferenceMatch } from "./preference-matcher.js";
 import type { LLMClient } from "./llm-client.js";
 import type { KGExtractor } from "./kg-extractor.js";
-import { scanForPII } from "./pii-detector.js";
+import { scanForPII, redactSecrets } from "./pii-detector.js";
 import type { AuditLogger } from "./audit-log.js";
 import { checkAdmission, type ScopeRateLimiter, type AdmissionConfig } from "./admission-control.js";
 import { tagNarrativeIfEnabled } from "./narrative-tagger.js";
@@ -757,7 +757,16 @@ export async function persistMemory(
   deps: PersistMemoryDeps,
   rawInput: unknown,
 ): Promise<StoredMemoryRecord> {
-  const input = StoreMemoryInputSchema.parse(rawInput);
+  let input = StoreMemoryInputSchema.parse(rawInput);
+
+  // F-3b: Scan THEN redact, before the text reaches any external surface —
+  // LLM summary/importance calls, embedding API, storage, audit log, KG.
+  // Scan first so the piiWarning below still reflects what the raw text held.
+  const piiScan = scanForPII(input.text);
+  const redaction = redactSecrets(input.text);
+  if (redaction.redacted > 0) {
+    input = { ...input, text: redaction.text };
+  }
 
   // F3: Extract temporal validity params before Zod strips them
   const rawObj = rawInput as Record<string, unknown> | null;
@@ -812,6 +821,18 @@ export async function persistMemory(
     deps.admissionConfig,
   );
   if (admission.verdict === "rejected") {
+    // Gemini #26523 lesson: rejected writes must stay queryable after the fact,
+    // not just echo back to the caller — otherwise they become invisible noise.
+    try {
+      deps.auditLogger?.log({
+        operation: "reject",
+        scope: admissionScope,
+        actor: input.source,
+        details: `${admission.reason ?? "unknown"}: ${input.text.slice(0, 100)}`,
+      });
+    } catch {
+      // Audit must never block memory writes
+    }
     return {
       id: `rejected-${Date.now()}`,
       text: input.text,
@@ -949,15 +970,16 @@ export async function persistMemory(
   }
 
   // F-3: PII detection — inject warning into metadata if PII found.
-  // Non-blocking: PII does not prevent the write.
+  // Non-blocking: PII does not prevent the write. Uses the pre-redaction scan
+  // from the top of persistMemory (scanning here would see scrubbed text).
   let metadata = buildStoreMemoryMetadata(input, canonicalKey);
-  const piiResult = scanForPII(input.text);
-  if (piiResult.hasPII) {
+  if (piiScan.hasPII) {
     const parsed: Record<string, unknown> = JSON.parse(metadata);
     parsed.piiWarning = {
-      summary: piiResult.summary,
-      detections: piiResult.detections.length,
-      severity: piiResult.detections.some(d => d.severity === "high") ? "high" : "medium",
+      summary: piiScan.summary,
+      detections: piiScan.detections.length,
+      severity: piiScan.detections.some(d => d.severity === "high") ? "high" : "medium",
+      ...(redaction.redacted > 0 ? { redacted: redaction.redacted } : {}),
     };
     metadata = JSON.stringify(parsed);
   }

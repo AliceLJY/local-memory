@@ -7,6 +7,7 @@ import type { AuditLogger } from "./audit-log.js";
 import type { StoredMemoryRecord, DurableMemoryCategory } from "./memory-schema.js";
 import { persistMemory } from "./capture-engine.js";
 import { detectLang, getSessionPromptHook } from "./language-hook.js";
+import { redactSecrets } from "./pii-detector.js";
 import { withWriteLock } from "./distill-lock.js";
 
 // ============================================================================
@@ -169,8 +170,10 @@ export async function summarizeSession(
   messages: ConversationMessage[],
   llm: LLMClient,
 ): Promise<SummaryResult> {
+  // F-3b: Redact per-message BEFORE the 500-char cut — truncating first could
+  // slice a secret in half and leak its prefix past the redaction regexes.
   const conversationText = messages
-    .map((m) => `[${m.role}${m.tool_name ? `:${m.tool_name}` : ""}] ${m.content.slice(0, 500)}`)
+    .map((m) => `[${m.role}${m.tool_name ? `:${m.tool_name}` : ""}] ${redactSecrets(m.content).text.slice(0, 500)}`)
     .join("\n")
     .slice(0, 8000);
 

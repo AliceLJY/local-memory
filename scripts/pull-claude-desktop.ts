@@ -39,6 +39,11 @@ interface SyncState {
       updatedAt: string;
       pulledAt: string;
       name: string;
+      /** Consecutive pull failures (Gemini #26522 lesson: failures must also
+       *  leave a state mark, or the item stays a candidate forever) */
+      failCount?: number;
+      /** ISO timestamp of the last failure, drives exponential backoff */
+      failedAt?: string;
     }
   >;
 }
@@ -306,14 +311,31 @@ function saveSyncState(state: SyncState): void {
   writeFileSync(SYNC_STATE_PATH, JSON.stringify(state, null, 2));
 }
 
+// Failure backoff: 4h base, doubling per consecutive failure; after
+// FAIL_MAX_RETRIES the item is parked until its content actually changes again.
+const FAIL_BACKOFF_BASE_MS = 4 * 3600_000;
+const FAIL_MAX_RETRIES = 5;
+
 function needsPull(
   state: SyncState,
   conv: ConversationSummary,
 ): boolean {
   const existing = state.conversations[conv.uuid];
   if (!existing) return true;
-  // Re-pull if conversation was updated since last pull
-  return conv.updated_at !== existing.updatedAt;
+  // No content change since last successful pull → nothing to do
+  if (conv.updated_at === existing.updatedAt) return false;
+
+  const fails = existing.failCount ?? 0;
+  if (fails > 0 && existing.failedAt) {
+    const failedAtMs = new Date(existing.failedAt).getTime();
+    if (fails >= FAIL_MAX_RETRIES) {
+      // Parked: only retry if the conversation changed AFTER the last failure
+      return new Date(conv.updated_at).getTime() > failedAtMs;
+    }
+    const backoffMs = FAIL_BACKOFF_BASE_MS * 2 ** (fails - 1);
+    if (Date.now() - failedAtMs < backoffMs) return false;
+  }
+  return true;
 }
 
 // ============================================================================
@@ -474,6 +496,19 @@ async function main() {
       console.log(` ❌ ${err.message}`);
       errors.push(`${label}: ${err.message}`);
       failed++;
+
+      // Record the failure in sync state so the item backs off instead of
+      // resurfacing as a fresh candidate on every run. Keep the previous
+      // updatedAt (NOT conv.updated_at — that would fake a successful pull).
+      const prev = state.conversations[conv.uuid];
+      state.conversations[conv.uuid] = {
+        messageCount: prev?.messageCount ?? 0,
+        updatedAt: prev?.updatedAt ?? "",
+        pulledAt: prev?.pulledAt ?? "",
+        name: conv.name || prev?.name || "",
+        failCount: (prev?.failCount ?? 0) + 1,
+        failedAt: new Date().toISOString(),
+      };
 
       // Don't abort on single conversation failure
       await client.throttle();
