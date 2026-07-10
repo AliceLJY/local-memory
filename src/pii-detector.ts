@@ -41,6 +41,36 @@ interface PIIRule {
   redact: boolean;
   /** For key=value style rules: keep the key name, scrub only the value */
   keepPrefix?: RegExp;
+  /** Checksum gate for broad numeric patterns: redact ONLY when this returns
+   *  true (scan still warns regardless). Keeps snowflake IDs / order numbers
+   *  from being destructively rewritten. */
+  validate?: (match: string) => boolean;
+}
+
+/** GB 11643 checksum (ISO 7064 MOD 11-2) for 18-digit Chinese national IDs. */
+function isValidChineseId(id: string): boolean {
+  if (!/^\d{17}[\dXx]$/.test(id)) return false;
+  const weights = [7, 9, 10, 5, 8, 4, 2, 1, 6, 3, 7, 9, 10, 5, 8, 4, 2];
+  const checkChars = "10X98765432";
+  let sum = 0;
+  for (let i = 0; i < 17; i++) sum += Number(id[i]) * weights[i];
+  return checkChars[sum % 11] === id[17].toUpperCase();
+}
+
+/** Luhn checksum for card-number candidates (separators stripped first). */
+function isValidLuhn(candidate: string): boolean {
+  const digits = candidate.replace(/[\s-]/g, "");
+  if (!/^\d{16}$/.test(digits)) return false;
+  let sum = 0;
+  for (let i = 0; i < 16; i++) {
+    let d = Number(digits[15 - i]);
+    if (i % 2 === 1) {
+      d *= 2;
+      if (d > 9) d -= 9;
+    }
+    sum += d;
+  }
+  return sum % 10 === 0;
 }
 
 const PII_RULES: PIIRule[] = [
@@ -94,32 +124,38 @@ const PII_RULES: PIIRule[] = [
     redact: true,
   },
   // --- Generic assignment / key styles (keep key name, scrub value) ---
+  // Quoted keys and whitespace around the separator are allowed so JSON/YAML/
+  // config forms ({"api_key": "..."}, password = ...) are caught too.
   {
     type: "api_key",
     severity: "high",
-    pattern: /(?:sk-[A-Za-z0-9_\-]{20,}|(?:api[_-]?key|token|secret)[=:\s]["']?[A-Za-z0-9_\-]{20,})/gi,
+    pattern: /(?:sk-[A-Za-z0-9_\-]{20,}|["']?(?:api[_-]?key|token|secret)["']?\s*[=:]\s*["']?[A-Za-z0-9_\-]{20,})/gi,
     redact: true,
-    keepPrefix: /^(?:api[_-]?key|token|secret)[=:\s]["']?/i,
+    keepPrefix: /^["']?(?:api[_-]?key|token|secret)["']?\s*[=:]\s*["']?/i,
   },
   {
     type: "password",
     severity: "high",
-    pattern: /(?:password|passwd|pwd)[=:\s]["']?[^\s"']{8,}/gi,
+    pattern: /["']?(?:password|passwd|pwd)["']?\s*[=:]\s*["']?[^\s"',;]{8,}/gi,
     redact: true,
-    keepPrefix: /^(?:password|passwd|pwd)[=:\s]["']?/i,
+    keepPrefix: /^["']?(?:password|passwd|pwd)["']?\s*[=:]\s*["']?/i,
   },
-  // --- High-risk personal identifiers (scrub) ---
+  // --- High-risk personal identifiers ---
+  // Broad numeric patterns scan-warn on shape but only REDACT when the
+  // checksum verifies — otherwise snowflake IDs / order numbers get rewritten.
   {
     type: "id_number",
     severity: "high",
-    pattern: /\d{17}[\dXx]/g,
+    pattern: /(?<!\d)\d{17}[\dXx](?!\d)/g,
     redact: true,
+    validate: isValidChineseId,
   },
   {
     type: "credit_card",
     severity: "high",
-    pattern: /\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}/g,
+    pattern: /(?<!\d)\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}(?![\d])/g,
     redact: true,
+    validate: isValidLuhn,
   },
   // --- Detection-only: legitimate memory content, warn but keep ---
   {
@@ -188,6 +224,9 @@ export function redactSecrets(text: string): RedactResult {
     if (!rule.redact) continue;
     rule.pattern.lastIndex = 0;
     out = out.replace(rule.pattern, (match) => {
+      if (rule.validate && !rule.validate(match)) {
+        return match; // checksum failed → leave intact (detection-only)
+      }
       redacted++;
       if (rule.keepPrefix) {
         const prefixMatch = match.match(rule.keepPrefix);

@@ -72,15 +72,34 @@ describe("redactSecrets", () => {
     expect(r.text).not.toContain("abcdefghij1234567890XYZAB");
   });
 
-  it("scrubs Chinese national ID numbers", () => {
+  it("scrubs Chinese national ID numbers (checksum-valid)", () => {
     const r = redactSecrets("身份证 11010519491231002X 登记");
     expect(r.text).toContain("[REDACTED:id_number]");
     expect(r.text).not.toContain("11010519491231002X");
   });
 
-  it("scrubs credit card numbers", () => {
+  it("scrubs credit card numbers (Luhn-valid)", () => {
     const r = redactSecrets("card 4111 1111 1111 1111 charged");
     expect(r.text).toContain("[REDACTED:credit_card]");
+  });
+
+  // codex review 2026-07-10: JSON/YAML/config credential forms must be caught
+  it("scrubs JSON-style quoted credential keys", () => {
+    const r = redactSecrets('config: {"password": "SuperSecret99", "region": "us"}');
+    expect(r.text).not.toContain("SuperSecret99");
+    expect(r.text).toContain("[REDACTED:password]");
+  });
+
+  it("scrubs JSON-style quoted api_key", () => {
+    const r = redactSecrets('{"api_key": "abcdefghij1234567890XYZAB"}');
+    expect(r.text).not.toContain("abcdefghij1234567890XYZAB");
+    expect(r.text).toContain("[REDACTED:api_key]");
+  });
+
+  it("scrubs YAML/config assignments with spaces around the separator", () => {
+    const r = redactSecrets("password = SuperSecret99\nsecret : abcdefghij1234567890XYZAB");
+    expect(r.text).not.toContain("SuperSecret99");
+    expect(r.text).not.toContain("abcdefghij1234567890XYZAB");
   });
 });
 
@@ -100,6 +119,28 @@ describe("redactSecrets false-positive guards", () => {
     const r = redactSecrets("联系 13812345678 或 alice@example.com");
     expect(r.text).toContain("13812345678");
     expect(r.text).toContain("alice@example.com");
+    expect(r.redacted).toBe(0);
+  });
+
+  // codex review 2026-07-10: broad numeric patterns must checksum before scrub
+  it("does NOT scrub 19-digit snowflake IDs (boundary guard)", () => {
+    const id = "1891234567890123456";
+    const r = redactSecrets(`tweet id ${id} archived`);
+    expect(r.text).toContain(id);
+    expect(r.redacted).toBe(0);
+  });
+
+  it("does NOT scrub 18-digit numbers failing the ID checksum", () => {
+    const fake = "110105194912310020"; // checksum digit wrong on purpose
+    const r = redactSecrets(`订单号 ${fake} 已发货`);
+    expect(r.text).toContain(fake);
+    expect(r.redacted).toBe(0);
+  });
+
+  it("does NOT scrub 16-digit numbers failing Luhn", () => {
+    const orderNo = "1234567890123456"; // Luhn-invalid
+    const r = redactSecrets(`订单 ${orderNo} 状态正常`);
+    expect(r.text).toContain(orderNo);
     expect(r.redacted).toBe(0);
   });
 

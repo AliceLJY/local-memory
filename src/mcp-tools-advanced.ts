@@ -32,7 +32,7 @@ function entryToRetrievalResult(entry: Awaited<ReturnType<MemoryStore["get"]>>):
 }
 
 export function registerAdvancedTools(deps: ToolRegistryDeps): void {
-  const { registerTool, getComponents, conflictStore, getKGExtractor, getKGStore } = deps;
+  const { registerTool, getComponents, conflictStore, getKGExtractor, getKGStore, auditLogger } = deps;
 
 registerTool(
   "store_workflow_pattern",
@@ -56,6 +56,7 @@ registerTool(
       store,
       embedder,
       conflictStore,
+      auditLogger,
       kgExtractor,
     }, {
       title,
@@ -123,6 +124,7 @@ registerTool(
       store,
       embedder,
       conflictStore,
+      auditLogger,
       kgExtractor,
     }, {
       scope,
@@ -178,6 +180,7 @@ registerTool(
       store,
       embedder,
       conflictStore,
+      auditLogger,
       kgExtractor,
     }, {
       title,
@@ -232,6 +235,7 @@ registerTool(
       store,
       embedder,
       conflictStore,
+      auditLogger,
       kgExtractor,
     }, {
       memoryId,
@@ -802,6 +806,7 @@ registerTool(
       store,
       embedder,
       conflictStore,
+      auditLogger,
       kgExtractor,
     }, {
       scope,
@@ -858,7 +863,7 @@ registerTool(
     }
 
     const result = await ingestNormalizedMessages(
-      { store, embedder, llm, conflictStore, kgExtractor },
+      { store, embedder, llm, conflictStore, kgExtractor, auditLogger },
       messages,
       scope,
     );

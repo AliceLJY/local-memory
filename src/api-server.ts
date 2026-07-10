@@ -17,6 +17,7 @@ import { ConflictStatusSchema } from "./conflict-schema.js";
 import { resolveConflictCandidate } from "./conflict-engine.js";
 import { escalateConflicts } from "./conflict-escalation.js";
 import { ConflictCandidateStore } from "./conflict-store.js";
+import { createAuditLogger } from "./audit-log.js";
 import { parseConflictAttention, summarizeConflictLifecycle } from "./conflict-lifecycle.js";
 import { buildConflictAuditSummary, clusterConflicts, summarizeConflictAdvice } from "./conflict-advisor.js";
 import { buildWorkflowEvidence, buildWorkflowObservationRecord, inspectWorkflowDashboard, inspectWorkflowHealth } from "./workflow-observation-engine.js";
@@ -32,6 +33,7 @@ const config = (loadDotEnv(), loadConfig());
 const getComponents = createComponentResolver(config);
 const checkpointStore = new SessionCheckpointStore();
 const conflictStore = new ConflictCandidateStore();
+const auditLogger = createAuditLogger();
 const workflowObservationStore = new WorkflowObservationStore();
 
 // ============================================================================
@@ -237,7 +239,7 @@ async function handleStore(request: Request): Promise<Response> {
   const body = await readJson(request);
   try {
     const { store, embedder } = getComponents();
-    const stored = await persistMemory({ store, embedder, conflictStore }, body);
+    const stored = await persistMemory({ store, embedder, conflictStore, auditLogger }, body);
 
     return jsonResponse({
       id: stored.id,
@@ -286,7 +288,7 @@ async function handlePattern(request: Request): Promise<Response> {
   const body = await readJson(request);
   try {
     const { store, embedder } = getComponents();
-    const stored = await persistWorkflowPattern({ store, embedder, conflictStore }, body);
+    const stored = await persistWorkflowPattern({ store, embedder, conflictStore, auditLogger }, body);
     return jsonResponse({
       id: stored.id,
       stored: stored.disposition !== "conflict",
@@ -310,7 +312,7 @@ async function handleCase(request: Request): Promise<Response> {
   const body = await readJson(request);
   try {
     const { store, embedder } = getComponents();
-    const stored = await persistCaseMemory({ store, embedder, conflictStore }, body);
+    const stored = await persistCaseMemory({ store, embedder, conflictStore, auditLogger }, body);
     return jsonResponse({
       id: stored.id,
       stored: stored.disposition !== "conflict",
@@ -334,7 +336,7 @@ async function handlePromote(request: Request): Promise<Response> {
   const body = await readJson(request);
   try {
     const { store, embedder } = getComponents();
-    const stored = await promoteMemory({ store, embedder, conflictStore }, body);
+    const stored = await promoteMemory({ store, embedder, conflictStore, auditLogger }, body);
     return jsonResponse({
       id: stored.id,
       stored: stored.disposition !== "conflict",

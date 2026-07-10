@@ -18,7 +18,7 @@ import type { ToolRegistryDeps } from "./mcp-tool-deps.js";
 import type { RetrievalResult } from "./retriever.js";
 
 export function registerCoreTools(deps: ToolRegistryDeps): void {
-  const { registerTool, getComponents, config, checkpointStore, conflictStore, workflowObservationStore, getKGExtractor, getKGStore } = deps;
+  const { registerTool, getComponents, config, checkpointStore, conflictStore, workflowObservationStore, getKGExtractor, getKGStore, auditLogger } = deps;
   const TOOL_DESCRIPTIONS = deps.toolDescriptions;
   const TOOL_TIERS = deps.toolTiers;
   /** P1-A: 60s 缓存的 scope 建议器,首次 0-hit 搜索时惰性初始化。 */
@@ -102,6 +102,7 @@ registerTool(
       embedder,
       conflictStore,
       kgExtractor,
+      auditLogger,
     }, {
       text,
       category,

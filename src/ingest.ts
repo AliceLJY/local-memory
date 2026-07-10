@@ -12,6 +12,7 @@ import { readFileSync, readdirSync, existsSync, statSync, writeFileSync } from "
 import { join, basename, resolve, dirname } from "node:path";
 import { homedir } from "node:os";
 import { detectLang, tokenizeFts } from "./language-hook.js";
+import { redactSecrets } from "./pii-detector.js";
 import type { MemoryStore, MemoryEntry } from "./store.js";
 import type { Embedder } from "./embedder.js";
 import { chunkDocument, type ChunkerConfig } from "./chunker.js";
@@ -626,7 +627,8 @@ export async function drainPendingQueue(
   let processed = 0, errors = 0;
   for (let i = 0; i < pending.length; i += 20) {
     const batch = pending.slice(i, i + 20);
-    const texts = batch.map(c => c.text);
+    // F-3b: scrub before the LLM extraction call and downstream embedding
+    const texts = batch.map(c => redactSecrets(c.text).text);
     const extractions = await smartExtractBatch(texts, llm);
     const embeddingTexts = extractions.map(e => e.l1 || e.l0);
     const vectors = await embedder.embedBatchPassage(embeddingTexts);
@@ -937,7 +939,15 @@ export function groupTurnsIntoChunks(turns: ConversationTurn[]): Array<{
   // P1 defence-in-depth: re-filter AFTER splitting. Long turns pass the
   // turn-level filterNoiseTurns gate, but chunking can peel their tail into
   // severed context-JSON fragments that the turn-level check never saw.
-  return chunks.filter((c) => !isNoise(c.text));
+  // F-3b: scrub secrets at the chunk boundary — this is the shared text
+  // finalization point for all session-ingest paths (CC/Codex/Gemini), before
+  // any chunk reaches embedding, LLM extraction, or storage.
+  return chunks
+    .filter((c) => !isNoise(c.text))
+    .map((c) => {
+      const r = redactSecrets(c.text);
+      return r.redacted > 0 ? { ...c, text: r.text } : c;
+    });
 }
 
 // ============================================================================
@@ -1659,7 +1669,8 @@ export async function ingestMarkdownFiles(
         continue;
       }
 
-      const texts = sections.map((s) => s.text);
+      // F-3b: scrub before embedding and storage
+      const texts = sections.map((s) => redactSecrets(s.text).text);
       const batchSize = 32;
       let fileChunks = 0;
 
@@ -1797,7 +1808,8 @@ export async function ingestGenericText(
 
       const chunkResult = chunkDocument(textToChunk, CONVERSATION_CHUNK_CONFIG);
 
-      const texts = chunkResult.chunks;
+      // F-3b: scrub before embedding and storage
+      const texts = chunkResult.chunks.map((t) => redactSecrets(t).text);
       const batchSize = 32;
 
       for (let i = 0; i < texts.length; i += batchSize) {

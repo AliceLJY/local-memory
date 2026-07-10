@@ -18,6 +18,7 @@ import type { ConflictCandidateStore } from "./conflict-store.js";
 import type { WorkflowObservationStore } from "./workflow-observation-store.js";
 import type { KGExtractor } from "./kg-extractor.js";
 import type { KGStore } from "./kg-store.js";
+import type { AuditLogger } from "./audit-log.js";
 
 export type ToolTier = "core" | "advanced" | "governance";
 export type ToolSchema = Parameters<McpServer["tool"]>[2];
@@ -34,6 +35,8 @@ export interface ToolRegistryDeps {
   checkpointStore: SessionCheckpointStore;
   conflictStore: ConflictCandidateStore;
   workflowObservationStore: WorkflowObservationStore;
+  /** F-1/F-3b: persistent audit trail — must be injected at the runtime entry or store/reject audit entries never land on disk (codex review 2026-07-10). */
+  auditLogger: AuditLogger;
   /** Live map of registered tool name -> description, populated by the registerTool wrapper (read by list_tools). */
   toolDescriptions: Map<string, string>;
   /** Static tool-name -> tier map (read by list_tools to group/filter tools). */

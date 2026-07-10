@@ -44,6 +44,10 @@ interface SyncState {
       failCount?: number;
       /** ISO timestamp of the last failure, drives exponential backoff */
       failedAt?: string;
+      /** Server-side updated_at seen at last failure. Parked items un-park by
+       *  comparing THIS against the fresh updated_at (same clock source) —
+       *  never server-time vs local failedAt, which skews across machines. */
+      failedUpdatedAt?: string;
     }
   >;
 }
@@ -327,13 +331,13 @@ function needsPull(
 
   const fails = existing.failCount ?? 0;
   if (fails > 0 && existing.failedAt) {
-    const failedAtMs = new Date(existing.failedAt).getTime();
     if (fails >= FAIL_MAX_RETRIES) {
-      // Parked: only retry if the conversation changed AFTER the last failure
-      return new Date(conv.updated_at).getTime() > failedAtMs;
+      // Parked: retry only when the content VERSION differs from the one that
+      // kept failing (server-clock vs server-clock; local time never compared)
+      return conv.updated_at !== existing.failedUpdatedAt;
     }
     const backoffMs = FAIL_BACKOFF_BASE_MS * 2 ** (fails - 1);
-    if (Date.now() - failedAtMs < backoffMs) return false;
+    if (Date.now() - new Date(existing.failedAt).getTime() < backoffMs) return false;
   }
   return true;
 }
@@ -500,14 +504,17 @@ async function main() {
       // Record the failure in sync state so the item backs off instead of
       // resurfacing as a fresh candidate on every run. Keep the previous
       // updatedAt (NOT conv.updated_at — that would fake a successful pull).
+      // A NEW content version resets the retry budget (codex review 2026-07-10).
       const prev = state.conversations[conv.uuid];
+      const isNewVersion = prev?.failedUpdatedAt !== undefined && prev.failedUpdatedAt !== conv.updated_at;
       state.conversations[conv.uuid] = {
         messageCount: prev?.messageCount ?? 0,
         updatedAt: prev?.updatedAt ?? "",
         pulledAt: prev?.pulledAt ?? "",
         name: conv.name || prev?.name || "",
-        failCount: (prev?.failCount ?? 0) + 1,
+        failCount: isNewVersion ? 1 : (prev?.failCount ?? 0) + 1,
         failedAt: new Date().toISOString(),
+        failedUpdatedAt: conv.updated_at,
       };
 
       // Don't abort on single conversation failure

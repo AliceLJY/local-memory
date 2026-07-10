@@ -1127,7 +1127,8 @@ export async function persistWorkflowPattern(
   const input = WorkflowPatternInputSchema.parse(rawInput);
   const resolvedScope = resolveScope(input);
   const tags = mergeTags(input.tags, ["workflow", "pattern"]);
-  const text = buildWorkflowPatternText(input);
+  // F-3b: scrub before embedding/storage (this path bypasses persistMemory)
+  const text = redactSecrets(buildWorkflowPatternText(input)).text;
   const vector = await deps.embedder.embedPassage(text);
   const language = detectLang(text);
   const fts_text = tokenizeFts(text, language);
@@ -1171,7 +1172,8 @@ export async function persistCaseMemory(
   const input = CaseMemoryInputSchema.parse(rawInput);
   const resolvedScope = resolveScope(input);
   const tags = mergeTags(input.tags, ["case", "solution"]);
-  const text = buildCaseMemoryText(input);
+  // F-3b: scrub before embedding/storage (this path bypasses persistMemory)
+  const text = redactSecrets(buildCaseMemoryText(input)).text;
   const vector = await deps.embedder.embedPassage(text);
   const language = detectLang(text);
   const fts_text = tokenizeFts(text, language);
@@ -1231,7 +1233,9 @@ export async function promoteMemory(
   }
 
   const category = inferPromotedCategory(input, sourceEntry);
-  const text = input.text || sourceEntry.text;
+  // F-3b: scrub caller-supplied text AND legacy stored text (pre-redaction
+  // era entries may still hold secrets; promotion is a natural wash point)
+  const text = redactSecrets(input.text || sourceEntry.text).text;
   const canonicalKey = resolveCanonicalKey({
     category,
     text,

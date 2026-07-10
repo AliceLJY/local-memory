@@ -22,6 +22,7 @@ import { createComponentResolver, loadConfig, loadDotEnv } from "./runtime-confi
 import { SessionCheckpointStore } from "./session-store.js";
 import { ConflictCandidateStore } from "./conflict-store.js";
 import { WorkflowObservationStore } from "./workflow-observation-store.js";
+import { createAuditLogger } from "./audit-log.js";
 import { KGStore } from "./kg-store.js";
 import { createKGExtractor, isKGModeEnabled, type KGExtractor } from "./kg-extractor.js";
 import type { MemoryStore } from "./store.js";
@@ -194,6 +195,7 @@ function registerTool(name: string, description: string, schema: ToolSchema, han
 const toolDeps: ToolRegistryDeps = {
   registerTool,
   getComponents,
+  auditLogger: createAuditLogger(),
   config,
   checkpointStore,
   conflictStore,

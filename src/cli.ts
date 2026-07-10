@@ -52,6 +52,7 @@ import { ConflictStatusSchema } from "./conflict-schema.js";
 import { resolveConflictCandidate } from "./conflict-engine.js";
 import { escalateConflicts } from "./conflict-escalation.js";
 import { ConflictCandidateStore } from "./conflict-store.js";
+import { createAuditLogger } from "./audit-log.js";
 import { formatConflictAudit, formatConflictAuditMarkdown, formatConflictClusters, formatConflictEscalation, formatConflictList, formatConflictRecord, formatConflictResolution } from "./conflict-output.js";
 import { CONFLICT_ATTENTION_LEVELS, parseConflictAttention, summarizeConflictLifecycle } from "./conflict-lifecycle.js";
 import { buildConflictAuditSummary, clusterConflicts, summarizeConflictAdvice } from "./conflict-advisor.js";
@@ -1109,7 +1110,7 @@ program
         continue;
       }
 
-      const record = await persistWorkflowPattern({ store, embedder, conflictStore }, input);
+      const record = await persistWorkflowPattern({ store, embedder, conflictStore, auditLogger: createAuditLogger() }, input);
       existingKeys.add(key);
       stored.push({ title: record.title, id: record.id, scope: record.resolvedScope });
     }
@@ -1185,7 +1186,7 @@ program
         continue;
       }
 
-      const record = await persistCaseMemory({ store, embedder, conflictStore }, input);
+      const record = await persistCaseMemory({ store, embedder, conflictStore, auditLogger: createAuditLogger() }, input);
       existingKeys.add(key);
       stored.push({ title: record.title, id: record.id, scope: record.resolvedScope });
     }
@@ -1263,7 +1264,7 @@ program
         continue;
       }
 
-      const record = await persistMemory({ store, embedder, conflictStore }, input);
+      const record = await persistMemory({ store, embedder, conflictStore, auditLogger: createAuditLogger() }, input);
       existingKeys.add(storeMemoryIdentity({
         category: input.category,
         scope: record.resolvedScope,
