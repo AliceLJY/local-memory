@@ -1,3 +1,20 @@
+# Security denylist (package.json files is the primary allowlist)
+.env
+.env.*
+!.env.example
+config.json
+.claude/
+.codex/
+logs/
+**/*.log
+**/*.jsonl
+**/*.pem
+**/*.key
+**/*.p12
+**/*.sqlite
+**/*.sqlite3
+**/*.db
+
 # Development & CI
 .github/
 .claude-plugin/

@@ -62,6 +62,13 @@ function warn(name: string, message: string, fix?: string): CheckResult {
   return { name, status: "warn", message, fix };
 }
 
+export function describeSecretPresence(
+  value: string | undefined,
+  placeholder: string,
+): string | null {
+  return value && value !== placeholder ? "set" : null;
+}
+
 function summarizeScopeInventoryLayers(report: ScopeInventoryReport): string {
   return report.layers
     .filter((layer) => layer.anomalyCount > 0 || layer.invalidCount > 0)
@@ -323,8 +330,8 @@ export async function runDoctor(options: { ci?: boolean } = {}): Promise<CheckRe
   // 3. .env + JINA_API_KEY
   loadDotEnv();
   const jinaKey = process.env.JINA_API_KEY;
-  if (jinaKey && jinaKey !== "your_jina_api_key_here") {
-    results.push(pass("JINA_API_KEY", `set (${jinaKey.slice(0, 8)}...)`));
+  if (describeSecretPresence(jinaKey, "your_jina_api_key_here")) {
+    results.push(pass("JINA_API_KEY", "set"));
   } else if (options.ci) {
     results.push(warn(
       "JINA_API_KEY",

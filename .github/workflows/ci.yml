@@ -27,6 +27,12 @@ jobs:
       - name: Test suite
         run: bun test
 
+      - name: Scan tracked provider credentials
+        run: npm run test:tracked
+
+      - name: Verify npm package contents
+        run: npm run test:package
+
       - name: TypeScript check
         # bundle-to-outdir so the exit code is meaningful: 0 on success, non-0 on a real
         # import/transpile error anywhere in the graph. (The old `--no-bundle` single-entry

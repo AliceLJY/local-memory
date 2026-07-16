@@ -1,5 +1,14 @@
 # Changelog
 
+## v2.5.4 — npm 发布边界修复 (2026-07-17)
+
+- package.json 改为严格 files 白名单，只发布运行所需源码、示例配置、UI、集成脚本和必要文档。
+- 新增实际 tarball 内容检查：环境文件、运行配置、日志、会话、数据库、密钥材料和开发工作树一旦进入包即失败。
+- npm publish 前自动执行同一检查，CI 也验证最终包清单，避免本地运行数据再次随包发布。
+- 补齐 npm 包中的 UI 资源与 README 引用文档，并将中文 README 的 MCP 工具数对齐为 43。
+- 清理历史可视化 HTML 中遗留的两段 provider-shaped token，并增加只报路径/行号的 tracked-file 凭据扫描。
+- `doctor` 不再显示 API key 前缀，只报告是否已设置。
+
 > **CHANGELOG gap notice**: v1.3.1 (2026-03-12) → v2.5.2 (2026-05-27) 中间有较长开发期未更新 CHANGELOG。v2.5+ 系列以下开始恢复跟踪。历史 v1.4 - v2.4 间的变更见 git log。
 
 ## v2.5.3 — 诊断工具失明 + 失效功能 + score 显示 三批修复 (2026-05-29)

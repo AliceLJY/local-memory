@@ -1,6 +1,6 @@
 {
   "name": "recallnest",
-  "version": "2.5.3",
+  "version": "2.5.4",
   "description": "RecallNest \u2014 MCP-native, local-first memory search and distillation for AI conversations",
   "license": "MIT",
   "type": "module",
@@ -8,6 +8,22 @@
     "recallnest": "bin/recallnest.mjs",
     "local-memory": "bin/recallnest.mjs"
   },
+  "files": [
+    ".env.example",
+    "assets/ui/",
+    "bin/",
+    "CHANGELOG.md",
+    "config.json.example",
+    "connectors/examples/",
+    "docs/api-reference.md",
+    "docs/architecture.md",
+    "docs/connector-spec.md",
+    "eval/*.json",
+    "eval/continuity/*.json",
+    "integrations/",
+    "README_CN.md",
+    "src/"
+  ],
   "scripts": {
     "search": "bun run src/cli.ts search",
     "ingest": "bun run src/cli.ts ingest",
@@ -21,6 +37,9 @@
     "assets": "bun run src/cli.ts assets",
     "clean-briefs": "bun run src/cli.ts clean-briefs --apply",
     "test": "bun test",
+    "test:package": "node scripts/verify-package-contents.mjs",
+    "test:tracked": "node scripts/verify-tracked-contents.mjs",
+    "prepublishOnly": "npm run test:tracked && npm run test:package",
     "test:core": "bun test src/__tests__/scope-policy.test.ts src/__tests__/core-recall-eval.test.ts src/__tests__/capture-engine.test.ts src/__tests__/store-scope-audit.test.ts src/__tests__/scope-inventory.test.ts src/__tests__/workflow-observation.test.ts src/__tests__/resume-context.test.ts src/__tests__/term-registry.test.ts",
     "test:contracts": "bun test src/__tests__/contracts.test.ts",
     "eval": "bun run src/eval.ts",

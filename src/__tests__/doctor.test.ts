@@ -3,6 +3,7 @@ import { describe, expect, it } from "bun:test";
 import {
   assessContinuityBaseline,
   assessScopeInventoryReport,
+  describeSecretPresence,
   formatDoctorResults,
   loadContinuityBaselineEntries,
 } from "../doctor.js";
@@ -299,5 +300,20 @@ describe("formatDoctorResults", () => {
 
     expect(output).toContain("Review the ⚠️ items above before relying on this environment as a clean baseline.");
     expect(output).not.toContain("All clear.");
+  });
+});
+
+describe("describeSecretPresence", () => {
+  it("reports only presence and never includes the configured value", () => {
+    const secret = "sensitive-value-that-must-not-appear";
+    const message = describeSecretPresence(secret, "placeholder");
+
+    expect(message).toBe("set");
+    expect(message).not.toContain(secret);
+  });
+
+  it("does not treat an absent or placeholder value as configured", () => {
+    expect(describeSecretPresence(undefined, "placeholder")).toBeNull();
+    expect(describeSecretPresence("placeholder", "placeholder")).toBeNull();
   });
 });
