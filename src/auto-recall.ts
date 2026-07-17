@@ -1,6 +1,12 @@
 import { composeResumeContext, type ResumeContextDeps } from "./context-composer.js";
 import { resolveTier } from "./decay-engine.js";
 import type { DurableMemoryCategory } from "./memory-schema.js";
+import {
+  classifyRecallGate,
+  logRecallGateShadow,
+  resolveRecallGateMode,
+  type RecallGateResult,
+} from "./recall-gate.js";
 import { governResults, truncateQuery, type GovernorConfig, type GovernorSession } from "./recall-governor.js";
 import type { RetrievalResult } from "./retriever.js";
 import { buildRetrievalContext, resolveScopeSelection } from "./scope-policy.js";
@@ -33,6 +39,20 @@ export interface AutoRecallResponse {
   searchSkippedReason?: string;
 }
 
+/** Minimal valid ResumeContextResponse for enforce-mode skip-all short-circuits. */
+function emptyResumeContext(): ResumeContextResponse {
+  return {
+    summary: "",
+    stableContext: [],
+    relevantPatterns: [],
+    recentCases: [],
+    injectionHint: "user_attachment",
+    ephemeral: true,
+    responseMode: "default",
+    generatedAt: new Date().toISOString(),
+  };
+}
+
 export async function runAutoRecall(
   deps: ResumeContextDeps,
   request: AutoRecallRequest,
@@ -44,6 +64,34 @@ export async function runAutoRecall(
 
   if (!message) {
     throw new Error("message is required");
+  }
+
+  // Recall gate (mlp adaptive-retrieval borrow, three-way per Codex review).
+  // Sits BEFORE composeResumeContext — compose itself hits the retriever, so a
+  // gate placed after it would save nothing. Default mode is observe: verdicts
+  // are computed and shadow-logged but behavior is unchanged until real-sample
+  // false-positive rates have been reviewed (shared-behaviors §5).
+  const gateMode = resolveRecallGateMode(request.env);
+  let gateVerdict: RecallGateResult | undefined;
+  if (gateMode !== "off") {
+    gateVerdict = classifyRecallGate(message);
+    logRecallGateShadow({
+      ts: new Date().toISOString(),
+      decision: gateVerdict.decision,
+      ruleId: gateVerdict.ruleId,
+      msgLen: message.length,
+      mode: gateMode,
+      source: request.operation,
+    });
+    if (gateMode === "enforce" && gateVerdict.decision === "skip-all") {
+      return {
+        mode: "resume-only",
+        resolvedScope: undefined,
+        resume: emptyResumeContext(),
+        results: [],
+        searchSkippedReason: `recall-gate: skip-all (${gateVerdict.ruleId})`,
+      };
+    }
   }
 
   const scopeSelection = resolveScopeSelection({
@@ -66,6 +114,18 @@ export async function runAutoRecall(
     includeLatestCheckpoint: request.includeLatestCheckpoint,
     profile: request.profile,
   });
+
+  // Continuity nudges ("继续", "下一步") want the resume context they just got,
+  // not an embedding search over their own two characters.
+  if (gateMode === "enforce" && gateVerdict?.decision === "resume-only") {
+    return {
+      mode: "resume-only",
+      resolvedScope: resume.resolvedScope || resume.latestCheckpoint?.resolvedScope || scopeSelection.resolvedScope,
+      resume,
+      results: [],
+      searchSkippedReason: `recall-gate: resume-only (${gateVerdict.ruleId})`,
+    };
+  }
 
   const resolvedScope = request.allScopes
     ? undefined
