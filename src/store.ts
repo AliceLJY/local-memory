@@ -7,6 +7,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { existsSync, accessSync, constants, mkdirSync, realpathSync, lstatSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { logWarn } from "./stderr-log.js";
+import { readConsistencyInterval as envReadConsistencyInterval } from "./env-config.js";
 import type { DurableMemoryCategory } from "./memory-schema.js";
 import { matchesScopeFilter } from "./scope-policy.js";
 import { detectEmotionIfEnabled } from "./emotion-detector.js";
@@ -58,6 +59,13 @@ export interface MemorySearchResult {
 export interface StoreConfig {
   dbPath: string;
   vectorDim: number;
+  /**
+   * LanceDB readConsistencyInterval (seconds): 0 = strong consistency (external
+   * writes visible on every read), positive = bounded staleness window.
+   * Omitted → RECALLNEST_READ_CONSISTENCY_INTERVAL decides (default 0; "off"
+   * restores the legacy unchecked-handle behavior).
+   */
+  readConsistencyInterval?: number;
 }
 
 export type LegacyScopeIssueKind = "missing" | "empty" | "global";
@@ -248,7 +256,13 @@ export class MemoryStore implements MemoryStorePort {
 
     let db: LanceDB.Connection;
     try {
-      db = await lancedb.connect(this.config.dbPath);
+      // Without a consistency interval a long-lived handle pins its manifest
+      // version — resident MCP/API/UI servers would never see CLI or
+      // sibling-process writes. Explicit config wins so tests can pin behavior.
+      db = await lancedb.connect(this.config.dbPath, {
+        readConsistencyInterval:
+          this.config.readConsistencyInterval ?? envReadConsistencyInterval(),
+      });
     } catch (err: any) {
       const code = err.code || "";
       const message = err.message || String(err);

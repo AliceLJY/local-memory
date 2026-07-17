@@ -68,6 +68,26 @@ export const dataDir = (): string => process.env.RECALLNEST_DATA_DIR || "data";
 export const mcpTier = (): "core" | "advanced" | "full" =>
   (process.env.RECALLNEST_MCP_TIER || "advanced") as "core" | "advanced" | "full";
 
+// --- LanceDB read consistency (cross-process visibility) ---
+
+/**
+ * Read consistency interval (seconds) resolved for lancedb.connect().
+ * Without it a long-lived table handle pins its manifest version and never
+ * sees writes committed by other processes (CLI ingest vs resident MCP/API/UI
+ * servers). Explicit StoreConfig.readConsistencyInterval wins over this env.
+ *
+ * Unset / empty  → 0 (strong consistency: check for external commits per read)
+ * "off" | "none" → undefined (legacy unchecked-handle behavior, escape hatch)
+ * number ≥ 0     → bounded staleness window in seconds (invalid values → 0)
+ */
+export const readConsistencyInterval = (): number | undefined => {
+  const raw = process.env.RECALLNEST_READ_CONSISTENCY_INTERVAL;
+  if (raw === undefined || raw === "") return 0;
+  if (raw === "off" || raw === "none") return undefined;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : 0;
+};
+
 // --- Raw env values (caller validates / clamps / falls back to config) ---
 
 export const recallModeRaw = (): string | undefined => process.env.RECALLNEST_RECALL_MODE;
