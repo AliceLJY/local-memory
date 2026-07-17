@@ -59,6 +59,7 @@ import type { KGExtractor } from "./kg-extractor.js";
 import { scanForPII, redactSecrets } from "./pii-detector.js";
 import type { AuditLogger } from "./audit-log.js";
 import { checkAdmission, type ScopeRateLimiter, type AdmissionConfig } from "./admission-control.js";
+import { resolveNoisePrototypeBank, type NoisePrototypeBank } from "./noise-prototype-bank.js";
 import { tagNarrativeIfEnabled } from "./narrative-tagger.js";
 
 type StoreDeps = Pick<MemoryStore, "store"> & Partial<Pick<MemoryStore, "list" | "update" | "getById" | "get" | "vectorSearch">>;
@@ -78,6 +79,12 @@ export interface PersistMemoryDeps {
   rateLimiter?: ScopeRateLimiter | null;
   /** LME-8: Optional admission config overrides */
   admissionConfig?: Partial<AdmissionConfig>;
+  /**
+   * Noise-prototype shadow experiment (mlp borrow). undefined → env-governed
+   * shared instance (RECALLNEST_NOISE_PROTOTYPE, shadow default); null → off.
+   * Shadow-only: it observes and logs, it never rejects.
+   */
+  noisePrototypeBank?: NoisePrototypeBank | null;
 }
 
 interface DurableWriteInput {
@@ -833,6 +840,16 @@ export async function persistMemory(
     } catch {
       // Audit must never block memory writes
     }
+    // Noise-prototype shadow experiment: learn ONLY from the regex noise
+    // filter's own verdict (mlp #914 lesson — a heuristic's low-importance
+    // self-judgment must not be recycled as a noise label). Embedding only
+    // happens on a repeat sighting under the bank cap, so this stays cheap.
+    if (admission.reason === "noise_detected") {
+      const bank = resolveNoisePrototypeBank(deps.noisePrototypeBank);
+      if (bank) {
+        await bank.learnFromRejection(input.text, (text) => deps.embedder.embedPassage(text));
+      }
+    }
     return {
       id: `rejected-${Date.now()}`,
       text: input.text,
@@ -849,6 +866,15 @@ export async function persistMemory(
   }
 
   const vector = await deps.embedder.embedPassage(input.text);
+
+  // Noise-prototype shadow experiment, matching side: reuses the write-path
+  // embedding just computed (zero extra embedding). Log-only — the verdict
+  // never blocks this write while the experiment is in shadow.
+  {
+    const bank = resolveNoisePrototypeBank(deps.noisePrototypeBank);
+    bank?.matchShadow(input.text, vector);
+  }
+
   const language = detectLang(input.text);
   const fts_text = tokenizeFts(input.text, language);
   const resolvedScope = resolveScope(input);
