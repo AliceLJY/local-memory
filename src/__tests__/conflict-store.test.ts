@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { summarizeConflictAdvice } from "../conflict-advisor.js";
 import { buildConflictCandidateRecord, resolveConflictCandidate } from "../conflict-engine.js";
 import { ConflictCandidateStore } from "../conflict-store.js";
+import { parseEvolution } from "../memory-evolution.js";
 
 const tempDirs: string[] = [];
 
@@ -162,9 +163,11 @@ describe("resolveConflictCandidate", () => {
     await conflictStore.save(record);
 
     const updatedPayloads: any[] = [];
+    const archivedRows: any[] = [];
+    const originalExistingText = "User prefers concise, direct replies.";
     const existingMemory = {
       id: "durable-1",
-      text: "User prefers concise, direct replies.",
+      text: originalExistingText,
       vector: [1, 1, 1],
       category: "preferences",
       scope: "memory:agent",
@@ -183,6 +186,14 @@ describe("resolveConflictCandidate", () => {
           Object.assign(existingMemory, updates);
           return existingMemory;
         },
+        async store(entry: any) {
+          archivedRows.push(entry);
+          return entry;
+        },
+        async upsert(entry: any) {
+          archivedRows.push(entry);
+          return entry;
+        },
       },
       embedder: {
         async embedPassage(text: string) {
@@ -200,7 +211,23 @@ describe("resolveConflictCandidate", () => {
     expect(result.updatedMemoryId).toBe("durable-1");
     expect(updatedPayloads).toHaveLength(1);
     expect(updatedPayloads[0]?.updates.text).toBe(record.incoming.text);
-    expect(updatedPayloads[0]?.updates.metadata).toBe(record.incoming.metadata);
+
+    // The incoming metadata is carried through, with an evolution block layered on top
+    // that links the live row back to the archived version (it is no longer passed verbatim).
+    const incomingMeta = JSON.parse(record.incoming.metadata);
+    const writtenMeta = JSON.parse(updatedPayloads[0]?.updates.metadata);
+    for (const [key, value] of Object.entries(incomingMeta)) {
+      if (key === "evolution") continue;
+      expect(writtenMeta[key]).toEqual(value);
+    }
+
+    // Accepting the incoming version must not destroy the belief it replaced.
+    expect(archivedRows).toHaveLength(1);
+    expect(archivedRows[0].text).toBe(originalExistingText);
+    const archivedEvo = parseEvolution(archivedRows[0].metadata);
+    expect(archivedEvo.status).toBe("superseded");
+    expect(archivedEvo.supersededBy).toBe("durable-1");
+    expect(parseEvolution(updatedPayloads[0]?.updates.metadata).supersedes).toBe(archivedRows[0].id);
 
     const resolved = await conflictStore.getById(record.conflictId);
     expect(resolved?.status).toBe("accepted-incoming");
@@ -260,6 +287,8 @@ describe("resolveConflictCandidate", () => {
 
     const mergeSuggestion = summarizeConflictAdvice(record).mergeSuggestion;
     expect(mergeSuggestion).toBeTruthy();
+    const archivedRows: any[] = [];
+    const originalExistingText = existingMemory.text;
 
     const result = await resolveConflictCandidate({
       store: {
@@ -270,6 +299,14 @@ describe("resolveConflictCandidate", () => {
           updatedPayloads.push({ id, updates });
           Object.assign(existingMemory, updates);
           return existingMemory;
+        },
+        async store(entry: any) {
+          archivedRows.push(entry);
+          return entry;
+        },
+        async upsert(entry: any) {
+          archivedRows.push(entry);
+          return entry;
         },
       },
       embedder: {
@@ -294,6 +331,13 @@ describe("resolveConflictCandidate", () => {
     expect(mergedMetadata.canonicalKey).toBe("user-reply-style");
     expect(mergedMetadata.promotedFrom?.memoryId).toBe("source-1");
     expect(mergedMetadata.mergedFrom?.conflictId).toBe(record.conflictId);
+
+    // A merge still replaces the existing row's text, so the pre-merge belief must survive
+    // as history — otherwise the "before" half of the merge decision is unrecoverable.
+    expect(archivedRows).toHaveLength(1);
+    expect(archivedRows[0].text).toBe(originalExistingText);
+    expect(parseEvolution(archivedRows[0].metadata).status).toBe("superseded");
+    expect(parseEvolution(updatedPayloads[0]?.updates.metadata).supersedes).toBe(archivedRows[0].id);
 
     const resolved = await conflictStore.getById(record.conflictId);
     expect(resolved?.status).toBe("merged");

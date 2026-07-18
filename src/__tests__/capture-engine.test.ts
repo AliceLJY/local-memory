@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 
 import { persistCaseMemory, persistMemory, persistMemoryBatch, persistWorkflowPattern, promoteMemory } from "../capture-engine.js";
+import { parseEvolution } from "../memory-evolution.js";
 
 const TEST_SCOPE = "project:test";
 
@@ -43,6 +44,18 @@ function createDeps() {
             timestamp: updates.timestamp ?? storedEntries[index].timestamp,
           };
           return storedEntries[index];
+        },
+        // Mirrors MemoryStore.upsert (mergeInsert on id): honours the caller's id and
+        // timestamp verbatim, unlike store() which stamps its own. Belief-history rows
+        // depend on both being preserved.
+        async upsert(entry: any) {
+          const index = storedEntries.findIndex((item) => item.id === entry.id);
+          if (index >= 0) {
+            storedEntries[index] = { ...entry };
+          } else {
+            storedEntries.push({ ...entry });
+          }
+          return entry;
         },
         async getById(id: string) {
           return storedEntries.find((entry) => entry.id === id) || null;
@@ -244,8 +257,24 @@ describe("persistMemory", () => {
 
     expect(second.disposition).toBe("updated");
     expect(second.id).toBe(first.id);
-    expect(storedEntries).toHaveLength(1);
-    expect(storedEntries[0].text).toContain("direct technical replies");
+
+    // The canonical row is still updated in place — but the replaced belief is now kept
+    // beside it as a superseded history row instead of being overwritten out of existence.
+    expect(storedEntries).toHaveLength(2);
+
+    const canonical = storedEntries.find((entry) => entry.id === first.id);
+    expect(canonical.text).toContain("direct technical replies");
+
+    const history = storedEntries.find((entry) => entry.id !== first.id);
+    expect(history.text).toBe("User prefers concise replies");
+
+    const historyEvo = parseEvolution(history.metadata);
+    expect(historyEvo.status).toBe("superseded");
+    expect(historyEvo.supersededBy).toBe(first.id);
+    expect(historyEvo.validUntil).toBeGreaterThan(0);
+
+    // Bidirectional link: the live belief points back at the version it replaced.
+    expect(parseEvolution(canonical.metadata).supersedes).toBe(history.id);
   });
 
   it("updates the same durable owner when the same atomic preference slot is rephrased", async () => {
@@ -268,7 +297,13 @@ describe("persistMemory", () => {
     expect(second.canonicalKey).toBe("preferences:brand-item:麦当劳:麦辣鸡翅");
     expect(second.disposition).toBe("updated");
     expect(second.id).toBe(first.id);
-    expect(storedEntries).toHaveLength(1);
+
+    // Rephrasing the same preference slot still lands on one canonical row, plus the
+    // archived copy of the wording it replaced.
+    expect(storedEntries).toHaveLength(2);
+    const history = storedEntries.find((entry) => entry.id !== first.id);
+    expect(history.text).toBe("我喜欢吃麦当劳的麦辣鸡翅");
+    expect(parseEvolution(history.metadata).status).toBe("superseded");
   });
 
   it("creates a conflict when the same canonicalKey is reused across durable categories", async () => {

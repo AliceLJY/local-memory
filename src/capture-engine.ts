@@ -5,7 +5,8 @@ import { extractErrorSignatures } from "./error-signature.js";
 import { verifyWrite } from "./write-verifier.js";
 // batchInternalDedup is available in ingest.ts for large-batch scenarios;
 // persistMemoryBatch relies on per-item conflict detection (A-2) instead.
-import { defaultEvolution, buildSupersedeMetadata, buildSupersedeMetadataForNew, buildPendingReviewMetadata, isActiveMemory, patchEvolution } from "./memory-evolution.js";
+import { defaultEvolution, buildSupersedeMetadata, buildSupersedeMetadataForNew, buildPendingReviewMetadata, isActiveMemory, parseEvolution, patchEvolution } from "./memory-evolution.js";
+import { archiveBeliefVersion, buildSupersedingBeliefMetadata } from "./belief-history.js";
 import { detectTopicTag, injectTopicTag } from "./topic-tag.js";
 import { assignDefaultConfidence, type ConfidenceMetadata } from "./confidence-tracker.js";
 import {
@@ -62,7 +63,7 @@ import { checkAdmission, type ScopeRateLimiter, type AdmissionConfig } from "./a
 import { resolveNoisePrototypeBank, type NoisePrototypeBank } from "./noise-prototype-bank.js";
 import { tagNarrativeIfEnabled } from "./narrative-tagger.js";
 
-type StoreDeps = Pick<MemoryStore, "store"> & Partial<Pick<MemoryStore, "list" | "update" | "getById" | "get" | "vectorSearch">>;
+type StoreDeps = Pick<MemoryStore, "store"> & Partial<Pick<MemoryStore, "list" | "update" | "getById" | "get" | "vectorSearch" | "upsert">>;
 type ConflictStoreDeps = Pick<ConflictCandidateStore, "save" | "replace" | "getOpenByFingerprint" | "getLatestByFingerprint">;
 
 export interface PersistMemoryDeps {
@@ -444,6 +445,10 @@ async function findCanonicalMatches(
   return entries.filter((entry) => {
     const boundary = extractBoundaryMetadata(entry.metadata);
     if (boundary?.layer !== "durable") return false;
+    // Belief-history rows carry the same canonicalKey as the live row they were copied
+    // from. Without this guard they'd be treated as dedupe/conflict targets — so rewriting
+    // a belief back to an older wording would look like a duplicate, not a change.
+    if (!isActiveMemory(entry.metadata)) return false;
     return extractCanonicalKey(entry.metadata) === canonicalKey;
   });
 }
@@ -570,13 +575,26 @@ async function writeDurableEntry(
       }
     }
 
+    // latest-wins is where beliefs change. Archive the version being replaced first —
+    // overwriting in place used to delete the old text + vector outright, which is what
+    // made "what did I believe last month?" unanswerable no matter how retrieval queried.
+    const now = Date.now();
+    const previousEvo = parseEvolution(latest.metadata, latest.timestamp);
+    const { historyId } = await archiveBeliefVersion(
+      { store: deps.store, embedder: deps.embedder },
+      latest,
+      { now },
+    );
+
     const updated = await deps.store.update(latest.id, {
       text: params.text,
       vector: params.vector,
       importance: params.importance,
       category: params.category,
-      metadata: params.metadata,
-      timestamp: Date.now(),
+      // Merge rather than replace: a bare params.metadata would wipe the evolution block
+      // (version, access stats, supersede links) along with the text.
+      metadata: buildSupersedingBeliefMetadata(params.metadata, previousEvo, historyId, now),
+      timestamp: now,
       ...(params.language ? { language: params.language } : {}),
       ...(params.fts_text ? { fts_text: params.fts_text } : {}),
     });

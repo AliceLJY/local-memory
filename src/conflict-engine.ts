@@ -9,6 +9,8 @@ import {
   parseMetadataObject,
 } from "./memory-boundaries.js";
 import type { MemoryStore } from "./store.js";
+import { archiveBeliefVersion, buildSupersedingBeliefMetadata } from "./belief-history.js";
+import { parseEvolution } from "./memory-evolution.js";
 import {
   type ConflictCandidateInput,
   ConflictCandidateInputSchema,
@@ -95,7 +97,8 @@ function buildMergedConflictMetadata(
 }
 
 export interface ResolveConflictDeps {
-  store: Pick<MemoryStore, "getById" | "update">;
+  // `store`/`upsert` are needed to archive the belief being replaced before overwriting it.
+  store: Pick<MemoryStore, "getById" | "update" | "store"> & Partial<Pick<MemoryStore, "upsert">>;
   embedder: Pick<Embedder, "embedPassage">;
   conflictStore: Pick<ConflictCandidateStore, "getById" | "replace">;
 }
@@ -144,13 +147,31 @@ export async function resolveConflictCandidate(
     }
 
     const vector = await deps.embedder.embedPassage(nextText);
+
+    // Conflict resolution is the most deliberate belief change there is — accepting the
+    // incoming version or merging both used to overwrite the existing row in place, losing
+    // precisely the "before" side of the decision. Archive it first.
+    const resolvedAtMs = Date.now();
+    const previousEvo = parseEvolution(existing.metadata, existing.timestamp);
+    const { historyId } = await archiveBeliefVersion(
+      { store: deps.store, embedder: deps.embedder },
+      existing,
+      { now: resolvedAtMs },
+    );
+
     const updated = await deps.store.update(existing.id, {
       text: nextText,
       vector,
       importance: nextImportance,
       category: nextCategory,
-      metadata: nextMetadata,
-      timestamp: Date.now(),
+      metadata: buildSupersedingBeliefMetadata(
+        nextMetadata,
+        previousEvo,
+        historyId,
+        resolvedAtMs,
+        `conflict:${input.resolution}`,
+      ),
+      timestamp: resolvedAtMs,
     });
     if (!updated) {
       throw new Error(`Failed to update durable memory ${existing.id}`);
