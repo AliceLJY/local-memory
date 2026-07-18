@@ -73,6 +73,35 @@ describe("scripts resolve the database through runtime-config", () => {
     expect(offenders).toEqual([]);
   });
 
+  it("no src file re-implements dbPath resolution instead of calling resolveDbPath", () => {
+    // cli.ts once duplicated the resolve() expression for its destructive
+    // "clear index" path, and doctor.ts resolved against process.cwd() — so the
+    // health check could report on a different directory than the server used.
+    const dir = resolve(REPO_ROOT, "src");
+    const offenders: string[] = [];
+
+    const walk = (d: string): void => {
+      for (const entry of readdirSync(d, { withFileTypes: true })) {
+        if (entry.name === "__tests__" || entry.name === "node_modules") continue;
+        const full = resolve(d, entry.name);
+        if (entry.isDirectory()) {
+          walk(full);
+          continue;
+        }
+        if (!entry.name.endsWith(".ts") || entry.name === "runtime-config.ts") continue;
+        const src = readFileSync(full, "utf-8");
+        for (const [i, line] of src.split("\n").entries()) {
+          if (/expandHome\(\s*\w+\.dbPath\s*\)/.test(line)) {
+            offenders.push(`${entry.name}:${i + 1}`);
+          }
+        }
+      }
+    };
+    walk(dir);
+
+    expect(offenders).toEqual([]);
+  });
+
   it("no script reads the non-existent config.database key", () => {
     const dir = resolve(REPO_ROOT, "scripts");
     const offenders: string[] = [];

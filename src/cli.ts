@@ -20,7 +20,7 @@ import { applyRetrievalProfile, listRetrievalProfiles } from "./retrieval-profil
 import { distillResults, formatExplainResults, formatSearchResults, selectBriefSeedResults, summarizeResults } from "./memory-output.js";
 import { archiveDirtyBriefAsset, assetSummaryLine, buildBriefAsset, buildPinAsset, getExportsDir, listDirtyBriefAssets, listMemoryAssets, listPinAssets, pinSummaryLine, saveBriefAsset, savePinAsset, writeExportArtifact } from "./memory-assets.js";
 import { indexAsset, indexPinnedAsset } from "./asset-sync.js";
-import { createComponents, createStoreOnly, expandHome, loadConfig, loadDotEnv, type LocalMemoryConfig } from "./runtime-config.js";
+import { createComponents, createStoreOnly, expandHome, loadConfig, loadDotEnv, resolveDbPath, type LocalMemoryConfig } from "./runtime-config.js";
 import { KGStore } from "./kg-store.js";
 import { isKGModeEnabled } from "./kg-extractor.js";
 import {
@@ -1750,7 +1750,7 @@ program
     }
 
     const config = loadConfig();
-    const dbPath = resolve(metaDir(import.meta), "..", expandHome(config.dbPath));
+    const dbPath = resolveDbPath(config);
 
     if (existsSync(dbPath)) {
       const { rmSync } = await import("node:fs");

@@ -14,7 +14,7 @@ import { existsSync, accessSync, constants, readFileSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { homedir } from "node:os";
 import { metaDir } from "./compat.js";
-import { loadConfig, expandHome, resolveEnv, findConfigPath, loadDotEnv } from "./runtime-config.js";
+import { loadConfig, expandHome, resolveEnv, findConfigPath, loadDotEnv, resolveDbPath } from "./runtime-config.js";
 import { createEmbedder, type EmbeddingConfig } from "./embedder.js";
 import { extractCanonicalKey, normalizeCanonicalKey } from "./memory-boundaries.js";
 import {
@@ -356,7 +356,9 @@ export async function runDoctor(options: { ci?: boolean } = {}): Promise<CheckRe
   }
 
   // 5. LanceDB data directory
-  const dbPath = resolve(configPath ? join(configPath, "..") : process.cwd(), expandHome(config.dbPath));
+  // Must resolve exactly like the server does — a doctor that reports on a
+  // different directory than the one actually in use is worse than no doctor.
+  const dbPath = resolveDbPath(config);
   try {
     validateStoragePath(dbPath);
     results.push(pass("Data directory", dbPath));
