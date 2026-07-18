@@ -114,6 +114,7 @@ fi
 register_codex_projectless_threads
 
 # 4b. rsync Kimi Code sessions（~/.kimi-code/sessions/**/wire.jsonl）+ session_index 合并
+mkdir -p "$HOME/.kimi-code/sessions"
 log "→ rsync Kimi Code sessions"
 rsync -avz --partial --rsync-path=/opt/homebrew/bin/rsync --timeout=120 \
   --include='*/' --include='*.jsonl' --exclude='*' \
@@ -177,7 +178,7 @@ rsync -az --partial --rsync-path=/opt/homebrew/bin/rsync --timeout=180 -s --prun
   -e "$SSH_OPTS -o BatchMode=yes" \
   "mac:$HOME/Library/Application Support/Claude/local-agent-mode-sessions/" \
   "$DESKTOP_STAGING/" \
-  >> "$ROTATING_LOG" 2>&1 || { EC=$?; log "⚠️ Desktop rsync 失败 exit=$EC（不阻塞，已拉部分仍 ingest）"; }
+  >> "$ROTATING_LOG" 2>&1 || { EC=$?; log "⚠️ Desktop rsync 失败 exit=${EC}（不阻塞，已拉部分仍 ingest）"; }
 # 扁平化（cli.ts desktop 分支对该目录单层 readdirSync；uuid 文件名全局唯一，无碰撞）
 DESKTOP_N=$(find "$DESKTOP_STAGING" -name '*.jsonl' ! -name 'audit.jsonl' 2>/dev/null | wc -l | tr -d ' ')
 find "$DESKTOP_STAGING" -name '*.jsonl' ! -name 'audit.jsonl' -exec cp -p {} "$DESKTOP_IMPORT/" \; 2>/dev/null
@@ -187,7 +188,7 @@ log "Desktop 对话扁平化 ${DESKTOP_N} 个 jsonl → data/desktop-import"
 if [ $EC -eq 0 ]; then
   log "✅ rsync 完成，触发 ingest"
 else
-  log "⚠️ rsync 部分失败 exit=$EC，仍触发 ingest 处理已拉到的部分"
+  log "⚠️ rsync 部分失败 exit=${EC}，仍触发 ingest 处理已拉到的部分"
 fi
 
 bash ~/recallnest/scripts/incremental-ingest.sh
