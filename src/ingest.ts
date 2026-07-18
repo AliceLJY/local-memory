@@ -1191,6 +1191,276 @@ export async function ingestCodexSessions(
 }
 
 // ============================================================================
+// Kimi Code Session Parser
+// ============================================================================
+// Kimi Code 的 wire.jsonl 是事件流（非 role/content 行），对话内容只在三类事件里：
+//   turn.prompt (origin.kind="user")          → 用户输入，.input 是 text part 数组
+//   context.append_message                    → 消息；用户消息只收 origin.kind="user"
+//                                               （injection/skill_activation 等是系统注入，跳过）
+//   context.append_loop_event content.part    → 助手文本（part.type==="text"；think 跳过）
+// 其余类型（llm.tools_snapshot / mcp.tools_discovered / config.update / llm.request /
+// usage.record / permission.* 等，约占 86% 体积）是运行事件，一律跳过。
+function parseKimiSession(filePath: string): ConversationTurn[] {
+  const turns: ConversationTurn[] = [];
+  const content = readFileSync(filePath, "utf-8");
+  const lines = content.split("\n").filter((l) => l.trim());
+
+  // sessionId 从路径取：.../sessions/<workDirKey>/<sessionId>/agents/main/wire.jsonl
+  // 去掉 "session_" 前缀，否则 scope 统一变成 kimi:session_
+  const pathParts = filePath.split("/");
+  const rawId = pathParts.length >= 4 ? pathParts[pathParts.length - 4] : basename(filePath, ".jsonl");
+  const sessionId = rawId.replace(/^session_/, "");
+
+  const pushTurn = (role: "user" | "assistant", text: string, timestamp: string) => {
+    const trimmed = text.trim();
+    // 中文 8 字符已是完整句；用户阈值与 codex/cc 对齐
+    if (trimmed.length <= (role === "user" ? 10 : 8)) return;
+    // turn.prompt 与随后的 context.append_message 重复记录同一用户输入（同 codex 相邻去重）
+    const lastTurn = turns[turns.length - 1];
+    if (lastTurn && lastTurn.role === role && lastTurn.text === trimmed) return;
+    turns.push({ role, text: trimmed, timestamp, sessionId });
+  };
+
+  for (const line of lines) {
+    try {
+      const obj = JSON.parse(line);
+      const timestamp = typeof obj.time === "number" ? new Date(obj.time).toISOString() : "";
+
+      if (obj.type === "turn.prompt") {
+        if (obj.origin?.kind !== "user") continue;
+        const parts = Array.isArray(obj.input) ? obj.input : [];
+        const text = parts
+          .filter((c: any) => c?.type === "text")
+          .map((c: any) => c.text || "")
+          .join("\n");
+        if (text) pushTurn("user", text, timestamp);
+        continue;
+      }
+
+      if (obj.type === "context.append_message") {
+        const msg = obj.message;
+        if (!msg || (msg.role !== "user" && msg.role !== "assistant")) continue;
+        // 系统注入（system-reminder、skill 激活、后台任务通知）不是用户对话内容
+        if (msg.role === "user" && msg.origin?.kind !== "user") continue;
+        let text = "";
+        if (typeof msg.content === "string") {
+          text = msg.content;
+        } else if (Array.isArray(msg.content)) {
+          text = msg.content
+            .filter((c: any) => c.type === "text")
+            .map((c: any) => c.text || "")
+            .join("\n");
+        }
+        if (text) pushTurn(msg.role, text, timestamp);
+        continue;
+      }
+
+      if (obj.type === "context.append_loop_event") {
+        const part = obj.event?.type === "content.part" ? obj.event.part : null;
+        if (part?.type === "text" && typeof part.text === "string") {
+          pushTurn("assistant", part.text, timestamp);
+        }
+      }
+    } catch {
+      // Skip malformed lines
+    }
+  }
+
+  return turns;
+}
+
+export async function ingestKimiSessions(
+  store: MemoryStore,
+  embedder: Embedder,
+  options: { limit?: number; verbose?: boolean; noDedup?: boolean; llm?: LLMClient | null; recentHours?: number } = {},
+): Promise<IngestResult> {
+  const result: IngestResult = {
+    source: "kimi",
+    filesProcessed: 0,
+    chunksIngested: 0,
+    chunksSkipped: 0,
+    chunksDeduped: 0,
+    dedupReasonCounts: createDedupReasonCounts(),
+    errors: [],
+  };
+
+  const baseDir = expandHome("~/.kimi-code/sessions");
+  const indexPath = expandHome("~/.kimi-code/session_index.jsonl");
+
+  // 文件发现：优先 session_index.jsonl（精确），再 walk sessions 目录兜底（索引缺漏时）。
+  // 只收 agents/main/wire.jsonl，子 agent 的 agents/agent-N/wire.jsonl 与主对话重复，不采。
+  const seen = new Set<string>();
+  const allFiles: string[] = [];
+  const addFile = (p: string) => {
+    if (!seen.has(p) && existsSync(p)) {
+      seen.add(p);
+      allFiles.push(p);
+    }
+  };
+
+  if (existsSync(indexPath)) {
+    try {
+      for (const line of readFileSync(indexPath, "utf-8").split("\n")) {
+        if (!line.trim()) continue;
+        try {
+          const entry = JSON.parse(line);
+          if (typeof entry.sessionDir === "string" && entry.sessionDir) {
+            addFile(join(entry.sessionDir, "agents", "main", "wire.jsonl"));
+          }
+        } catch {
+          // Skip malformed index lines
+        }
+      }
+    } catch {
+      // 索引读不出来就走下面的目录扫描
+    }
+  }
+
+  if (existsSync(baseDir)) {
+    const mainWireSuffix = join("agents", "main", "wire.jsonl");
+    const walk = (dir: string) => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = join(dir, entry.name);
+        if (entry.isDirectory()) {
+          walk(full);
+        } else if (full.endsWith(mainWireSuffix)) {
+          addFile(full);
+        }
+      }
+    };
+    walk(baseDir);
+  }
+
+  if (allFiles.length === 0) {
+    result.errors.push(`Kimi Code sessions not found: ${baseDir} (index: ${indexPath})`);
+    return result;
+  }
+  allFiles.sort();
+
+  const recentMode = options.recentHours !== undefined;
+  const cutoffMs = recentMode ? Date.now() - options.recentHours! * 3600_000 : 0;
+
+  // --recent: only keep files modified within N hours
+  const filteredFiles = recentMode
+    ? allFiles.filter((f) => { try { return statSync(f).mtimeMs >= cutoffMs; } catch { return false; } })
+    : allFiles;
+
+  const filesToProcess = options.limit ? filteredFiles.slice(0, options.limit) : filteredFiles;
+  const total = filesToProcess.length;
+
+  for (let fi = 0; fi < filesToProcess.length; fi++) {
+    const filePath = filesToProcess[fi];
+
+    try {
+      const stat = statSync(filePath);
+      if (stat.size < 200) {
+        result.chunksSkipped++;
+        continue;
+      }
+
+      // In --recent mode, skip ingested-files check — files may have new content appended
+      if (!recentMode && isProcessed(filePath, stat.size, stat.mtimeMs)) {
+        result.chunksSkipped++;
+        continue;
+      }
+
+      const turns = parseKimiSession(filePath);
+      if (turns.length === 0) {
+        result.chunksSkipped++;
+        markProcessed(filePath, stat.size, 0, stat.mtimeMs);
+        continue;
+      }
+
+      const chunks = groupTurnsIntoChunks(turns);
+      const texts = chunks.map((c) => c.text);
+      const batchSize = 32;
+      let fileChunks = 0;
+
+      for (let i = 0; i < texts.length; i += batchSize) {
+        const batch = texts.slice(i, i + batchSize);
+        const batchChunks = chunks.slice(i, i + batchSize);
+
+        try {
+          const vectors = await embedder.embedBatchPassage(batch);
+          const toStore: Array<{text: string; vector: number[]; category: string; scope: string; importance: number; metadata: string}> = [];
+
+          // Dedup + L0 batch
+          const dedupedTexts: string[] = [];
+          const dedupedVectors: number[][] = [];
+          const dedupedChunks: typeof batchChunks = [];
+
+          for (let j = 0; j < batch.length; j++) {
+            const vector = vectors[j];
+            if (!vector || vector.length === 0) {
+              result.chunksSkipped++;
+              continue;
+            }
+            if (!options.noDedup) {
+              const decision = await dedupCheck(store, vector, batch[j], options.llm);
+              recordDedupDecision(result, decision);
+              if (decision.secondaryDeletes?.length) {
+                await executeSecondaryDeletes(store, decision.secondaryDeletes);
+              }
+              if (decision.action === "skip") continue;
+            }
+            dedupedTexts.push(batch[j]);
+            dedupedVectors.push(vector);
+            dedupedChunks.push(batchChunks[j]);
+          }
+
+          if (dedupedTexts.length > 0) {
+            if (!options.llm) {
+              queueForLaterExtraction(
+                dedupedChunks.map(c => ({ text: c.text, scope: `kimi:${c.sessionId.slice(0, 8)}` }))
+              );
+              result.chunksSkipped += dedupedTexts.length;
+            } else {
+              const extractions = await smartExtractBatch(dedupedTexts, options.llm);
+              const coreSummaries = await generateCoreSummaries(dedupedTexts, options.llm);
+              for (let j = 0; j < dedupedTexts.length; j++) {
+                const chunk = dedupedChunks[j];
+                const ext = extractions[j];
+                toStore.push(buildIngestedEntry({
+                  source: "kimi",
+                  scope: `kimi:${chunk.sessionId.slice(0, 8)}`,
+                  text: dedupedTexts[j],
+                  vector: dedupedVectors[j],
+                  extraction: ext,
+                  sessionId: chunk.sessionId,
+                  file: basename(filePath),
+                  coreSummary: coreSummaries[j],
+                }));
+              }
+            }
+          }
+
+          if (toStore.length > 0) {
+            await store.storeBatch(toStore);
+            result.chunksIngested += toStore.length;
+            fileChunks += toStore.length;
+          }
+        } catch (err: any) {
+          result.errors.push(`Embedding batch error: ${err.message}`);
+        }
+      }
+
+      markProcessed(filePath, stat.size, fileChunks, stat.mtimeMs);
+      result.filesProcessed++;
+
+      if ((fi + 1) % 10 === 0 || fi + 1 === total) {
+        console.log(
+          `  Kimi: ${fi + 1}/${total} files, ${result.chunksIngested} chunks ingested`,
+        );
+      }
+    } catch (err: any) {
+      result.errors.push(`Error processing ${basename(filePath)}: ${err.message}`);
+    }
+  }
+
+  return result;
+}
+
+// ============================================================================
 // Gemini Session Parser
 // ============================================================================
 

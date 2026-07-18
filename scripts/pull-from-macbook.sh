@@ -113,6 +113,55 @@ fi
 
 register_codex_projectless_threads
 
+# 4b. rsync Kimi Code sessions（~/.kimi-code/sessions/**/wire.jsonl）+ session_index 合并
+log "→ rsync Kimi Code sessions"
+rsync -avz --partial --rsync-path=/opt/homebrew/bin/rsync --timeout=120 \
+  --include='*/' --include='*.jsonl' --exclude='*' \
+  -e "$SSH_OPTS" \
+  mac:~/.kimi-code/sessions/ \
+  ~/.kimi-code/sessions/ \
+  >> "$ROTATING_LOG" 2>&1 || { EC=$?; log "⚠️ Kimi sessions rsync 失败 exit=$EC"; }
+
+if ssh -o ConnectTimeout=5 mac 'test -f ~/.kimi-code/session_index.jsonl' 2>/dev/null; then
+  log "→ rsync Kimi session_index"
+  rsync -avz --partial --rsync-path=/opt/homebrew/bin/rsync --timeout=60 \
+    -e "$SSH_OPTS" \
+    mac:~/.kimi-code/session_index.jsonl \
+    ~/.kimi-code/session_index.macbook.jsonl \
+    >> "$ROTATING_LOG" 2>&1 || { EC=$?; log "⚠️ Kimi session_index rsync 失败 exit=$EC"; }
+
+  # 合并双机 Kimi session_index（kimi 索引用 sessionId 字段、无时间戳，MacBook 版优先）
+  python3 - <<'PY' >> "$ROTATING_LOG" 2>&1 || log "⚠️ Kimi session_index merge 失败"
+import json, os, tempfile
+home = os.path.expanduser("~")
+target = os.path.join(home, ".kimi-code", "session_index.jsonl")
+macbook = os.path.join(home, ".kimi-code", "session_index.macbook.jsonl")
+entries = {}
+order = []
+def load(p, prefer):
+    if not os.path.exists(p): return
+    with open(p, "r", encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line: continue
+            try: entry = json.loads(line)
+            except: continue
+            sid = entry.get("sessionId")
+            if not isinstance(sid, str) or not sid: continue
+            if sid not in entries:
+                order.append(sid); entries[sid] = entry
+            elif prefer:
+                entries[sid] = entry
+load(target, False); load(macbook, True)
+os.makedirs(os.path.dirname(target), exist_ok=True)
+fd, tmp = tempfile.mkstemp(prefix="session_index.", suffix=".jsonl", dir=os.path.dirname(target))
+with os.fdopen(fd, "w", encoding="utf-8") as fh:
+    for sid in order: fh.write(json.dumps(entries[sid], ensure_ascii=False) + "\n")
+os.replace(tmp, target)
+print(f"merged Kimi session_index entries={len(entries)}")
+PY
+fi
+
 # 4c. rsync Claude Desktop（local agent mode）本地对话 → data/desktop-import
 #     desktop app 跑的 CC/local agent 对话在 ~/Library/Application Support/Claude/
 #     local-agent-mode-sessions/<...>/.claude/projects/<...>/*.jsonl，标准 projects rsync 扫不到。

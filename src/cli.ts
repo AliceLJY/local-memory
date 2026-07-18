@@ -30,6 +30,7 @@ import {
   ingestCCTranscripts,
   ingestCodexSessions,
   ingestGeminiSessions,
+  ingestKimiSessions,
   ingestMarkdownFiles,
   ingestObsidianVault,
   ingestConnectorFile,
@@ -1358,7 +1359,7 @@ program
 program
   .command("ingest")
   .description("导入对话记录到索引")
-  .option("-s, --source <source>", "数据源: cc / codex / memory / desktop / all", "all")
+  .option("-s, --source <source>", "数据源: cc / codex / gemini / kimi / memory / desktop / all", "all")
   .option("-l, --limit <n>", "限制处理文件数（调试用）")
   .option("-v, --verbose", "详细输出")
   .option("--no-dedup", "跳过向量去重")
@@ -1460,6 +1461,14 @@ program
       const r = await ingestCodexSessions(store, embedder, ingestOpts);
       results.push(r);
       console.log(`  ✅ Codex: ${formatIngestSummary(r)}`);
+    }
+
+    // Kimi Code Sessions (wire.jsonl 事件流，~/.kimi-code/sessions/)
+    if (source === "all" || source === "kimi") {
+      console.log("🌙 导入 Kimi Code 对话...");
+      const r = await ingestKimiSessions(store, embedder, ingestOpts);
+      results.push(r);
+      console.log(`  ✅ Kimi: ${formatIngestSummary(r)}`);
     }
 
     // Gemini Sessions (JSON format under ~/.gemini/tmp/*/chats/)
