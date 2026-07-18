@@ -117,7 +117,12 @@ describe("scripts resolve the database through runtime-config", () => {
     for (const name of readdirSync(dir)) {
       if (!name.endsWith(".ts")) continue;
       const src = readFileSync(resolve(dir, name), "utf-8");
-      if (/config\.database\b/.test(src)) offenders.push(name);
+      for (const [i, line] of src.split("\n").entries()) {
+        // Skip comments — documenting the retired key must not fail the guard.
+        if (/^\s*(\/\/|\*|\/\*)/.test(line)) continue;
+        const code = line.split("//")[0];
+        if (/config\.database\b/.test(code)) offenders.push(`${name}:${i + 1}`);
+      }
     }
 
     expect(offenders).toEqual([]);

@@ -20,8 +20,12 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# Sidecar files live beside the database, which config.json may point outside
+# the repo. Ask the same resolver the server uses instead of assuming ./data.
+DATA_DIR="$(bun -e 'import { resolveDataDir } from "./src/runtime-config.ts"; console.log(resolveDataDir());')"
+
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)
-BACKUP_DIR="data/backup-$TIMESTAMP"
+BACKUP_DIR="$DATA_DIR/backup-$TIMESTAMP"
 LOG_FILE="logs/re-ingest-$TIMESTAMP.log"
 
 echo "=== RecallNest 全量重建 ===" | tee "$LOG_FILE"
@@ -30,10 +34,10 @@ echo "开始时间: $(date)" | tee -a "$LOG_FILE"
 # Step 1: 备份
 echo "[1/4] 备份现有数据..." | tee -a "$LOG_FILE"
 mkdir -p "$BACKUP_DIR"
-cp data/ingested-files.json "$BACKUP_DIR/" 2>/dev/null || true
-cp data/distill-progress.json "$BACKUP_DIR/" 2>/dev/null || true
+cp "$DATA_DIR/ingested-files.json" "$BACKUP_DIR/" 2>/dev/null || true
+cp "$DATA_DIR/distill-progress.json" "$BACKUP_DIR/" 2>/dev/null || true
 # LanceDB 太大不整体备份，只记录 stats
-echo "  LanceDB 当前大小: $(du -sh data/lancedb 2>/dev/null | cut -f1)" | tee -a "$LOG_FILE"
+echo "  LanceDB 当前大小: $(du -sh "$(bun -e 'import { resolveDbPath } from "./src/runtime-config.ts"; console.log(resolveDbPath());')" 2>/dev/null | cut -f1)" | tee -a "$LOG_FILE"
 echo "  备份到: $BACKUP_DIR/" | tee -a "$LOG_FILE"
 
 # Step 2: 清空 LanceDB
@@ -43,9 +47,9 @@ bun run src/cli.ts reset --yes 2>&1 | tee -a "$LOG_FILE"
 # Step 3: 清空进度记录
 echo "[3/4] 清空 ingest/distill 进度记录..." | tee -a "$LOG_FILE"
 # Reset ingested-files.json — 让 ingest 认为所有文件都没处理过
-echo '{"files":{}}' > data/ingested-files.json
+echo '{"files":{}}' > "$DATA_DIR/ingested-files.json"
 # Reset distill progress
-echo '{"startedAt":"","lastUpdated":"","completedScopes":[],"stats":{}}' > data/distill-progress.json
+echo '{"startedAt":"","lastUpdated":"","completedScopes":[],"stats":{}}' > "$DATA_DIR/distill-progress.json"
 echo "  进度已重置" | tee -a "$LOG_FILE"
 
 # Step 4: 全量 ingest

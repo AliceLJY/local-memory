@@ -127,6 +127,11 @@ export function expandHome(p: string): string {
  *
  * Relative dbPath values resolve against the repo root (not process.cwd()), so
  * a script's behaviour does not depend on where it was invoked from.
+ *
+ * Pass an already-loaded config where you have one. Calling this with no
+ * argument reads config.json from disk — convenient at a script's top level,
+ * but it means a missing or misconfigured file surfaces here, before the
+ * script's own output. findConfigPath() raises an actionable error for that.
  */
 export function resolveDbPath(config?: LocalMemoryConfig): string {
   const cfg = config ?? loadConfig();
