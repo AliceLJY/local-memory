@@ -607,16 +607,38 @@ async function writeDurableEntry(
     };
   }
 
+  // No canonical match was found, so this falls through to store(). With a canonicalKey the
+  // id is deterministic and store() upserts on id — so a row already sitting at that id is
+  // overwritten here without ever reaching the latest-wins branch above. findCanonicalMatches
+  // only scans the most recent CANONICAL_SCAN_LIMIT rows, so any canonical row older than that
+  // window lands on this path. Look it up by id directly, which no scan limit can hide.
+  const targetId = params.canonicalKey
+    ? deterministicId(params.scope, params.canonicalKey)
+    : undefined;
+  let metadataForStore = params.metadata;
+
+  if (targetId && deps.store.getById) {
+    const rowAtTargetId = await deps.store.getById(targetId);
+    if (rowAtTargetId && normalizeMemoryText(rowAtTargetId.text) !== normalizeMemoryText(params.text)) {
+      const now = Date.now();
+      const previousEvo = parseEvolution(rowAtTargetId.metadata, rowAtTargetId.timestamp);
+      const { historyId } = await archiveBeliefVersion(
+        { store: deps.store, embedder: deps.embedder },
+        rowAtTargetId,
+        { now },
+      );
+      metadataForStore = buildSupersedingBeliefMetadata(params.metadata, previousEvo, historyId, now);
+    }
+  }
+
   const stored = await deps.store.store({
-    id: params.canonicalKey
-      ? deterministicId(params.scope, params.canonicalKey)
-      : undefined,
+    id: targetId,
     text: params.text,
     vector: params.vector,
     category: params.category,
     scope: params.scope,
     importance: params.importance,
-    metadata: params.metadata,
+    metadata: metadataForStore,
     ...(params.language ? { language: params.language } : {}),
     ...(params.fts_text ? { fts_text: params.fts_text } : {}),
   });
@@ -920,6 +942,7 @@ export async function persistMemory(
         matchResult,
         deps.store as MemoryStore,
         resolvedScope,
+        { embedder: deps.embedder },
       );
       if (applied.handled) {
         const entry = applied.entry ?? {

@@ -15,6 +15,9 @@ import type { MemoryStore, MemoryEntry } from "./store.js";
 import type { Embedder } from "./embedder.js";
 import type { LLMClient } from "./llm-client.js";
 import { logInfo } from "./stderr-log.js";
+import { isActiveMemory, parseEvolution } from "./memory-evolution.js";
+import { archiveBeliefVersion, buildSupersedingBeliefMetadata } from "./belief-history.js";
+import { detectLang, tokenizeFts } from "./language-hook.js";
 
 // ============================================================================
 // Configuration
@@ -77,8 +80,13 @@ export async function matchPreference(
     [scope],
   );
 
-  // Filter to only preferences category
-  const prefMatches = candidates.filter(c => c.entry.category === "preferences");
+  // Filter to only preferences category. store.vectorSearch() filters by scope only, so
+  // superseded belief-history rows come back here too — matching against one would either
+  // silently drop the incoming preference as a duplicate of a belief no longer held, or
+  // merge new text into an archived version.
+  const prefMatches = candidates.filter(
+    c => c.entry.category === "preferences" && isActiveMemory(c.entry.metadata),
+  );
 
   if (prefMatches.length === 0) {
     return { action: "create", reason: "no-similar-preferences" };
@@ -132,6 +140,7 @@ export async function applyPreferenceMatch(
   result: PreferenceMatchResult,
   store: MemoryStore,
   scope: string,
+  deps: { embedder: Pick<Embedder, "embedPassage"> },
 ): Promise<{ handled: boolean; entry?: MemoryEntry }> {
   if (result.action === "skip") {
     logInfo(`[INFO] Preference skipped (duplicate): ${result.reason}`);
@@ -139,9 +148,34 @@ export async function applyPreferenceMatch(
   }
 
   if (result.action === "merge" && result.mergeTargetId && result.mergedText) {
+    const existing = await store.getById(result.mergeTargetId);
+    if (!existing) return { handled: false };
+
+    // Merging rewrites the target's text, which is a belief change like any other —
+    // archive the version being replaced before overwriting it.
+    const now = Date.now();
+    const previousEvo = parseEvolution(existing.metadata, existing.timestamp);
+    const { historyId } = await archiveBeliefVersion({ store, embedder: deps.embedder }, existing, { now });
+
+    // The old code updated `text` alone, leaving vector and fts_text describing the
+    // pre-merge wording — so a merged preference stayed unfindable by its own new text.
+    const language = detectLang(result.mergedText);
     const updated = await store.update(
       result.mergeTargetId,
-      { text: result.mergedText },
+      {
+        text: result.mergedText,
+        vector: await deps.embedder.embedPassage(result.mergedText),
+        metadata: buildSupersedingBeliefMetadata(
+          existing.metadata,
+          previousEvo,
+          historyId,
+          now,
+          `preference-merge:${result.reason}`,
+        ),
+        timestamp: now,
+        language,
+        fts_text: tokenizeFts(result.mergedText, language),
+      },
       [scope],
     );
     if (updated) {

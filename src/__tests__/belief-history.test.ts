@@ -26,7 +26,11 @@ function createDeps(options: { withUpsert?: boolean; withGetById?: boolean } = {
         timestamp: 1_700_000_000_000 + seq,
       };
       seq += 1;
-      storedEntries.push(stored);
+      // The real store() routes through upsert (mergeInsert on id), so writing a known id
+      // replaces that row rather than adding a second one with the same id.
+      const index = storedEntries.findIndex((item) => item.id === stored.id);
+      if (index >= 0) storedEntries[index] = stored;
+      else storedEntries.push(stored);
       return stored;
     },
     async list(_scopeFilter?: string[], category?: string, limit = 20, offset = 0) {
@@ -160,6 +164,24 @@ describe("belief history", () => {
     const canonical = storedEntries.find((entry) => isActiveMemory(entry.metadata));
     expect(canonical.text).toBe("User prefers dark mode");
     expect(parseEvolution(canonical.metadata).version).toBe(3);
+  });
+
+  it("archives even when the canonical row has fallen out of the scan window", async () => {
+    // findCanonicalMatches only sees the most recent CANONICAL_SCAN_LIMIT rows. Past that,
+    // the write falls through to store(), which upserts on the deterministic canonical id —
+    // historically an unguarded overwrite. Simulate the miss by blinding list().
+    const { deps, storedEntries } = createDeps();
+    await writeBelief(deps, "User works from the Guangzhou office");
+
+    (deps.store as any).list = async () => [];
+
+    await writeBelief(deps, "User works from the Singapore office");
+
+    expect(storedEntries).toHaveLength(2);
+    const archived = storedEntries.find((entry) => !isActiveMemory(entry.metadata));
+    expect(archived).toBeDefined();
+    expect(archived.text).toBe("User works from the Guangzhou office");
+    expect(parseEvolution(archived.metadata).validUntil).toBeGreaterThan(0);
   });
 
   it("re-embeds the archived text when the store cannot return the original vector", async () => {

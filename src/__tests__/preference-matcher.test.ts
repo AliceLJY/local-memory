@@ -18,6 +18,7 @@ import {
 } from "../preference-matcher.js";
 import type { MemoryEntry, MemorySearchResult } from "../store.js";
 import type { LLMClient, DedupDecision } from "../llm-client.js";
+import { parseEvolution } from "../memory-evolution.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -37,7 +38,8 @@ function makeEntry(id: string, text: string, category = "preferences"): MemoryEn
 }
 
 function createMockStore(searchResults: MemorySearchResult[] = []) {
-  const updates: Array<{ id: string; text?: string }> = [];
+  const updates: Array<{ id: string; text?: string; metadata?: string }> = [];
+  const archived: MemoryEntry[] = [];
   const data = new Map<string, MemoryEntry>();
   for (const r of searchResults) {
     data.set(r.entry.id, { ...r.entry });
@@ -45,6 +47,7 @@ function createMockStore(searchResults: MemorySearchResult[] = []) {
 
   return {
     updates,
+    archived,
     data,
     async vectorSearch(
       _vector: number[],
@@ -54,17 +57,41 @@ function createMockStore(searchResults: MemorySearchResult[] = []) {
     ) {
       return searchResults;
     },
+    async getById(id: string) {
+      return data.get(id) ?? null;
+    },
+    // Belief-history rows land here rather than in `data` — merging must archive the
+    // version it replaces, so tests need to see what was written.
+    async upsert(entry: MemoryEntry) {
+      archived.push(entry);
+      return entry;
+    },
+    async store(entry: MemoryEntry) {
+      archived.push(entry);
+      return entry;
+    },
     async update(id: string, upd: { text?: string; metadata?: string }, _scope?: string[]) {
       const entry = data.get(id);
       if (!entry) return null;
       if (upd.text) {
         entry.text = upd.text;
-        updates.push({ id, text: upd.text });
       }
+      if (upd.metadata) {
+        entry.metadata = upd.metadata;
+      }
+      updates.push({ id, text: upd.text, metadata: upd.metadata });
       return entry;
     },
   };
 }
+
+const mockDeps = {
+  embedder: {
+    async embedPassage(text: string) {
+      return [text.length, 1, 0];
+    },
+  },
+};
 
 function createMockLLM(dedupResult: DedupDecision, synthResult: string | null = "merged preference text"): LLMClient {
   return {
@@ -87,6 +114,22 @@ describe("matchPreference", () => {
 
   it("returns create when no similar preferences found", async () => {
     const store = createMockStore([]);
+    const result = await matchPreference("I prefer dark mode", vector, scope, store as any, null);
+
+    expect(result.action).toBe("create");
+    expect(result.reason).toBe("no-similar-preferences");
+  });
+
+  it("ignores superseded belief-history rows as match candidates", async () => {
+    // store.vectorSearch() filters by scope only, so archived versions of a preference
+    // surface here alongside live ones. Matching against one would drop the incoming
+    // preference as a duplicate of a belief that is no longer held.
+    const archivedRow = makeEntry("p-old", "I prefer dark mode");
+    archivedRow.metadata = JSON.stringify({
+      evolution: { status: "superseded", validUntil: Date.now(), supersededBy: "p-live" },
+    });
+    const store = createMockStore([{ entry: archivedRow, score: 0.99 }]);
+
     const result = await matchPreference("I prefer dark mode", vector, scope, store as any, null);
 
     expect(result.action).toBe("create");
@@ -190,6 +233,7 @@ describe("applyPreferenceMatch", () => {
       { action: "skip", reason: "duplicate" },
       store as any,
       "project:test",
+      mockDeps,
     );
 
     expect(result.handled).toBe(true);
@@ -209,12 +253,19 @@ describe("applyPreferenceMatch", () => {
       },
       store as any,
       "project:test",
+      mockDeps,
     );
 
     expect(result.handled).toBe(true);
     expect(result.entry).toBeDefined();
     expect(store.updates.length).toBe(1);
     expect(store.updates[0].text).toBe("merged preference text");
+
+    // Merging replaces the target's wording — the pre-merge version must survive.
+    expect(store.archived).toHaveLength(1);
+    expect(store.archived[0].text).toBe("old preference text");
+    expect(parseEvolution(store.archived[0].metadata).status).toBe("superseded");
+    expect(parseEvolution(store.updates[0].metadata).supersedes).toBe(store.archived[0].id);
   });
 
   it("returns not handled for create action", async () => {
@@ -223,6 +274,7 @@ describe("applyPreferenceMatch", () => {
       { action: "create", reason: "new" },
       store as any,
       "project:test",
+      mockDeps,
     );
 
     expect(result.handled).toBe(false);

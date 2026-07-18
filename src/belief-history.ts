@@ -20,6 +20,7 @@
 
 import { deterministicId, type MemoryEntry, type MemoryStore } from "./store.js";
 import { parseEvolution, patchEvolution, type EvolutionMetadata } from "./memory-evolution.js";
+import { detectLang, tokenizeFts } from "./language-hook.js";
 import type { Embedder } from "./embedder.js";
 
 /** Namespace for history-row ids — keeps them deterministic (retry-safe) yet distinct from C. */
@@ -61,6 +62,12 @@ async function resolveVector(deps: BeliefHistoryDeps, current: MemoryEntry): Pro
  * Throws rather than degrading to a silent overwrite: a belief-changing write that cannot
  * preserve the old belief is exactly the failure this module exists to prevent, so callers
  * must not proceed with the overwrite if this rejects.
+ *
+ * Known limitation — archive and overwrite are two writes with no transaction around them.
+ * If the caller's update() fails after this returns, the history row is already committed
+ * while the canonical row still holds that same text, leaving a superseded duplicate of a
+ * belief that is in fact still live. Damage is bounded: nothing is destroyed, and the
+ * deterministic id means a retry reuses the same row rather than piling up copies.
  */
 export async function archiveBeliefVersion(
   deps: BeliefHistoryDeps,
@@ -109,8 +116,12 @@ export async function archiveBeliefVersion(
     // live entries out of that window.
     timestamp: current.timestamp,
     metadata: historyMetadata,
-    language: current.language || "en",
-    fts_text: current.fts_text || current.text,
+    // Derive rather than copy: neither list() nor getById() selects these columns, so
+    // `current.language` / `current.fts_text` are all but guaranteed to be undefined here.
+    // Falling back to the "en" / raw-text defaults would mislabel Chinese memories and
+    // store them unsegmented for FTS — so recompute them the same way live entries do.
+    language: current.language || detectLang(current.text),
+    fts_text: current.fts_text || tokenizeFts(current.text, current.language || detectLang(current.text)),
   };
 
   if (deps.store.upsert) {
