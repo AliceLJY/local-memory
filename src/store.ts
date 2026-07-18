@@ -230,6 +230,9 @@ export class MemoryStore implements MemoryStorePort {
   /** Per-id serial queues for patchMetadata; entries self-remove on settle. */
   private readonly metadataPatchQueues = new Map<string, Promise<void>>();
 
+  /** Set when the init-time schema migration fails; surfaced in store error messages. */
+  private schemaMigrationError: string | null = null;
+
   constructor(private readonly config: StoreConfig) {}
 
   get dbPath(): string {
@@ -280,24 +283,24 @@ export class MemoryStore implements MemoryStorePort {
     try {
       table = await db.openTable(TABLE_NAME);
 
-      // Backward compatibility: add missing columns to existing tables
+      // Backward compatibility: add missing columns to existing tables.
+      // Read the schema definition, not sample rows — a row-sampling check can
+      // never fire on a 0-row table, which deadlocked every write with
+      // "Found field not in schema" on empty pre-language/fts_text tables.
       try {
-        const sample = await table.query().limit(1).toArray();
-        if (sample.length > 0) {
-          if (!("scope" in sample[0])) {
-            logWarn("Adding scope column for backward compatibility with existing data");
-          }
-          if (!("language" in sample[0])) {
-            logWarn("Adding language column for backward compatibility");
-            await table.addColumns([{ name: "language", valueSql: "'en'" }]);
-          }
-          if (!("fts_text" in sample[0])) {
-            logWarn("Adding fts_text column for backward compatibility");
-            await table.addColumns([{ name: "fts_text", valueSql: "text" }]);
-          }
+        const schema = await table.schema();
+        const fields = new Set(schema.fields.map((f) => f.name));
+        const missing: Array<{ name: string; valueSql: string }> = [];
+        if (!fields.has("language")) missing.push({ name: "language", valueSql: "'en'" });
+        if (!fields.has("fts_text")) missing.push({ name: "fts_text", valueSql: "text" });
+        if (missing.length > 0) {
+          logWarn(`Adding missing columns for backward compatibility: ${missing.map((c) => c.name).join(", ")}`);
+          await table.addColumns(missing);
         }
+        this.schemaMigrationError = null;
       } catch (err) {
-        logWarn("Could not check/migrate table schema:", err);
+        this.schemaMigrationError = err instanceof Error ? err.message : String(err);
+        logWarn("Could not check/migrate table schema — subsequent writes may fail:", err);
       }
     } catch (_openErr) {
       // Table doesn't exist yet — create it
@@ -402,7 +405,8 @@ export class MemoryStore implements MemoryStorePort {
       const code = err.code || "";
       const message = err.message || String(err);
       throw new Error(
-        `Failed to store memory in "${this.config.dbPath}": ${code} ${message}`
+        `Failed to store memory in "${this.config.dbPath}": ${code} ${message}` +
+        (this.schemaMigrationError ? `\n  Schema migration failed at init: ${this.schemaMigrationError}` : "")
       );
     }
   }
@@ -454,7 +458,8 @@ export class MemoryStore implements MemoryStorePort {
       const code = err.code || "";
       const message = err.message || String(err);
       throw new Error(
-        `Failed to batch store ${entries.length} memories in "${this.config.dbPath}": ${code} ${message}`
+        `Failed to batch store ${entries.length} memories in "${this.config.dbPath}": ${code} ${message}` +
+        (this.schemaMigrationError ? `\n  Schema migration failed at init: ${this.schemaMigrationError}` : "")
       );
     }
     // Per-scope write counts drive dream activation. Best-effort — never block writes.
