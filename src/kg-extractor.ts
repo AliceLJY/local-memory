@@ -96,7 +96,13 @@ const DEFAULT_KG_SYSTEM = `You are a knowledge graph extraction assistant. Extra
 const DEFAULT_KG_USER_TEMPLATE = `Extract knowledge graph triples from the following text.
 Rules:
 - Use simple predicates: uses, created_by, works_with, is_a, part_of, has, located_in, belongs_to, depends_on, implements, extends, related_to, caused_by, results_in, precedes, follows
-- Assign confidence 0.0-1.0
+- confidence must be EXACTLY one of these five values (models collapse continuous ranges — pick the one matching the evidence):
+  1.0  = stated explicitly in the text
+  0.85 = strong inference (clearly implied, never stated)
+  0.75 = reasonable inference (requires interpretation)
+  0.65 = weak inference (thematic association only)
+  0.55 = speculative (surface co-occurrence)
+  Never use 0.5 or any value outside this list. If unsure between two tiers, pick the lower.
 - Extract 3-8 triples
 - Return JSON: { "triples": [{ "subject": "", "predicate": "", "object": "", "confidence": 0.0 }] }
 
