@@ -12,8 +12,9 @@
  */
 
 import lancedb from "@lancedb/lancedb";
+import { resolveDbPath } from "../src/runtime-config.js";
 
-const DB_PATH = process.argv[2] || "./data/lancedb";
+const DB_PATH = process.argv[2] || resolveDbPath();
 const BOT_NAME = process.argv[3] || "未命名";
 const TABLE_NAME = "memories";
 

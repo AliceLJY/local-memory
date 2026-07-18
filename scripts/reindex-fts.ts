@@ -21,6 +21,7 @@
  */
 import * as lancedb from "@lancedb/lancedb";
 import { autoRegisterBabelMemory, detectLang, tokenizeFts } from "../src/language-hook.js";
+import { resolveDbPath } from "../src/runtime-config.js";
 
 const DRY_RUN = process.argv.includes("--dry-run");
 const VERIFY_MERGE = process.argv.includes("--verify-merge");
@@ -38,7 +39,7 @@ const probe = tokenizeFts("机器学习在自然语言处理中的应用", "zh")
 if (!probe.includes(" ")) fail(`tokenizer not segmenting (probe: ${probe})`);
 console.log(`[reindex] tokenizer probe OK: ${probe}`);
 
-const db = await lancedb.connect("data/lancedb");
+const db = await lancedb.connect(resolveDbPath());
 const table = await db.openTable("memories");
 const total = await table.countRows();
 console.log(`[reindex] memories rows: ${total}`);

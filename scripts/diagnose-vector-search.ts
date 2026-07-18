@@ -10,9 +10,9 @@
  */
 
 import lancedb from "@lancedb/lancedb";
-import { resolve } from "node:path";
+import { resolveDbPath } from "../src/runtime-config.js";
 
-const DB_PATH = resolve(import.meta.dir, "../data/lancedb");
+const DB_PATH = resolveDbPath();
 const TABLE_NAME = "memories";
 
 async function main() {

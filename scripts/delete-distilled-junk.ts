@@ -11,7 +11,7 @@
 
 import fs from "fs";
 import path from "path";
-import { loadDotEnv, loadConfig, expandHome } from "../src/runtime-config.js";
+import { loadDotEnv, loadConfig, resolveDbPath } from "../src/runtime-config.js";
 import { loadLanceDB } from "../src/store.js";
 
 loadDotEnv();
@@ -27,7 +27,7 @@ async function main() {
   console.log(`  Distill-completed scopes: ${completedScopes.size}`);
 
   const lancedb = await loadLanceDB();
-  const dbPath = expandHome(config.database?.path || "data/lancedb");
+  const dbPath = resolveDbPath(config);
   const db = await lancedb.connect(dbPath);
   const table = await db.openTable("memories");
 

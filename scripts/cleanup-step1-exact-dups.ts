@@ -8,8 +8,9 @@
  */
 
 import lancedb from "@lancedb/lancedb";
+import { resolveDbPath } from "../src/runtime-config.js";
 
-const DB_PATH = "./data/lancedb";
+const DB_PATH = resolveDbPath();
 const TABLE_NAME = "memories";
 const EXECUTE = process.argv.includes("--execute");
 

@@ -9,7 +9,7 @@
  *   bun scripts/backfill-anchors.ts              # execute
  */
 
-import { loadDotEnv, loadConfig, expandHome } from "../src/runtime-config.js";
+import { loadDotEnv, loadConfig, resolveDbPath } from "../src/runtime-config.js";
 import { loadLanceDB } from "../src/store.js";
 import { generateAnchor } from "../src/anchor-generator.js";
 
@@ -19,7 +19,7 @@ const dryRun = process.argv.includes("--dry-run");
 
 async function main() {
   const lancedb = await loadLanceDB();
-  const dbPath = expandHome(config.database?.path || "data/lancedb");
+  const dbPath = resolveDbPath(config);
   const db = await lancedb.connect(dbPath);
   const table = await db.openTable("memories");
 

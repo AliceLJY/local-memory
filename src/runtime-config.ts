@@ -103,8 +103,30 @@ export function expandHome(p: string): string {
   return p;
 }
 
+/**
+ * Single source of truth for "which LanceDB directory do we operate on".
+ *
+ * Every entry point — MCP server, CLI, and maintenance scripts — must resolve
+ * the database through this function. Scripts that hardcode "./data/lancedb"
+ * or read a non-existent config key silently operate on a *different* database
+ * than the server does, so a health check, cleanup, or backfill can report on
+ * an empty directory while the real store sits elsewhere.
+ *
+ * Relative dbPath values resolve against the repo root (not process.cwd()), so
+ * a script's behaviour does not depend on where it was invoked from.
+ */
+export function resolveDbPath(config?: LocalMemoryConfig): string {
+  const cfg = config ?? loadConfig();
+  return resolve(metaDir(import.meta), "..", expandHome(cfg.dbPath));
+}
+
+/** Sidecar directory (frequency-stats.json etc.) that lives beside the database. */
+export function resolveDataDir(config?: LocalMemoryConfig): string {
+  return resolve(resolveDbPath(config), "..");
+}
+
 export function createComponents(config: LocalMemoryConfig, profileName?: string) {
-  const dbPath = resolve(metaDir(import.meta), "..", expandHome(config.dbPath));
+  const dbPath = resolveDbPath(config);
   validateStoragePath(dbPath);
 
   const embeddingConfig: EmbeddingConfig = {
@@ -131,7 +153,7 @@ export function createComponents(config: LocalMemoryConfig, profileName?: string
   retriever.setAccessTracker(accessTracker);
 
   // P0.2: Attach frequency tracker for hit-count based boosting
-  const dataDir = resolve(metaDir(import.meta), "..", expandHome(config.dbPath), "..");
+  const dataDir = resolveDataDir(config);
   const frequencyTracker = new FrequencyTracker({
     filePath: join(dataDir, "frequency-stats.json"),
   });
@@ -150,7 +172,7 @@ export function createComponents(config: LocalMemoryConfig, profileName?: string
 }
 
 export function createStoreOnly(config: LocalMemoryConfig): MemoryStore {
-  const dbPath = resolve(metaDir(import.meta), "..", expandHome(config.dbPath));
+  const dbPath = resolveDbPath(config);
   validateStoragePath(dbPath);
   return new MemoryStore({
     dbPath,

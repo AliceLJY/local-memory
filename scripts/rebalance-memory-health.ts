@@ -4,9 +4,9 @@ import {
   buildMemoryHealthRebalancePlan,
   summarizeMemoryHealthPlans,
 } from "../src/memory-health-rebalance.js";
+import { resolveDbPath } from "../src/runtime-config.js";
 
 const TABLE_NAME = "memories";
-const DEFAULT_DB_PATH = "./data/lancedb";
 const DEFAULT_BATCH_SIZE = 2000;
 
 interface MemoryUpdateRow {
@@ -60,7 +60,7 @@ function parseArgs(argv: string[]): {
   }
 
   return {
-    dbPath: positional[0] || DEFAULT_DB_PATH,
+    dbPath: positional[0] || resolveDbPath(),
     batchSize,
     apply,
     optimize,

@@ -20,7 +20,7 @@
 import { mkdirSync, readdirSync, readFileSync, appendFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 
-import { loadDotEnv, loadConfig, expandHome } from "../src/runtime-config.js";
+import { loadDotEnv, loadConfig, resolveDbPath } from "../src/runtime-config.js";
 import { loadLanceDB } from "../src/store.js";
 import { KGStore } from "../src/kg-store.js";
 import { KGExtractor } from "../src/kg-extractor.js";
@@ -74,7 +74,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 async function main() {
   const lancedb = await loadLanceDB();
-  const dbPath = expandHome(config.database?.path || "data/lancedb");
+  const dbPath = resolveDbPath(config);
   const db = await lancedb.connect(dbPath);
   const table = await db.openTable("memories");
 

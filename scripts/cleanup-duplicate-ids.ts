@@ -20,11 +20,12 @@
  */
 import * as lancedb from "@lancedb/lancedb";
 import { appendFileSync, mkdirSync } from "node:fs";
+import { resolveDbPath } from "../src/runtime-config.js";
 
 const DRY_RUN = process.argv.includes("--dry-run");
 const DELETE_BATCH = 200;
 
-const db = await lancedb.connect("data/lancedb");
+const db = await lancedb.connect(resolveDbPath());
 const table = await db.openTable("memories");
 const before = await table.countRows();
 console.log(`[dedup] rows before: ${before}`);
