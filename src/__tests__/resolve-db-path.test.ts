@@ -58,13 +58,21 @@ describe("scripts resolve the database through runtime-config", () => {
     const dir = resolve(REPO_ROOT, "scripts");
     const offenders: string[] = [];
 
+    // Two shapes of the same mistake. The second was missed by the first
+    // revision of this guard: health-check.ts built its path with
+    // path.join(dir, "..", "data", "lancedb"), so no single string literal
+    // ever contained "data/lancedb".
+    const LITERAL_PATH = /["'`][^"'`]*data\/lancedb[^"'`]*["'`]/;
+    const JOINED_PATH = /\b(join|resolve)\s*\([^)]*["'`][^"'`]*lancedb[^"'`]*["'`]/i;
+
     for (const name of readdirSync(dir)) {
       if (!name.endsWith(".ts")) continue;
       const src = readFileSync(resolve(dir, name), "utf-8");
       for (const [i, line] of src.split("\n").entries()) {
         const code = line.split("//")[0];
         if (/^\s*\*/.test(line)) continue; // block-comment body
-        if (/["'`][^"'`]*data\/lancedb[^"'`]*["'`]/.test(code)) {
+        if (/@lancedb\/lancedb/.test(code)) continue; // the package import itself
+        if (LITERAL_PATH.test(code) || JOINED_PATH.test(code)) {
           offenders.push(`${name}:${i + 1}`);
         }
       }

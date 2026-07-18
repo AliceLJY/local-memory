@@ -13,9 +13,9 @@
  */
 
 import lancedb from "@lancedb/lancedb";
-import path from "path";
+import { resolveDbPath } from "../src/runtime-config.js";
 
-const DB_PATH = path.join(import.meta.dir, "..", "data", "lancedb");
+const DB_PATH = resolveDbPath();
 const TABLE_NAME = "memories";
 
 interface MemoryRow {

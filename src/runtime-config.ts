@@ -67,7 +67,20 @@ export function loadDotEnv(): void {
 }
 
 export function findConfigPath(): string {
-  if (process.env.LOCAL_MEMORY_CONFIG) return resolve(process.env.LOCAL_MEMORY_CONFIG);
+  if (process.env.LOCAL_MEMORY_CONFIG) {
+    const explicit = resolve(process.env.LOCAL_MEMORY_CONFIG);
+    // Check here rather than letting readFileSync throw a bare ENOENT: scripts
+    // resolve the database at module load, so a stale env var would otherwise
+    // surface as an unexplained crash before any of their own output appears.
+    if (!existsSync(explicit)) {
+      throw new Error(
+        `LOCAL_MEMORY_CONFIG points to a file that does not exist:\n` +
+        `  ${explicit}\n` +
+        `  Fix: correct the env var, or unset it to use the repo's config.json.`
+      );
+    }
+    return explicit;
+  }
 
   const localConfig = resolve(metaDir(import.meta), "../config.json");
   if (existsSync(localConfig)) return localConfig;
