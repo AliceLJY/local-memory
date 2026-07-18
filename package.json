@@ -1,7 +1,7 @@
 {
   "name": "recallnest",
   "version": "2.5.4",
-  "description": "RecallNest \u2014 MCP-native, local-first memory search and distillation for AI conversations",
+  "description": "RecallNest — MCP-native, local-first memory search and distillation for AI conversations",
   "license": "MIT",
   "type": "module",
   "bin": {
@@ -68,7 +68,7 @@
     "zod": "^3.25.76"
   },
   "optionalDependencies": {
-    "babel-memory": ">=1.0.0"
+    "babel-memory": "^2.1.1"
   },
   "repository": {
     "type": "git",
