@@ -217,8 +217,16 @@ function matchedTerms(terms: string[] | undefined, haystack: string): string[] {
   return (terms || []).filter((term) => haystack.includes(term.toLowerCase()));
 }
 
+/**
+ * 命中比例 × 权重。
+ *
+ * 调用方必须先滤掉 case 没声明的期望、再对剩下的权重重新归一化——下面三个
+ * 评分器都是这么做的。空期望这里返回 0 而不是 weight：万一将来有第四个调用
+ * 点忘了滤，代价是少给分而不是白送分。三个现有调用点都已滤过，所以这个分支
+ * 当前走不到，纯属兜底。
+ */
 function scoreExpectation(expected: string[] | undefined, matched: string[], weight: number): number {
-  if (!expected || expected.length === 0) return weight;
+  if (!expected || expected.length === 0) return 0;
   return (matched.length / expected.length) * weight;
 }
 
@@ -236,10 +244,23 @@ export function scoreRetrievalCase(
   const matchedScopes = (evalCase.expectScopePrefixes || []).filter((scope) => scopes.some((item) => item.startsWith(scope)));
   const forbiddenMatches = matchedTerms(evalCase.forbid, joined);
 
-  let score = 0;
-  score += scoreExpectation(evalCase.expectAny, matchedAny, 0.4);
-  score += scoreExpectation(evalCase.expectAll, matchedAll, 0.3);
-  score += scoreExpectation(evalCase.expectScopePrefixes, matchedScopes, 0.2);
+  // 动态加权：只计 case 实际声明的维度，权重在这些维度间重新归一化——
+  // 和下面 canary、continuity 两个评分器已有的写法一致。
+  // 改之前未声明的维度按满权重计入，而 eval/cases.json 里 20 个 case 一个都没写
+  // expectAll，于是每个 case 白拿 0.3：expectAny 四个词命中一个再加 scope 前缀命中，
+  // 正好落在 0.7 及格线上。
+  const expectationScores = [
+    { expected: evalCase.expectAny, matched: matchedAny, weight: 0.4 },
+    { expected: evalCase.expectAll, matched: matchedAll, weight: 0.3 },
+    { expected: evalCase.expectScopePrefixes, matched: matchedScopes, weight: 0.2 },
+  ].filter((item) => (item.expected || []).length > 0);
+
+  const totalExpectedWeight = expectationScores.reduce((sum, item) => sum + item.weight, 0);
+  const normalizedExpectationScore = totalExpectedWeight > 0
+    ? expectationScores.reduce((sum, item) => sum + scoreExpectation(item.expected, item.matched, item.weight), 0) / totalExpectedWeight
+    : 0;
+
+  let score = normalizedExpectationScore * 0.9;
   if (results.length > 0) score += 0.1;
   if (forbiddenMatches.length > 0) score -= 0.3;
   score = Math.max(0, Math.min(1, score));
