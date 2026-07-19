@@ -1271,3 +1271,58 @@ describe("persistMemory — admission rejection reason passthrough", () => {
     expect(result.rejectionReason).toBeUndefined();
   });
 });
+
+describe("text length contract", () => {
+  // persistMemory validates through StoreMemoryInputSchema, whose text field is
+  // capped at 4000 chars. Pinned here because a lossy branch sits further down
+  // the same function (LC-P5: texts over 8000 get replaced by an LLM summary,
+  // or hard-truncated to 8000 when no LLM is available, with no record of the
+  // original). This cap is the only thing keeping that branch unreachable —
+  // oversized writes are rejected outright rather than silently reduced.
+  //
+  // If this test fails because the cap moved past 8000, that branch has gone
+  // live and originals will start being replaced with nothing to trace them
+  // back to. Sort out the large-text branch before updating this test.
+  const MAX_TEXT = 4000;
+
+  it("rejects oversized text outright rather than silently reducing it", async () => {
+    const { deps, storedEntries } = createDeps();
+
+    await expect(persistMemory(deps as any, {
+      text: "x".repeat(MAX_TEXT + 1),
+      category: "events",
+      scope: TEST_SCOPE,
+      source: "manual",
+    })).rejects.toThrow(/at most 4000 characters/);
+
+    expect(storedEntries.length).toBe(0);
+  });
+
+  it("keeps the lossy large-text branch out of reach", async () => {
+    const { deps } = createDeps();
+
+    // 9000 chars would hit the > 8000 summarise/truncate path if it were
+    // reachable; the schema stops it first.
+    await expect(persistMemory(deps as any, {
+      text: "detail worth keeping. ".repeat(410),
+      category: "events",
+      scope: TEST_SCOPE,
+      source: "manual",
+    })).rejects.toThrow(/at most 4000 characters/);
+  });
+
+  it("accepts text right at the cap", async () => {
+    const { deps } = createDeps();
+    const text = "a sentence that carries some actual meaning. ".repeat(120).slice(0, MAX_TEXT);
+    expect(text.length).toBe(MAX_TEXT);
+
+    // Schema boundary only — whether admission control later judges the content
+    // is a separate concern; this asserts the cap itself does not reject.
+    await expect(persistMemory(deps as any, {
+      text,
+      category: "events",
+      scope: TEST_SCOPE,
+      source: "manual",
+    })).resolves.toBeDefined();
+  });
+});
