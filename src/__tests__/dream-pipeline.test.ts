@@ -364,7 +364,7 @@ describe("formatDreamResult", () => {
       ran: false,
       reason: "insufficient_writes (3/10)",
       phases: [{ phase: "orient", detail: "50 memories, 3 writes" }],
-      stats: { totalMemories: 50, activeMemories: 0, writesSinceLastDream: 3, clustersFound: 0, insightsGenerated: 0, patternsExtracted: 0, mergedCount: 0, archivedCount: 0 },
+      stats: { totalMemories: 50, activeMemories: 0, writesSinceLastDream: 3, clustersFound: 0, dedupeClustersFound: 0, semanticClustersFound: 0, insightsGenerated: 0, patternsExtracted: 0, mergedCount: 0, archivedCount: 0 },
     };
     const output = formatDreamResult(result);
     expect(output).toContain("skipped");
@@ -380,7 +380,7 @@ describe("formatDreamResult", () => {
         { phase: "consolidate", detail: "3 clusters, 1 merged, 2 insights, 1 pattern" },
         { phase: "prune", detail: "5 entries archived" },
       ],
-      stats: { totalMemories: 100, activeMemories: 80, writesSinceLastDream: 15, clustersFound: 3, insightsGenerated: 2, patternsExtracted: 1, mergedCount: 1, archivedCount: 5 },
+      stats: { totalMemories: 100, activeMemories: 80, writesSinceLastDream: 15, clustersFound: 3, dedupeClustersFound: 2, semanticClustersFound: 1, insightsGenerated: 2, patternsExtracted: 1, mergedCount: 1, archivedCount: 5 },
     };
     const output = formatDreamResult(result);
     expect(output).toContain("Dream completed");
@@ -388,5 +388,38 @@ describe("formatDreamResult", () => {
     expect(output).toContain("[consolidate]");
     expect(output).toContain("[prune]");
     expect(output).toContain("Patterns: 1");
+    // 总数仍在，但两条路径要能分辨
+    expect(output).toContain("Clusters: 3 (dedupe 2 + semantic 1)");
+  });
+
+  it("区分「语义聚类一个都没凑出来」和「凑出来了但没产出 insight」", () => {
+    // 这两种情况在合并成一个 clusters 数字时长得一模一样，但含义完全相反：
+    // 前者是门槛太高压根没调 LLM，后者是调了 LLM 但没拿到结果。
+    // 2026-07 排查 insight 长期零产出时，正是被合并后的数字带偏了方向。
+    const base = {
+      ran: true as const,
+      phases: [],
+      stats: {
+        totalMemories: 40, activeMemories: 40, writesSinceLastDream: 40,
+        insightsGenerated: 0, patternsExtracted: 0, mergedCount: 1, archivedCount: 0,
+      },
+    };
+
+    // A：dedupe 找到 2 个并合了 1 个，语义聚类一个合格簇都没有 —— LLM 根本没被调用
+    const noSemanticCluster: DreamResult = {
+      ...base,
+      stats: { ...base.stats, clustersFound: 2, dedupeClustersFound: 2, semanticClustersFound: 0 },
+    };
+    // B：语义聚类找到 2 个合格簇，却一条 insight 都没产出 —— 问题在 LLM 那一侧
+    const llmYieldedNothing: DreamResult = {
+      ...base,
+      stats: { ...base.stats, clustersFound: 2, dedupeClustersFound: 0, semanticClustersFound: 2 },
+    };
+
+    expect(formatDreamResult(noSemanticCluster)).toContain("semantic 0");
+    expect(formatDreamResult(llmYieldedNothing)).toContain("semantic 2");
+    // 两者的 clustersFound 相同，仅凭它无法区分——这正是拆开的理由
+    expect(noSemanticCluster.stats.clustersFound).toBe(llmYieldedNothing.stats.clustersFound);
+    expect(formatDreamResult(noSemanticCluster)).not.toBe(formatDreamResult(llmYieldedNothing));
   });
 });

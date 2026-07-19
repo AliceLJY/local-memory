@@ -1612,8 +1612,11 @@ program
           console.log(`[scope=${scope}] ${formatDreamResult(result)}`);
         } catch (err) {
           anyFailed = true;
-          // 单 scope 失败不阻断其他 scope
-          console.error(`[scope=${scope}] dream failed: ${err instanceof Error ? err.message : String(err)}`);
+          // 单 scope 失败不阻断其他 scope。
+          // 打完整 stack 而不只是 message：像「Array.from requires an array-like object」
+          // 这种原生错误，只有 message 时根本定位不到是哪一行抛的——2026-07-18/19 连着两天
+          // 因此 blocked，回头查日志除了这一句什么线索都没有，只能靠猜。
+          console.error(`[scope=${scope}] dream failed: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
         }
       }
       console.log(anyFailed ? "[[DREAM_STATUS]] blocked" : "[[DREAM_STATUS]] ok");
@@ -1635,7 +1638,8 @@ program
       console.log(result.ran ? "[[DREAM_STATUS]] ok" : "[[DREAM_STATUS]] skip");
       process.exit(0);
     } catch (err) {
-      console.error(`dream failed: ${err instanceof Error ? err.message : String(err)}`);
+      // 同 --auto 分支：带 stack，否则原生错误无从定位。
+      console.error(`dream failed: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
       console.log("[[DREAM_STATUS]] blocked");
       process.exit(1);
     }

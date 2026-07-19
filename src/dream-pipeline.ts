@@ -65,7 +65,12 @@ export interface DreamResult {
     totalMemories: number;
     activeMemories: number;
     writesSinceLastDream: number;
+    /** 两条聚类路径的总和，保持向后兼容；排障要看下面拆开的两个。 */
     clustersFound: number;
+    /** 3a 确定性去重找到的簇（不需要 LLM）。 */
+    dedupeClustersFound: number;
+    /** 3b 语义聚类里达到 minClusterSize 的簇——只有这些会去调 LLM 生成 insight。 */
+    semanticClustersFound: number;
     insightsGenerated: number;
     patternsExtracted: number;
     mergedCount: number;
@@ -100,6 +105,8 @@ async function runDreamInner(params: {
     activeMemories: 0,
     writesSinceLastDream: 0,
     clustersFound: 0,
+    dedupeClustersFound: 0,
+    semanticClustersFound: 0,
     insightsGenerated: 0,
     patternsExtracted: 0,
     mergedCount: 0,
@@ -207,6 +214,7 @@ async function runDreamInner(params: {
       maxEntriesPerRun: config.maxEntriesPerRun,
     }, params.kgStore ?? null);
     const consolidation = await engine.run(scope);
+    stats.dedupeClustersFound += consolidation.clustersFound;
     stats.clustersFound += consolidation.clustersFound;
     stats.mergedCount += consolidation.mergedCount;
 
@@ -222,6 +230,7 @@ async function runDreamInner(params: {
         clusterThreshold: config.clusterThreshold - 0.07, // slightly lower for semantic clustering
         extractPatterns: config.extractPatterns,
       });
+      stats.semanticClustersFound += clusterResult.clustersFound;
       stats.clustersFound += clusterResult.clustersFound;
       stats.insightsGenerated = clusterResult.insightsGenerated;
       stats.patternsExtracted = clusterResult.patternsExtracted;
@@ -231,7 +240,12 @@ async function runDreamInner(params: {
   phases.push({
     phase: "consolidate",
     detail: consolidateOutcome.ran
-      ? `${stats.clustersFound} clusters, ${stats.mergedCount} merged, ${stats.insightsGenerated} insights, ${stats.patternsExtracted} patterns`
+      // 两条路径分开报：dedupe 那条不需要 LLM，semantic 那条才会去调 LLM 生成 insight。
+      // 合成一个数字的话，「semantic 一个合格簇都没凑出来」和「凑出来了但 LLM 没产出」
+      // 长得一模一样——2026-07 排查时正是被这个加总带偏的。
+      ? `${stats.dedupeClustersFound} dedupe-clusters (${stats.mergedCount} merged), `
+        + `${stats.semanticClustersFound} semantic-clusters -> `
+        + `${stats.insightsGenerated} insights, ${stats.patternsExtracted} patterns`
       : `skipped — another process holds the consolidate lock for scope ${scope}`,
   });
 
@@ -289,6 +303,8 @@ export async function runDream(params: {
       activeMemories: 0,
       writesSinceLastDream: 0,
       clustersFound: 0,
+      dedupeClustersFound: 0,
+      semanticClustersFound: 0,
       insightsGenerated: 0,
       patternsExtracted: 0,
       mergedCount: 0,
@@ -314,7 +330,7 @@ export function formatDreamResult(result: DreamResult): string {
     "Stats:",
     `  Total memories: ${result.stats.totalMemories}`,
     `  Active: ${result.stats.activeMemories}`,
-    `  Clusters: ${result.stats.clustersFound}`,
+    `  Clusters: ${result.stats.clustersFound} (dedupe ${result.stats.dedupeClustersFound} + semantic ${result.stats.semanticClustersFound})`,
     `  Insights: ${result.stats.insightsGenerated}`,
     `  Patterns: ${result.stats.patternsExtracted}`,
     `  Merged: ${result.stats.mergedCount}`,
