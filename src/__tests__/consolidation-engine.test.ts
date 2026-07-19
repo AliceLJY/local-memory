@@ -110,6 +110,45 @@ describe("ConsolidationEngine", () => {
     expect(metaA.version_rank).toBeGreaterThan(metaB.version_rank);
   });
 
+  it("never clusters a live entry with its own superseded belief-history row", async () => {
+    // A rephrased belief sits far above mergeThreshold from its archived version, and
+    // canonicalScore (importance × access count, no recency) ties them exactly — the
+    // history row inherits both. Losing that coin flip would mark the LIVE entry
+    // consolidated, dropping the current belief out of default retrieval while the
+    // abandoned wording stands in as canonical.
+    const live = makeEntry({
+      id: "live",
+      text: "User prefers concise, code-first replies",
+      vector: [1, 0, 0],
+    });
+    // Clustering is skipped outright when a category holds fewer than two ACTIVE entries,
+    // so an unrelated second live entry is what makes this scenario reachable at all.
+    const unrelated = makeEntry({
+      id: "other",
+      text: "Project uses Bun as the runtime",
+      vector: [0, 0, 1],
+    });
+    const history = makeEntry({
+      id: "hist",
+      text: "User prefers concise, direct replies",
+      vector: [0, 1, 0],
+      metadata: JSON.stringify({
+        evolution: { status: "superseded", validUntil: Date.now(), supersededBy: "live" },
+      }),
+    });
+
+    const simMap = new Map([["live", new Map([["hist", 0.98]])]]);
+
+    const { store, updates } = createMockStore([live, unrelated, history], simMap);
+    const engine = new ConsolidationEngine(store, { ...DEFAULT_CONSOLIDATION_CONFIG, mergeThreshold: 0.92 });
+    const result = await engine.run("project:test");
+
+    expect(result.clustersFound).toBe(0);
+    expect(result.mergedCount).toBe(0);
+    // Above all: the live entry must not have been touched.
+    expect(updates.find(u => u.id === "live")).toBeUndefined();
+  });
+
   it("links related entries below mergeThreshold but above clusterThreshold", async () => {
     const entryA = makeEntry({ id: "a", text: "TypeScript config", vector: [1, 0, 0] });
     const entryB = makeEntry({ id: "b", text: "TypeScript setup", vector: [0.9, 0.1, 0] });

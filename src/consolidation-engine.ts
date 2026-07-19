@@ -224,8 +224,18 @@ export class ConsolidationEngine {
           full.vector, 10, clusterThreshold, [scope],
         );
 
+        // Seeds are active-only (above), but vectorSearch filters by scope alone, so
+        // superseded belief-history rows surface here too. A rephrased belief sits well
+        // above mergeThreshold from its own archived version, and canonicalScore has no
+        // recency term — importance × access count are both inherited by the history row,
+        // so the two tie and the "weaker" one is picked arbitrarily. Lose that coin flip
+        // and the live belief gets marked consolidated, dropping out of default retrieval
+        // while the abandoned version stands in as canonical.
         const members = similar.filter(
-          s => s.entry.id !== entry.id && !clustered.has(s.entry.id) && s.entry.category === entry.category,
+          s => s.entry.id !== entry.id
+            && !clustered.has(s.entry.id)
+            && s.entry.category === entry.category
+            && isActive(s.entry),
         );
 
         if (members.length === 0) continue;

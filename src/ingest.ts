@@ -24,6 +24,7 @@ import { isProcessed, markProcessed } from "./tracker.js";
 import * as envConfig from "./env-config.js";
 import type { LLMClient, SmartExtraction } from "./llm-client.js";
 import { resolveIngestBoundary } from "./memory-boundaries.js";
+import { isActiveMemory } from "./memory-evolution.js";
 import { isNoise } from "./noise-filter.js";
 import {
   inferReplyStylePreferenceSlot,
@@ -289,8 +290,12 @@ export async function dedupCheck(
   llm?: LLMClient | null,
 ): Promise<DedupCheckResult> {
   try {
-    // Stage 1: vector similarity check
-    const results = await store.vectorSearch(vector, DEDUP_CANDIDATE_LIMIT, DEDUP_SOFT_THRESHOLD);
+    // Stage 1: vector similarity check. store.vectorSearch() has no status filter, so
+    // superseded belief-history rows surface here — dedupe against one and incoming
+    // content gets dropped as a duplicate of a belief that is no longer held (returning
+    // to an earlier position would be silently discarded).
+    const results = (await store.vectorSearch(vector, DEDUP_CANDIDATE_LIMIT, DEDUP_SOFT_THRESHOLD))
+      .filter((result) => isActiveMemory(result.entry.metadata));
     if (results.length === 0) {
       return { action: "store", reason: "unique" }; // Clearly unique
     }

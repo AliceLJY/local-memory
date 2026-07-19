@@ -21,6 +21,7 @@
  */
 
 import type { MemoryStore, MemoryEntry } from "./store.js";
+import { isActiveMemory } from "./memory-evolution.js";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -85,12 +86,15 @@ export async function retroactiveBoost(
   }
 
   // Find related entries in the same scope
-  const candidates = await store.vectorSearch(
+  // Superseded belief-history rows come back from vectorSearch too. Boosting one is wasted
+  // — they are excluded from retrieval anyway — and it burns maxBoostPerTrigger budget that
+  // live entries should be getting.
+  const candidates = (await store.vectorSearch(
     newEntry.vector,
     config.maxBoostPerTrigger * 3, // fetch more, filter down
     config.similarityThreshold,
     [newEntry.scope],
-  );
+  )).filter((candidate) => isActiveMemory(candidate.entry.metadata));
 
   const now = Date.now();
   const minAgeMs = config.minAgeDays * 86_400_000;
