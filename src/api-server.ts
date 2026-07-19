@@ -27,6 +27,7 @@ import { buildManagedCheckpointObservation, buildManagedResumeObservation } from
 import { runAutoRecall } from "./auto-recall.js";
 import { buildRetrievalContext, resolveScopeSelection } from "./scope-policy.js";
 import { runMemoryLint } from "./memory-lint.js";
+import { enforceLocalHttpRequestPolicy, LOCAL_HTTP_HOSTNAME } from "./http-request-policy.js";
 import * as envConfig from "./env-config.js";
 
 const config = (loadDotEnv(), loadConfig());
@@ -649,8 +650,13 @@ const port = clampInt(envConfig.apiPortRaw(), 4318, 1, 65535);
 
 const server = Bun.serve({
   port,
-  hostname: "127.0.0.1",
+  hostname: LOCAL_HTTP_HOSTNAME,
   async fetch(request) {
+    const policy = await enforceLocalHttpRequestPolicy(request);
+    if (!policy.allowed) {
+      return errorResponse(policy.status, policy.message);
+    }
+
     const url = new URL(request.url);
     const { pathname } = url;
     const method = request.method;

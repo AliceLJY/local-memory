@@ -12,6 +12,7 @@ import { archiveDirtyBriefAsset, assetSummaryLine, buildBriefAsset, buildPinAsse
 import { indexAsset, indexPinnedAsset } from "./asset-sync.js";
 import { createComponentResolver, loadConfig, loadDotEnv } from "./runtime-config.js";
 import { buildRetrievalContext, resolveScopeSelection } from "./scope-policy.js";
+import { enforceLocalHttpRequestPolicy, LOCAL_HTTP_HOSTNAME } from "./http-request-policy.js";
 import * as envConfig from "./env-config.js";
 const config = (loadDotEnv(), loadConfig());
 const getComponents = createComponentResolver(config);
@@ -188,8 +189,14 @@ async function handleSearch(mode: "search" | "explain" | "distill", body: Record
 
 const server = Bun.serve({
   port: readLimit(envConfig.uiPortRaw(), 4317, 1, 65535),
+  hostname: LOCAL_HTTP_HOSTNAME,
   async fetch(request) {
     try {
+      const policy = await enforceLocalHttpRequestPolicy(request);
+      if (!policy.allowed) {
+        return textResponse(policy.message, { status: policy.status });
+      }
+
       const url = new URL(request.url);
 
       if (request.method === "GET" && (url.pathname === "/" || url.pathname.startsWith("/ui/"))) {
