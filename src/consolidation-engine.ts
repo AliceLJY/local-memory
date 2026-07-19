@@ -618,6 +618,25 @@ export function formatConsolidationResult(result: ConsolidationResult): string {
 // ---------------------------------------------------------------------------
 
 /**
+ * Whether an entry is a consolidation derivative — a cluster insight or a
+ * cross-memory pattern the LLM wrote from other entries, rather than something
+ * captured from the outside world.
+ *
+ * Single source of truth for the two metadata flags: retrieval uses it to
+ * collapse a derivative with its sources, and the dream gather uses it to keep
+ * derivatives from being re-consolidated as if they were raw material.
+ */
+export function isDerivedInsight(metadata: string | undefined): boolean {
+  if (!metadata) return false;
+  try {
+    const meta = JSON.parse(metadata) as Record<string, unknown>;
+    return meta.cluster_insight === true || meta.cross_memory_pattern === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * LC-P2: When a cluster insight and its source memories both appear in
  * retrieval results, keep only the cluster insight (it subsumes the
  * individual entries). This saves token budget during context injection.
@@ -631,15 +650,13 @@ export function deduplicateByClusterInsight<T extends { entry: MemoryEntry; scor
   const coveredByInsight = new Set<string>();
 
   for (const r of results) {
-    if (!r.entry.metadata) continue;
+    if (!isDerivedInsight(r.entry.metadata)) continue;
     try {
-      const meta = JSON.parse(r.entry.metadata);
-      if (meta.cluster_insight === true || meta.cross_memory_pattern === true) {
-        const sources: unknown[] = meta.evolution?.sourceMemories;
-        if (Array.isArray(sources)) {
-          for (const id of sources) {
-            if (typeof id === "string") coveredByInsight.add(id);
-          }
+      const meta = JSON.parse(r.entry.metadata as string);
+      const sources: unknown[] = meta.evolution?.sourceMemories;
+      if (Array.isArray(sources)) {
+        for (const id of sources) {
+          if (typeof id === "string") coveredByInsight.add(id);
         }
       }
     } catch { /* skip unparseable */ }

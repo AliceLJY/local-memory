@@ -3,6 +3,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runDream, formatDreamResult, type DreamResult } from "../dream-pipeline.js";
+import { isDerivedInsight } from "../consolidation-engine.js";
 import type { MemoryEntry, MemoryStore } from "../store.js";
 import type { LLMClient } from "../llm-client.js";
 import type { Embedder } from "../embedder.js";
@@ -284,6 +285,76 @@ describe("runDream", () => {
     expect(typeof result.stats.patternsExtracted).toBe("number");
     expect(typeof result.stats.mergedCount).toBe("number");
     expect(typeof result.stats.archivedCount).toBe("number");
+  });
+
+  it("excludes its own derivatives from the gather, so insights are not re-consolidated", async () => {
+    const derivedMeta = (flag: "cluster_insight" | "cross_memory_pattern") => JSON.stringify({
+      evolution: { status: "active", version: 1, sourceMemories: ["real-1", "real-2"] },
+      [flag]: true,
+    });
+
+    const store = createMockStore([
+      makeEntry({ id: "real-1" }),
+      makeEntry({ id: "real-2" }),
+      makeEntry({ id: "insight-1", metadata: derivedMeta("cluster_insight") }),
+      makeEntry({ id: "pattern-1", metadata: derivedMeta("cross_memory_pattern") }),
+    ]);
+
+    const result = await runDream({
+      store,
+      llm: createMockLLM(),
+      embedder: createMockEmbedder(),
+      scope: "project:test",
+      force: true,
+    });
+
+    expect(result.ran).toBe(true);
+    // All four stay visible to stats and usage observation...
+    expect(result.stats.activeMemories).toBe(4);
+    // ...but the insight and the pattern are derivatives of the other two and
+    // must not feed the next round of consolidation.
+    const gather = result.phases.find(p => p.phase === "gather");
+    expect(gather!.detail).toContain("4 active entries gathered from 4 total");
+    expect(gather!.detail).toContain("2 derivatives held back from consolidation");
+  });
+
+  it("does not hold anything back when there are no derivatives", async () => {
+    // Guard against the exclusion being too greedy: the metadata flags are what
+    // matter, not the words. A memory that merely talks about insights stays in.
+    const store = createMockStore([
+      makeEntry({ id: "real-1", text: "a note about cluster_insight and patterns" }),
+      makeEntry({ id: "real-2" }),
+    ]);
+
+    const result = await runDream({
+      store,
+      llm: createMockLLM(),
+      embedder: createMockEmbedder(),
+      scope: "project:test",
+      force: true,
+    });
+
+    expect(result.stats.activeMemories).toBe(2);
+    const gather = result.phases.find(p => p.phase === "gather");
+    expect(gather!.detail).not.toContain("held back");
+  });
+});
+
+describe("isDerivedInsight", () => {
+  it("flags cluster insights and cross-memory patterns", () => {
+    expect(isDerivedInsight(JSON.stringify({ cluster_insight: true }))).toBe(true);
+    expect(isDerivedInsight(JSON.stringify({ cross_memory_pattern: true }))).toBe(true);
+  });
+
+  it("leaves ordinary memories alone", () => {
+    expect(isDerivedInsight(JSON.stringify({ evolution: { status: "active" } }))).toBe(false);
+    expect(isDerivedInsight(JSON.stringify({ cluster_insight: false }))).toBe(false);
+    expect(isDerivedInsight("{}")).toBe(false);
+  });
+
+  it("treats missing or malformed metadata as not derived", () => {
+    expect(isDerivedInsight(undefined)).toBe(false);
+    expect(isDerivedInsight("{ not json")).toBe(false);
   });
 });
 

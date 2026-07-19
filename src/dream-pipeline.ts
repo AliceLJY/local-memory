@@ -17,7 +17,7 @@
 import type { MemoryStorePort } from "./memory-store-port.js";
 import type { LLMClient } from "./llm-client.js";
 import type { Embedder } from "./embedder.js";
-import { ConsolidationEngine, clusterAndConsolidate, DEFAULT_CONSOLIDATION_CONFIG, type ConsolidationKGSource } from "./consolidation-engine.js";
+import { ConsolidationEngine, clusterAndConsolidate, DEFAULT_CONSOLIDATION_CONFIG, isDerivedInsight, type ConsolidationKGSource } from "./consolidation-engine.js";
 import { maybeRunGc, type GcResult, type AutoGcConfig, DEFAULT_AUTO_GC_CONFIG } from "./auto-gc.js";
 import { getWriteCount, resetWriteCount } from "./activity-counter.js";
 import { deriveUsageStatus, getUsageMetadata, isUsageSignalActive } from "./usage-tracker.js";
@@ -139,6 +139,18 @@ async function runDreamInner(params: {
   const active = entries.filter(e => isActiveMemory(e.metadata));
   stats.activeMemories = active.length;
 
+  // Consolidation derivatives are kept out of the *input* to the next round.
+  // A cluster insight is written by the LLM from other entries, so feeding it
+  // back as raw material means the next run summarises a summary, and each
+  // generation drifts further from what was actually captured with nothing
+  // anchoring it back. Their sources stay eligible, so real material still gets
+  // re-consolidated as it accumulates.
+  //
+  // They stay in `active` on purpose: stats and the usage snapshot below are
+  // observational, and derivatives are exactly what we want more visibility
+  // into, not less. Only consolidation skips them.
+  const consolidatable = active.filter(e => !isDerivedInsight(e.metadata));
+
   // P0 B-1 观察:离线持久化 usageStatus 快照。写入路径不写 status(写入时
   // useCount 必 >0,永远写不出 cold),所以 cold 只能由离线批量 derive 产生。
   // 持久化值仅供 data_checkup/RIF 等观察视图——任何决策路径必须现场
@@ -164,13 +176,15 @@ async function runDreamInner(params: {
     } catch { /* observation snapshot must never block dream */ }
   }
 
+  const derivedCount = active.length - consolidatable.length;
   phases.push({
     phase: "gather",
     detail: `${active.length} active entries gathered from ${entries.length} total`
+      + (derivedCount > 0 ? `; ${derivedCount} derivatives held back from consolidation` : "")
       + (usageSnapshots > 0 ? `; usage snapshot: ${usageSnapshots} statuses persisted` : ""),
   });
 
-  if (active.length < config.minClusterSize) {
+  if (consolidatable.length < config.minClusterSize) {
     phases.push({ phase: "consolidate", detail: "skipped — too few active entries" });
     phases.push({ phase: "prune", detail: "skipped — too few entries for GC" });
     resetWriteCount(scope, statsCfg);
@@ -199,7 +213,7 @@ async function runDreamInner(params: {
     // 3b: LLM-driven cluster consolidation (insights + patterns) — requires LLM
     if (llm) {
       const clusterResult = await clusterAndConsolidate({
-        entries: active,
+        entries: consolidatable,
         embedder,
         llm,
         store,
