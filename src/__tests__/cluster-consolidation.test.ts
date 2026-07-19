@@ -542,7 +542,7 @@ describe("clusterAndConsolidate — pattern extraction (HP-5)", () => {
     expect(patternEntry).toBeDefined();
     expect(patternEntry!.text).toContain("日料");
     expect(patternEntry!.category).toBe("patterns");
-    expect(patternEntry!.importance).toBeCloseTo(0.9, 5); // max(0.8) + 0.1
+    expect(patternEntry!.importance).toBeCloseTo(0.8, 5); // = max(0.8)，继承不加成
 
     const patternMeta = JSON.parse(patternEntry!.metadata!);
     expect(patternMeta.source_cluster_size).toBe(3);
@@ -615,7 +615,7 @@ describe("clusterAndConsolidate — pattern extraction (HP-5)", () => {
     expect(stored.length).toBe(1); // Only insight stored
   });
 
-  it("caps pattern importance at 1.0", async () => {
+  it("pattern importance 继承源里最高的，不再加成后撞上限", async () => {
     const entries = [
       makeEntry({ id: "a", text: "high importance A", vector: [0.9, 0.1, 0], importance: 0.95 }),
       makeEntry({ id: "b", text: "high importance B", vector: [0.88, 0.12, 0], importance: 0.98 }),
@@ -642,8 +642,49 @@ describe("clusterAndConsolidate — pattern extraction (HP-5)", () => {
 
     expect(result.patternsExtracted).toBe(1);
     const patternEntry = stored.find(s => JSON.parse(s.metadata!).cross_memory_pattern);
-    // max(0.98) + 0.1 = 1.08 → capped at 1.0
-    expect(patternEntry!.importance).toBe(1.0);
+    // 旧行为：max(0.98) + 0.1 = 1.08 → 撞 1.0 上限，派生物顶格。
+    // 现在直接取 max(0.98)，不存在需要 cap 的情形。
+    expect(patternEntry!.importance).toBeCloseTo(0.98, 5);
+    // 注意这里源本身就在 pin 带（0.98 >= 0.95），派生物照样继承进去。
+    // 「派生物不该继承人工 pin 身份」是另一个问题，单独立项，不在本次改动范围。
+  });
+
+  it("源都在 pin 线以下时，pattern 不再被加成推过 0.95", async () => {
+    // 这是加成最有害的形态：源里最高只有 0.85，本不该享有人工 pin 的待遇，
+    // 旧行为 0.85 + 0.1 = 0.95 正好跨进那个频段，于是这条 LLM 抽出来的 pattern
+    // 自动拿到永不归档（auto-gc.ts）和永不衰减（decay-engine.ts）的保护。
+    const entries = [
+      makeEntry({ id: "a", text: "topic A", vector: [0.9, 0.1, 0], importance: 0.85 }),
+      makeEntry({ id: "b", text: "topic B", vector: [0.88, 0.12, 0], importance: 0.8 }),
+      makeEntry({ id: "c", text: "topic C", vector: [0.92, 0.08, 0], importance: 0.75 }),
+    ];
+
+    const { store, stored } = createMockStore();
+    const llm = createMockLLM(
+      () => "insight",
+      () => "discovered pattern",
+    );
+    const embedder = createMockEmbedder();
+
+    const result = await clusterAndConsolidate({
+      entries,
+      embedder,
+      llm: llm as unknown as LLMClient,
+      store,
+      scope: "project:test",
+      minClusterSize: 3,
+      clusterThreshold: 0.75,
+      extractPatterns: true,
+    });
+
+    expect(result.patternsExtracted).toBe(1);
+    const patternEntry = stored.find(s => JSON.parse(s.metadata!).cross_memory_pattern);
+    expect(patternEntry!.importance).toBeCloseTo(0.85, 5);
+    expect(patternEntry!.importance).toBeLessThan(0.95);
+
+    // 派生物也不该压过它自己的源
+    const maxSource = Math.max(...entries.map(e => e.importance));
+    expect(patternEntry!.importance).toBeLessThanOrEqual(maxSource);
   });
 });
 

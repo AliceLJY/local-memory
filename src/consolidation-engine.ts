@@ -548,7 +548,14 @@ export async function clusterAndConsolidate(params: {
     if (extractPatterns && cluster.length >= 3) {
       const patternText = await llm.extractPattern(cluster.map(m => m.text));
       if (patternText) {
-        const patternImportance = Math.min(maxImportance + 0.1, 1.0);
+        // 与同函数上方的 cluster insight 取同一个值：派生物继承源里最高的 importance，
+        // 不额外加成。原本这里是 maxImportance + 0.1，会让 LLM 抽出的 pattern 比它的
+        // 任何一条源记忆都重要——而 importance >= 0.95 在本仓库里是「人工 pin」的专用
+        // 语义（cli.ts pin 操作把值抬到 0.95；auto-gc 视其为永不归档、decay-engine 视其
+        // 为永不衰减）。于是任何一条源 >= 0.85 的 cluster，其派生 pattern 都会自动跨进
+        // 人类锚点频段。加成想表达的「pattern 比源更有价值」若要保留，应走独立通道
+        // （检索 boost / 独立 tier / 显式 flag），不该占用这个频段。
+        const patternImportance = maxImportance;
         const patternVector = await params.embedder.embedPassage(patternText);
         const patternEntry = await store.store({
           id: deterministicId(scope, `cluster-pattern:${sortedSourceIds.join(",")}`),
