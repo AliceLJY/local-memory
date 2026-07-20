@@ -98,7 +98,7 @@ function checkOrphanMemories(entries: MemoryEntry[]): CheckResult {
 function checkTierDistribution(entries: MemoryEntry[]): CheckResult {
   const tierCounts: Record<MemoryTier, number> = { core: 0, working: 0, peripheral: 0 };
   for (const e of entries) {
-    const tier = resolveTier(e.metadata);
+    const tier = resolveTier(e.metadata, e.importance);
     tierCounts[tier]++;
   }
 

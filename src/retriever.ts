@@ -1854,7 +1854,7 @@ export class MemoryRetriever {
       }
 
       // Resolve tier from metadata (defaults to peripheral)
-      const tier = resolveTier(r.entry.metadata);
+      const tier = resolveTier(r.entry.metadata, r.entry.importance);
 
       // Weibull decay with tier-specific shape and floor
       const factor = weibullDecay(ageDays, halfLife, tier);

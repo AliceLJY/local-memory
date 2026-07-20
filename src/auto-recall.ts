@@ -161,7 +161,7 @@ export async function runAutoRecall(
   const promoted: RetrievalResult[] = [];
   const demoted: RetrievalResult[] = [];
   for (const r of rawResults) {
-    const tier = resolveTier(r.entry.metadata);
+    const tier = resolveTier(r.entry.metadata, r.entry.importance);
     if (tier === "core" || tier === "working") {
       promoted.push(r);
     } else {

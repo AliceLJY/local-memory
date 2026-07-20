@@ -141,7 +141,8 @@ export function isDecayExempt(
     const meta = JSON.parse(metadata) as Record<string, unknown>;
 
     // Rule 1: Core + very high importance
-    const tier = meta.tier ?? resolveTierFromMeta(meta);
+    // importance 是本函数的入参（来自 entry 列），一并传下去——否则 heuristic 读不到它。
+    const tier = meta.tier ?? resolveTierFromMeta(meta, importance);
     if (tier === "core" && importance >= 0.95) return true;
 
     // Rule 2: Accessed within last 7 days
@@ -158,12 +159,21 @@ export function isDecayExempt(
   }
 }
 
-/** Internal helper: resolve tier from parsed metadata (avoids re-parsing). */
-function resolveTierFromMeta(meta: Record<string, unknown>): MemoryTier {
+/**
+ * Internal helper: resolve tier from parsed metadata (avoids re-parsing).
+ *
+ * `entryImportance` 是 MemoryEntry 的列字段。必须由调用方传进来：importance 不存在
+ * 于 metadata（accessCount / lastAccessedAt / tier 才是 access-tracker 写在顶层的），
+ * 所以只读 meta.importance 会恒等于 0，让所有还没有显式 tier 的条目一律落到
+ * peripheral——2026-07 实测全库 3214 条走这个分支，顶层有 importance 的是 0 条。
+ */
+function resolveTierFromMeta(meta: Record<string, unknown>, entryImportance?: number): MemoryTier {
   if (meta.tier === "core" || meta.tier === "working" || meta.tier === "peripheral") {
     return meta.tier;
   }
-  const imp = typeof meta.importance === "number" ? meta.importance : 0;
+  const imp = typeof meta.importance === "number"
+    ? meta.importance
+    : (typeof entryImportance === "number" ? entryImportance : 0);
   const ac = typeof meta.accessCount === "number" ? meta.accessCount : 0;
   if (imp >= 0.95 || ac >= 10) return "core";
   if (imp >= 0.8 || ac >= 3) return "working";
@@ -178,13 +188,13 @@ function resolveTierFromMeta(meta: Record<string, unknown>): MemoryTier {
  * Determine a memory's current tier from its metadata.
  * Falls back to heuristic based on importance if no tier is stored.
  */
-export function resolveTier(metadata?: string): MemoryTier {
+export function resolveTier(metadata?: string, entryImportance?: number): MemoryTier {
   if (!metadata) return "peripheral";
 
   try {
     const meta = JSON.parse(metadata) as Record<string, unknown>;
 
-    // Explicit tier stored in metadata
+    // Explicit tier stored in metadata（access-tracker 算过一次就会写在这里）
     if (meta.tier === "core" || meta.tier === "working" || meta.tier === "peripheral") {
       return meta.tier;
     }
@@ -193,7 +203,13 @@ export function resolveTier(metadata?: string): MemoryTier {
     // - Pinned assets (importance ≥ 0.95) → core
     // - High importance (≥ 0.8) → working
     // - Everything else → peripheral
-    const importance = typeof meta.importance === "number" ? meta.importance : 0;
+    //
+    // importance 优先取调用方传入的 entry 列值。metadata 里没有这个字段——顶层住着的是
+    // accessCount / lastAccessedAt / tier（access-tracker 写的），importance 从来不在。
+    // 不传就只能退回 0，那会把所有还没被访问过的条目一律压成 peripheral。
+    const importance = typeof meta.importance === "number"
+      ? meta.importance
+      : (typeof entryImportance === "number" ? entryImportance : 0);
     const accessCount = typeof meta.accessCount === "number" ? meta.accessCount : 0;
 
     if (importance >= 0.95 || accessCount >= 10) return "core";

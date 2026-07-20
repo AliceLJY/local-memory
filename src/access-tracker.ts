@@ -173,7 +173,7 @@ export class AccessTracker {
           const importance = entry.importance ?? 0.6;
           const lastAccessedAt = now;
 
-          const currentTier = resolveTier(entry.metadata);
+          const currentTier = resolveTier(entry.metadata, importance);
           const newTier = evaluateTierChange(
             currentTier,
             newCount,
