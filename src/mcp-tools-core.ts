@@ -16,6 +16,7 @@ import { buildManagedCheckpointObservation, buildManagedResumeObservation } from
 import { buildWorkflowObservationRecord } from "./workflow-observation-engine.js";
 import type { ToolRegistryDeps } from "./mcp-tool-deps.js";
 import type { RetrievalResult } from "./retriever.js";
+import { DependsOnSchema } from "./freshness.js";
 
 export function registerCoreTools(deps: ToolRegistryDeps): void {
   const { registerTool, getComponents, config, checkpointStore, conflictStore, workflowObservationStore, getKGExtractor, getKGStore, auditLogger } = deps;
@@ -93,8 +94,9 @@ registerTool(
         reliability: z.enum(["direct", "inferred", "hearsay"]).optional(),
       }),
     ]).optional().describe("Optional confidence override: number (0-1) or {score, reliability}. Auto-assigned from source if omitted."),
+    dependsOn: DependsOnSchema.optional().describe("Optional freshness dependencies (borrowed). Declare what this memory depends on so recall shows a cheap validity verdict (exact/compatible/uncertain/invalid). Items: {kind:'file'|'git-rev', ref, expected?}. file → ref=path, expected=mtime-ms string; git-rev → ref=repo path, expected=commit hash (short ok). expected may be an array: first=exact, rest=compatible set. Omit expected for existence-only checks."),
   },
-  async ({ text, category, importance, scope, source, tags, canonicalKey, topicTag, privacyTier, validUntil, eventTime, confidence }) => {
+  async ({ text, category, importance, scope, source, tags, canonicalKey, topicTag, privacyTier, validUntil, eventTime, confidence, dependsOn }) => {
     const { store, embedder } = getComponents();
     const kgExtractor = getKGExtractor();
     const stored = await persistMemory({
@@ -118,6 +120,8 @@ registerTool(
       eventTime,
       // F1: Pass confidence override (extracted by persistMemory before Zod parse)
       confidence,
+      // Freshness: pass dependsOn (extracted by persistMemory before Zod parse)
+      dependsOn,
     });
 
     return {

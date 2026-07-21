@@ -9,6 +9,7 @@ import { defaultEvolution, buildSupersedeMetadata, buildSupersedeMetadataForNew,
 import { archiveBeliefVersion, buildSupersedingBeliefMetadata } from "./belief-history.js";
 import { detectTopicTag, injectTopicTag } from "./topic-tag.js";
 import { assignDefaultConfidence, type ConfidenceMetadata } from "./confidence-tracker.js";
+import { parseDependsOnInput } from "./freshness.js";
 import {
   type CaseMemoryInput,
   CaseMemoryInputSchema,
@@ -1093,6 +1094,15 @@ export async function persistMemory(
   {
     const parsed: Record<string, unknown> = JSON.parse(metadata);
     parsed.confidence = confidenceMeta;
+    metadata = JSON.stringify(parsed);
+  }
+
+  // Freshness (borrowed 2026-07-21): opt-in dependsOn declarations ride in metadata like
+  // validUntil/confidence do — pulled from raw input so StoreMemoryInputSchema stays untouched.
+  const dependsOn = parseDependsOnInput(rawObj?.dependsOn);
+  if (dependsOn) {
+    const parsed: Record<string, unknown> = JSON.parse(metadata);
+    parsed.dependsOn = dependsOn;
     metadata = JSON.stringify(parsed);
   }
 

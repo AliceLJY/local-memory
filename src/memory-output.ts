@@ -6,6 +6,7 @@ import { extractMultiVectorText } from "./multi-vector.js";
 import { parseNarrative } from "./narrative-schema.js";
 import { getConfidence, getConfidenceMetadata } from "./confidence-tracker.js";
 import { estimateTokens } from "./context-collapse-renderer.js";
+import { evaluateEntryFreshness, createFreshnessCache } from "./freshness.js";
 
 interface MemoryMetadata {
   source?: string;
@@ -348,11 +349,15 @@ export function formatBriefResults(
   context: { query: string },
 ): string {
   if (results.length === 0) return "No results found.";
+  const freshnessCache = createFreshnessCache();
   const lines = [`Query: ${context.query}`, `Hits: ${results.length}`, ""];
   for (let i = 0; i < results.length; i++) {
     const r = results[i];
     const excerpt = extractBriefExcerpt(r);
-    lines.push(`#${i + 1} ${r.entry.id.slice(0, 8)} ${(r.score * 100).toFixed(1)}% — ${excerpt}`);
+    // Freshness suffix: only for memories that declared dependsOn (opt-in, cheap check).
+    const fresh = evaluateEntryFreshness(r.entry.metadata, freshnessCache);
+    const freshTag = fresh ? ` [fresh:${fresh}]` : "";
+    lines.push(`#${i + 1} ${r.entry.id.slice(0, 8)} ${(r.score * 100).toFixed(1)}% — ${excerpt}${freshTag}`);
   }
   return lines.join("\n");
 }
@@ -363,6 +368,7 @@ export function formatFullResults(
 ): string {
   if (results.length === 0) return "No results found.";
 
+  const freshnessCache = createFreshnessCache();
   const lines = [
     `Query   : ${context.query}`,
     `Profile : ${context.profile}`,
@@ -397,6 +403,9 @@ export function formatFullResults(
       ? ` confidence=${confMeta.score.toFixed(2)}(${confMeta.reliability})`
       : "";
     lines.push(`   meta : evolution=${evolution} accessCount=${accessCount} importance=${importance} tags=[${tags}]${confPart}${emotionPart}${narrativePart}`);
+    // Freshness: only shown for memories that declared dependsOn (opt-in, cheap check).
+    const fresh = evaluateEntryFreshness(results[i].entry.metadata, freshnessCache);
+    if (fresh) lines.push(`   fresh: ${fresh}`);
   }
 
   return lines.join("\n");
@@ -408,6 +417,7 @@ export function formatSearchResults(
 ): string {
   if (results.length === 0) return "No results found.";
 
+  const freshnessCache = createFreshnessCache();
   const lines = [
     `Query   : ${context.query}`,
     `Profile : ${context.profile}`,
@@ -421,6 +431,9 @@ export function formatSearchResults(
     const row = buildSearchRow(i, context.query, results[i]);
     lines.push(`${row[0]} ${row[1]} ${row[2]} ${row[3]} ${row[4]} ${row[5]} ${row[6]} ${row[7]} ${row[8]} | ${row[9]}`);
     lines.push(`   prov : ${getProvenanceSummary(results[i])}`);
+    // Freshness: only shown for memories that declared dependsOn (opt-in, cheap check).
+    const fresh = evaluateEntryFreshness(results[i].entry.metadata, freshnessCache);
+    if (fresh) lines.push(`   fresh: ${fresh}`);
   }
 
   return lines.join("\n");
