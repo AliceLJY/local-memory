@@ -125,6 +125,10 @@ function computeTierAccessSignal(
   }
 }
 
+// ⚠️ 约束（2026-07-21 通用Wiki上下文记忆Agent方案借鉴审计 P1-4）：本函数用 accessCount 参与
+// importance 计算（importance←accessSignal，越常访问 importance 越高的马太逻辑）。当前为孤儿代码——
+// 全树仅测试引用、生产侧零 import。接线前须评估与「usage 只进检索先验、绝不抬 importance/事实置信」
+// 立场的冲突：频次抬 importance 会自增强（越常召回越权威），违反该立场。接线须 Alice 明确批准。
 export function computeRebalancedImportance(
   currentImportance: number,
   tier: MemoryTier,
