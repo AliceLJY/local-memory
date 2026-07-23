@@ -3,6 +3,7 @@ import { indexAsset, indexPinnedAsset } from "./asset-sync.js";
 import { createAuditLogger } from "./audit-log.js";
 import { persistCaseMemory, persistMemoryBatch, persistWorkflowPattern, promoteMemory } from "./capture-engine.js";
 import { autoCapture } from "./capture-heuristic.js";
+import { computeSynthesisUptake } from "./consolidation-engine.js";
 import { runDataCheckup, formatCheckupReport } from "./data-checkup.js";
 import { runDream, formatDreamResult } from "./dream-pipeline.js";
 import { forgetMemory } from "./forget-engine.js";
@@ -550,6 +551,13 @@ registerTool(
       sourceCounts[prefix] = (sourceCounts[prefix] || 0) + count;
     }
 
+    // Synthesis uptake（Artel 借鉴）：升华产物被读回的比例——长期 0% = 升华管线
+    // 在产无人消费的内容或读打点断链，是能报警的健康度数字。
+    const uptake = await computeSynthesisUptake(store);
+    const uptakeLine = uptake.uptakeRate === null
+      ? "  uptake: n/a (no derived insights found)"
+      : `  uptake: ${(uptake.uptakeRate * 100).toFixed(1)}% (${uptake.derivedRead}/${uptake.derivedTotal} read ≥1)`;
+
     const lines = [
       `Total entries: ${stats.totalCount}`,
       "",
@@ -562,6 +570,10 @@ registerTool(
       ...Object.entries(stats.categoryCounts || {})
         .sort((a, b) => b[1] - a[1])
         .map(([cat, count]) => `  ${cat}: ${count}`),
+      "",
+      `Synthesis uptake${uptake.truncated ? ` (scan capped at ${uptake.scanned})` : ""}:`,
+      `  derived insights: ${uptake.derivedTotal}`,
+      uptakeLine,
     ];
 
     return {

@@ -42,5 +42,5 @@
 ## 6. 测试基线
 
 - 改完代码必须跑 `bun test`，全量通过才能 commit
-- 当前基线：1965 tests / 0 fail（2026-07-21 新鲜度四态判定落地后；含 freshness.ts 21 条）
+- 当前基线：1978 tests / 0 fail（2026-07-23 Artel 读闭环三件套落地后；novelty 闸默认关+distinct-reader+readBoost+uptake）
 - 新增功能必须配套测试，基线只能涨不能降

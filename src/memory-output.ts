@@ -386,6 +386,7 @@ export function formatFullResults(
     const meta = parseMetadata(results[i].entry);
     const evolution = typeof meta.evolutionStatus === "string" ? meta.evolutionStatus : "-";
     const accessCount = typeof meta.accessCount === "number" ? String(meta.accessCount) : "-";
+    const readers = typeof meta.distinctReaderCount === "number" ? String(meta.distinctReaderCount) : "-";
     const importance = results[i].entry.importance.toFixed(2);
     const tags = Array.isArray(meta.tags) ? (meta.tags as string[]).join(", ") : "-";
     // Emotion metadata (from emotion-detector)
@@ -402,7 +403,7 @@ export function formatFullResults(
     const confPart = confMeta
       ? ` confidence=${confMeta.score.toFixed(2)}(${confMeta.reliability})`
       : "";
-    lines.push(`   meta : evolution=${evolution} accessCount=${accessCount} importance=${importance} tags=[${tags}]${confPart}${emotionPart}${narrativePart}`);
+    lines.push(`   meta : evolution=${evolution} accessCount=${accessCount} readers=${readers} importance=${importance} tags=[${tags}]${confPart}${emotionPart}${narrativePart}`);
     // Freshness: only shown for memories that declared dependsOn (opt-in, cheap check).
     const fresh = evaluateEntryFreshness(results[i].entry.metadata, freshnessCache);
     if (fresh) lines.push(`   fresh: ${fresh}`);

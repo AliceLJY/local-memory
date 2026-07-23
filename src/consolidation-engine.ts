@@ -643,6 +643,68 @@ export function isDerivedInsight(metadata: string | undefined): boolean {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Synthesis uptake (Artel archivist_metrics.synthesis_uptake_rate 的对应物)
+// ---------------------------------------------------------------------------
+
+export interface SynthesisUptakeStats {
+  /** Entries scanned across the store (may be capped). */
+  scanned: number;
+  /** Derived insights found (cluster_insight / cross_memory_pattern). */
+  derivedTotal: number;
+  /** Derived insights with accessCount > 0 — actually read after synthesis. */
+  derivedRead: number;
+  /** derivedRead / derivedTotal; null when no derived insights exist. */
+  uptakeRate: number | null;
+  /** True when the scan hit the cap before exhausting the store. */
+  truncated: boolean;
+}
+
+/**
+ * Measure how many consolidation/dream products were ever read back.
+ * 把"升华产物没人用"从体感变成能报警的数字——uptake 长期为 0 说明
+ * 升华管线在产出无人消费的内容（或读打点断链）。
+ */
+export async function computeSynthesisUptake(
+  store: { listPage(opts: { limit?: number; offset?: number; includeVector?: boolean }): Promise<MemoryEntry[]> },
+  scanCap = 20_000,
+  pageSize = 1_000,
+): Promise<SynthesisUptakeStats> {
+  let scanned = 0;
+  let derivedTotal = 0;
+  let derivedRead = 0;
+  let offset = 0;
+  let truncated = false;
+
+  for (;;) {
+    const page = await store.listPage({ limit: pageSize, offset, includeVector: false });
+    if (page.length === 0) break;
+    for (const e of page) {
+      scanned++;
+      if (!isDerivedInsight(e.metadata)) continue;
+      derivedTotal++;
+      try {
+        const meta = JSON.parse(e.metadata || "{}") as Record<string, unknown>;
+        if (typeof meta.accessCount === "number" && meta.accessCount > 0) derivedRead++;
+      } catch { /* broken metadata → counts as unread */ }
+    }
+    offset += page.length;
+    if (page.length < pageSize) break;
+    if (offset >= scanCap) {
+      truncated = true;
+      break;
+    }
+  }
+
+  return {
+    scanned,
+    derivedTotal,
+    derivedRead,
+    uptakeRate: derivedTotal > 0 ? derivedRead / derivedTotal : null,
+    truncated,
+  };
+}
+
 /**
  * LC-P2: When a cluster insight and its source memories both appear in
  * retrieval results, keep only the cluster insight (it subsumes the

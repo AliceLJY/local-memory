@@ -370,3 +370,61 @@ describe("formatConsolidationResult", () => {
     expect(text).toContain("Conflicts:");
   });
 });
+
+// ---------------------------------------------------------------------------
+// computeSynthesisUptake (Artel synthesis_uptake_rate 对应物)
+// ---------------------------------------------------------------------------
+
+import { computeSynthesisUptake } from "../consolidation-engine.js";
+import type { MemoryEntry as UptakeEntry } from "../store.js";
+
+function uptakeEntry(id: string, metadata: Record<string, unknown>): UptakeEntry {
+  return {
+    id,
+    text: `t-${id}`,
+    vector: [],
+    category: "patterns",
+    scope: "project:test",
+    importance: 0.7,
+    timestamp: Date.now(),
+    metadata: JSON.stringify(metadata),
+  } as UptakeEntry;
+}
+
+function pagedStore(all: UptakeEntry[]) {
+  return {
+    async listPage({ limit = 1000, offset = 0 }: { limit?: number; offset?: number; includeVector?: boolean }) {
+      return all.slice(offset, offset + limit);
+    },
+  };
+}
+
+describe("computeSynthesisUptake", () => {
+  it("computes uptake over derived insights only", async () => {
+    const store = pagedStore([
+      uptakeEntry("d1", { cluster_insight: true, accessCount: 2 }),   // derived, read
+      uptakeEntry("d2", { cross_memory_pattern: true }),              // derived, unread
+      uptakeEntry("n1", { accessCount: 5 }),                          // not derived
+    ]);
+    const s = await computeSynthesisUptake(store, 20_000, 2);
+    expect(s.scanned).toBe(3);
+    expect(s.derivedTotal).toBe(2);
+    expect(s.derivedRead).toBe(1);
+    expect(s.uptakeRate).toBeCloseTo(0.5, 5);
+    expect(s.truncated).toBe(false);
+  });
+
+  it("returns null rate when no derived insights exist", async () => {
+    const s = await computeSynthesisUptake(pagedStore([uptakeEntry("n1", {})]));
+    expect(s.derivedTotal).toBe(0);
+    expect(s.uptakeRate).toBeNull();
+  });
+
+  it("respects scan cap and reports truncation", async () => {
+    const all = Array.from({ length: 10 }, (_, i) => uptakeEntry(`e${i}`, { cluster_insight: true, accessCount: 1 }));
+    const s = await computeSynthesisUptake(pagedStore(all), 4, 2);
+    expect(s.scanned).toBe(4);
+    expect(s.truncated).toBe(true);
+    expect(s.derivedTotal).toBe(4);
+  });
+});

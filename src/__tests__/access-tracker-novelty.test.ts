@@ -236,3 +236,69 @@ describe("destroy cleans cooldown", () => {
     expect(tracker.shouldReinforce("a", 0.40)).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Distinct-reader bookkeeping (Artel read fan-out) + default-config semantics
+// ---------------------------------------------------------------------------
+
+describe("default config after 2026-07-23 production fix", () => {
+  it("novelty gate is OFF by default (high-similarity hits are reinforced)", () => {
+    const tracker = new AccessTracker(createMockStore([]) as any);
+    // 生产实测修复：真实相关命中 cosine >0.65 也必须打点
+    expect(tracker.shouldReinforce("a", 0.95)).toBe(true);
+  });
+});
+
+describe("distinct-reader bookkeeping", () => {
+  it("writes readerIds and distinctReaderCount on flush", async () => {
+    const entries = [makeEntry("a")];
+    const store = createMockStore(entries);
+    const tracker = new AccessTracker(store as any, {
+      ...DEFAULT_ACCESS_TRACKER_CONFIG,
+      flushIntervalMs: 1,
+      cooldownMs: 0,
+    });
+    tracker.recordAccess(["a"]);
+    await tracker.flush();
+
+    const meta = JSON.parse(store.data.get("a")!.metadata!) as Record<string, unknown>;
+    expect(meta.accessCount).toBe(1);
+    expect(meta.readerIds).toEqual([tracker.readerId]);
+    expect(meta.distinctReaderCount).toBe(1);
+  });
+
+  it("dedups same reader and unions different readers", async () => {
+    const entries = [makeEntry("a")];
+    const store = createMockStore(entries);
+    const t1 = new AccessTracker(store as any, { ...DEFAULT_ACCESS_TRACKER_CONFIG, flushIntervalMs: 1, cooldownMs: 0 });
+    t1.recordAccess(["a"]);
+    await t1.flush();
+    t1.recordAccess(["a"]);
+    await t1.flush(); // same reader twice → still 1 distinct
+
+    const t2 = new AccessTracker(store as any, { ...DEFAULT_ACCESS_TRACKER_CONFIG, flushIntervalMs: 1, cooldownMs: 0 });
+    t2.recordAccess(["a"]);
+    await t2.flush(); // second reader → 2 distinct
+
+    const meta = JSON.parse(store.data.get("a")!.metadata!) as Record<string, unknown>;
+    expect(meta.accessCount).toBe(3);
+    expect((meta.readerIds as string[]).sort()).toEqual([t1.readerId, t2.readerId].sort());
+    expect(meta.distinctReaderCount).toBe(2);
+  });
+
+  it("saturates readerIds at READER_ID_CAP without growing the array", async () => {
+    const capped = Array.from({ length: 8 }, (_, i) => `r-cap${i}`);
+    const entries = [makeEntry("a", {
+      metadata: JSON.stringify({ accessCount: 8, readerIds: capped, distinctReaderCount: 8 }),
+    })];
+    const store = createMockStore(entries);
+    const tracker = new AccessTracker(store as any, { ...DEFAULT_ACCESS_TRACKER_CONFIG, flushIntervalMs: 1, cooldownMs: 0 });
+    tracker.recordAccess(["a"]);
+    await tracker.flush();
+
+    const meta = JSON.parse(store.data.get("a")!.metadata!) as Record<string, unknown>;
+    expect((meta.readerIds as string[]).length).toBe(8); // no growth past cap
+    expect(meta.distinctReaderCount).toBe(8);            // saturates, no overcount
+    expect(meta.accessCount).toBe(9);                    // access still counted
+  });
+});

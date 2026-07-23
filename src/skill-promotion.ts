@@ -28,6 +28,8 @@ export interface PromotionCandidate {
   confidence: number; // 0-1
   /** A2: zero-LLM verifier verdict (pattern_to_skill only). 失败候选保留披露、排后、不静默丢。 */
   verification?: VerifyResult;
+  /** Read-signal evidence aggregated from source entries（Artel 读驱动升华：被真实读过的候选提权）。 */
+  readEvidence?: { totalAccess: number; distinctReaders: number };
 }
 
 export interface PromotionScanResult {
@@ -267,6 +269,47 @@ export function greedyCluster(
 }
 
 // ---------------------------------------------------------------------------
+// Read evidence (Artel-style read-driven promotion)
+// ---------------------------------------------------------------------------
+
+/** Max confidence boost from read evidence. Saturates at 4 distinct readers. */
+const READ_BOOST_MAX = 0.15;
+
+/**
+ * Aggregate read signals (accessCount / readerIds / distinctReaderCount, written
+ * by AccessTracker on retrieval) across a candidate's source entries.
+ * distinctReaders = max(union of readerIds, per-entry saturated count) — the
+ * union undercounts once READER_ID_CAP saturates, the per-entry count covers that.
+ */
+export function aggregateReadEvidence(
+  entries: Array<{ metadata?: string }>,
+): { totalAccess: number; distinctReaders: number } {
+  let totalAccess = 0;
+  const readers = new Set<string>();
+  let saturatedMax = 0;
+  for (const e of entries) {
+    try {
+      const meta = JSON.parse(e.metadata || "{}") as Record<string, unknown>;
+      if (typeof meta.accessCount === "number") totalAccess += meta.accessCount;
+      if (Array.isArray(meta.readerIds)) {
+        for (const r of meta.readerIds) if (typeof r === "string") readers.add(r);
+      }
+      if (typeof meta.distinctReaderCount === "number") {
+        saturatedMax = Math.max(saturatedMax, meta.distinctReaderCount);
+      }
+    } catch { /* broken metadata → contributes nothing */ }
+  }
+  return { totalAccess, distinctReaders: Math.max(readers.size, saturatedMax) };
+}
+
+/** Blend read evidence into base confidence: +0..READ_BOOST_MAX, capped at 0.99.
+ *  提权不设门槛（observe-before-enforce：先积累读证据，硬门槛等有生产数据再定）。 */
+export function applyReadBoost(base: number, distinctReaders: number): number {
+  const boost = Math.min(1, distinctReaders / 4) * READ_BOOST_MAX;
+  return Math.min(0.99, base + boost);
+}
+
+// ---------------------------------------------------------------------------
 // Main scan
 // ---------------------------------------------------------------------------
 
@@ -339,6 +382,7 @@ export async function scanForPromotions(
         const avgSim = computeAverageIntraClusterSimilarity(cluster.members);
 
         caseCandidates++;
+        const caseReadEvidence = aggregateReadEvidence(cluster.members);
         result.candidates.push({
           type: "case_to_pattern",
           sourceEntries: cluster.members.map(m => ({
@@ -348,7 +392,11 @@ export async function scanForPromotions(
           })),
           suggestedName: extractName(cluster.seed.text),
           suggestedDescription: summarizeCluster(cluster.members),
-          confidence: cluster.members.length / (cluster.members.length + 2), // Bayesian smoothing
+          confidence: applyReadBoost(
+            cluster.members.length / (cluster.members.length + 2), // Bayesian smoothing
+            caseReadEvidence.distinctReaders,
+          ),
+          readEvidence: caseReadEvidence,
         });
       }
     }
@@ -394,6 +442,7 @@ export async function scanForPromotions(
     );
 
     patternCandidates++;
+    const patternReadEvidence = aggregateReadEvidence([pattern, ...similarCases.map(h => h.entry)]);
     result.candidates.push({
       type: "pattern_to_skill",
       sourceEntries: [
@@ -407,8 +456,12 @@ export async function scanForPromotions(
       suggestedName: extractName(pattern.text),
       suggestedDescription: `Skill derived from pattern with ${similarCases.length} supporting cases`,
       suggestedImplementation: extractSteps(pattern.text),
-      confidence: similarCases.length / (similarCases.length + 2),
+      confidence: applyReadBoost(
+        similarCases.length / (similarCases.length + 2),
+        patternReadEvidence.distinctReaders,
+      ),
       verification,
+      readEvidence: patternReadEvidence,
     });
   }
 
@@ -455,6 +508,9 @@ export function formatPromotionResult(result: PromotionScanResult): string {
     lines.push(`Confidence: ${(c.confidence * 100).toFixed(1)}%`);
     lines.push(`Description: ${c.suggestedDescription}`);
     lines.push(`Sources: ${c.sourceEntries.length} entries`);
+    if (c.readEvidence) {
+      lines.push(`Read evidence: ${c.readEvidence.totalAccess} total reads, ${c.readEvidence.distinctReaders} distinct reader(s)`);
+    }
     if (c.verification) {
       const v = c.verification;
       if (v.ok) {

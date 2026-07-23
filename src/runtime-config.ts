@@ -168,6 +168,7 @@ export function createComponents(config: LocalMemoryConfig, profileName?: string
 
   // Attach access tracker for reinforcement-based decay
   const accessTracker = new AccessTracker(store);
+  accessTracker.registerExitFlush();
   retriever.setAccessTracker(accessTracker);
 
   // P0.2: Attach frequency tracker for hit-count based boosting

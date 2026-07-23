@@ -38,9 +38,17 @@ export const DEFAULT_ACCESS_TRACKER_CONFIG: AccessTrackerConfig = {
   reinforcementFactor: 0.5,
   maxMultiplier: 3.0,
   accessFreshnessHalfLifeDays: 30,
-  noveltyThreshold: 0.35,
+  // 0 = novelty gate off. 生产实测（2026-07-23）：0.35 要求命中的 cosine ≤0.65 才打点，
+  // 真实相关命中几乎都 >0.65，导致 accessCount 在生产库全空——"最被用到"的记忆
+  // 恰好全被排除，方向与"用进废退"相反。防刷由 cooldown 承担；要恢复旧行为显式传 0.35。
+  noveltyThreshold: 0,
   cooldownMs: 300_000, // 5 minutes
 };
+
+/** readerIds 在 metadata 里的存储上限。distinctReaderCount 到达上限后饱和不再涨。 */
+// simplified: capped array + saturating count instead of Artel's exact memory_reads
+// ledger table — promotion thresholds are ≤4 distinct readers, so saturation at 8 is harmless.
+export const READER_ID_CAP = 8;
 
 // ============================================================================
 // Core
@@ -52,11 +60,36 @@ export class AccessTracker {
   private flushPromise: Promise<void> | null = null;
   /** Cooldown map: entryId → last reinforced timestamp */
   private cooldownMap = new Map<string, number>();
+  /** Distinct-reader identity: one stdio MCP server process ≈ one CC session.
+   *  Used to maintain readerIds / distinctReaderCount on flush (Artel-style read fan-out). */
+  readonly readerId: string;
+  private exitFlushRegistered = false;
 
   constructor(
     private store: MemoryStore,
     private config: AccessTrackerConfig = DEFAULT_ACCESS_TRACKER_CONFIG,
-  ) {}
+    readerId?: string,
+  ) {
+    this.readerId = readerId ?? `r-${crypto.randomUUID().slice(0, 8)}`;
+  }
+
+  /**
+   * Best-effort flush on normal process exit (stdin close → clean shutdown).
+   * Covers the "retrieval happened <flushIntervalMs before exit" window where the
+   * debounce timer would otherwise drop pending deltas. Opt-in so tests creating
+   * many trackers don't leak process listeners. Not wired to SIGTERM on purpose —
+   * an async handler there isn't guaranteed to complete and we don't want to own
+   * the server's exit semantics.
+   */
+  registerExitFlush(): void {
+    if (this.exitFlushRegistered) return;
+    this.exitFlushRegistered = true;
+    process.once("beforeExit", () => {
+      this.flush().catch(err => {
+        logWarn("AccessTracker exit flush failed:", err);
+      });
+    });
+  }
 
   /**
    * Determine whether a retrieval result should trigger access reinforcement.
@@ -184,10 +217,27 @@ export class AccessTracker {
             ? { from: currentTier, to: newTier, newCount }
             : null;
 
+          // Distinct-reader bookkeeping (Artel read fan-out, lightweight form):
+          // dedup by readerId in a capped array; count saturates at cap (under-
+          // counting is safer than over-counting for promotion gating).
+          const rawReaders = Array.isArray(meta.readerIds)
+            ? (meta.readerIds as unknown[]).filter((x): x is string => typeof x === "string")
+            : [];
+          let readerIds = rawReaders;
+          let distinctReaderCount = typeof meta.distinctReaderCount === "number"
+            ? meta.distinctReaderCount
+            : rawReaders.length;
+          if (!rawReaders.includes(this.readerId) && rawReaders.length < READER_ID_CAP) {
+            readerIds = [...rawReaders, this.readerId];
+            distinctReaderCount = readerIds.length;
+          }
+
           return {
             ...meta,
             accessCount: newCount,
             lastAccessedAt,
+            readerIds,
+            distinctReaderCount,
             ...(tierChange ? { tier: tierChange.to } : {}),
           };
         });

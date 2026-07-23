@@ -599,3 +599,56 @@ describe("A2 verifier integration", () => {
     expect(text).toContain("fake_cmd");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Read evidence (Artel read-driven promotion) — aggregateReadEvidence / applyReadBoost
+// ---------------------------------------------------------------------------
+
+import { aggregateReadEvidence, applyReadBoost } from "../skill-promotion.js";
+
+describe("aggregateReadEvidence", () => {
+  it("sums accessCount and unions readerIds across entries", () => {
+    const entries = [
+      { metadata: JSON.stringify({ accessCount: 3, readerIds: ["r-a", "r-b"], distinctReaderCount: 2 }) },
+      { metadata: JSON.stringify({ accessCount: 2, readerIds: ["r-b", "r-c"], distinctReaderCount: 2 }) },
+    ];
+    const ev = aggregateReadEvidence(entries);
+    expect(ev.totalAccess).toBe(5);
+    expect(ev.distinctReaders).toBe(3); // union {r-a, r-b, r-c}
+  });
+
+  it("falls back to saturated per-entry count when readerIds capped", () => {
+    // READER_ID_CAP 饱和后 readerIds 停增但 distinctReaderCount 保留饱和值
+    const entries = [
+      { metadata: JSON.stringify({ accessCount: 10, readerIds: ["r-a"], distinctReaderCount: 8 }) },
+    ];
+    const ev = aggregateReadEvidence(entries);
+    expect(ev.distinctReaders).toBe(8); // max(union=1, saturated=8)
+  });
+
+  it("tolerates missing and broken metadata", () => {
+    const ev = aggregateReadEvidence([
+      { metadata: undefined },
+      { metadata: "not-json{" },
+      { metadata: JSON.stringify({ accessCount: 1 }) },
+    ]);
+    expect(ev.totalAccess).toBe(1);
+    expect(ev.distinctReaders).toBe(0);
+  });
+});
+
+describe("applyReadBoost", () => {
+  it("adds no boost for zero readers", () => {
+    expect(applyReadBoost(0.5, 0)).toBe(0.5);
+  });
+
+  it("scales boost linearly and saturates at 4 readers", () => {
+    expect(applyReadBoost(0.5, 2)).toBeCloseTo(0.5 + 0.075, 5); // half of max 0.15
+    expect(applyReadBoost(0.5, 4)).toBeCloseTo(0.65, 5);        // full boost
+    expect(applyReadBoost(0.5, 12)).toBeCloseTo(0.65, 5);       // saturated
+  });
+
+  it("caps combined confidence at 0.99", () => {
+    expect(applyReadBoost(0.95, 4)).toBe(0.99);
+  });
+});
