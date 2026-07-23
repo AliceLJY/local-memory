@@ -423,3 +423,20 @@ describe("formatDreamResult", () => {
     expect(formatDreamResult(noSemanticCluster)).not.toBe(formatDreamResult(llmYieldedNothing));
   });
 });
+
+// ---------------------------------------------------------------------------
+// semanticClusterThreshold（2026-07-23 零 insight 根因修复）
+// ---------------------------------------------------------------------------
+
+import { DEFAULT_DREAM_CONFIG } from "../dream-pipeline.js";
+
+describe("semanticClusterThreshold default", () => {
+  it("is an independent config at 0.68 (not clusterThreshold - 0.07)", () => {
+    // 三 scope 真实数据造影：相似度 p99≈0.74，旧 offset 值 0.75 卡在 p99 之上
+    // → semantic 簇恒 0、2716 次运行零 insight。0.68 落在实测甜点区。
+    expect(DEFAULT_DREAM_CONFIG.semanticClusterThreshold).toBe(0.68);
+    expect(DEFAULT_DREAM_CONFIG.semanticClusterThreshold).toBeLessThan(
+      DEFAULT_DREAM_CONFIG.clusterThreshold,
+    );
+  });
+});

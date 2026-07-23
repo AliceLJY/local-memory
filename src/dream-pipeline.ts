@@ -33,6 +33,12 @@ export interface DreamConfig {
   minWritesForDream: number;
   /** Consolidation cluster threshold (default: 0.82) */
   clusterThreshold: number;
+  /** 3b semantic clustering threshold (default: 0.68). 独立于 clusterThreshold——
+   *  旧实现用魔法 offset（clusterThreshold - 0.07 = 0.75），2026-07-23 三 scope
+   *  真实数据造影：相似度 p99 = 0.736/0.739/0.986，0.75 卡在 p99 之上，semantic
+   *  簇恒 0、LLM 从未被调、2716 次运行零 insight。0.68 落在甜点区
+   *  （实测每 scope 产 3~7 个 ≥3 簇）；产物质量由 synthesis uptake 指标观察。 */
+  semanticClusterThreshold: number;
   /** Minimum cluster size for insight/pattern generation (default: 3) */
   minClusterSize: number;
   /** Enable cross-memory pattern extraction in consolidation (default: true) */
@@ -46,6 +52,7 @@ export interface DreamConfig {
 export const DEFAULT_DREAM_CONFIG: DreamConfig = {
   minWritesForDream: 10,
   clusterThreshold: 0.82,
+  semanticClusterThreshold: 0.68,
   minClusterSize: 3,
   extractPatterns: true,
   maxEntriesPerRun: 500,
@@ -227,7 +234,7 @@ async function runDreamInner(params: {
         store,
         scope,
         minClusterSize: config.minClusterSize,
-        clusterThreshold: config.clusterThreshold - 0.07, // slightly lower for semantic clustering
+        clusterThreshold: config.semanticClusterThreshold,
         extractPatterns: config.extractPatterns,
       });
       stats.semanticClustersFound += clusterResult.clustersFound;
