@@ -667,7 +667,9 @@ export interface SynthesisUptakeStats {
  */
 export async function computeSynthesisUptake(
   store: { listPage(opts: { limit?: number; offset?: number; includeVector?: boolean }): Promise<MemoryEntry[]> },
-  scanCap = 20_000,
+  // 50K 覆盖当前 ~34K 生产库全量（2026-07-23 实测 cap 20K 只扫 57%，truncated 结论不完整）；
+  // metadata-only 分页扫描秒级，memory_stats 是低频人工工具，扫全比抽样值钱。
+  scanCap = 50_000,
   pageSize = 1_000,
 ): Promise<SynthesisUptakeStats> {
   let scanned = 0;
