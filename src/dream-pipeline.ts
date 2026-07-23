@@ -227,8 +227,14 @@ async function runDreamInner(params: {
 
     // 3b: LLM-driven cluster consolidation (insights + patterns) — requires LLM
     if (llm) {
+      // gather 走 store.list()，其性能优化恒返回 vector:[]（假空数组）——
+      // clusterAndConsolidate 进门就按 vector?.length>0 过滤，不回填则 84/84 全被
+      // 滤光、聚类空转（2026-07-23 生产实锤：门槛修对后 semantic 仍恒 0 的第二真凶；
+      // promote_scan 同款坑 07-21 已修，dream 这条漏了）。
+      const vectorMap = await store.getVectors(consolidatable.map(e => e.id));
+      const withVectors = consolidatable.map(e => ({ ...e, vector: vectorMap.get(e.id) ?? [] }));
       const clusterResult = await clusterAndConsolidate({
-        entries: consolidatable,
+        entries: withVectors,
         embedder,
         llm,
         store,

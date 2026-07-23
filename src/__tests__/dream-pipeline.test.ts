@@ -57,7 +57,18 @@ function createMockStore(entries: MemoryEntry[]): MemoryStore {
   let storeCounter = 0;
 
   return {
-    async list() { return stored; },
+    // 忠实复刻生产行为：list() 恒返回 vector:[]（性能优化的假空数组）。
+    // 旧 mock 直接返回带真向量的 stored，把「聚类消费者必须 getVectors 回填」
+    // 这个坑遮了两年——promote_scan 与 dream 3b 都在生产栽过、单测全绿。
+    async list() { return stored.map(e => ({ ...e, vector: [] as number[] })); },
+    async getVectors(ids: string[]) {
+      const m = new Map<string, number[]>();
+      for (const id of ids) {
+        const e = stored.find(x => x.id === id);
+        if (e && e.vector?.length) m.set(id, e.vector);
+      }
+      return m;
+    },
     async stats() {
       return {
         totalCount: stored.length,
