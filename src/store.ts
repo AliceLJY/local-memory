@@ -1084,7 +1084,10 @@ export class MemoryStore implements MemoryStorePort {
     const updated: MemoryEntry = {
       id: row.id as string,
       text: updates.text ?? (row.text as string),
-      vector: updates.vector ?? (Array.from(row.vector as Iterable<number>)),
+      // row.vector 可能为 null（历史病行，2026-07-23 dream/auto-gc 生产实锤：
+      // cc:82a919ea 连崩三轮 Array.from(null)）。null → [] 让 metadata-only update
+      // 不再被病行绊倒；空向量本就不可检索，语义不变。
+      vector: updates.vector ?? (row.vector ? Array.from(row.vector as Iterable<number>) : []),
       category: updates.category ?? (row.category as MemoryEntry["category"]),
       scope: rowScope,
       importance: updates.importance ?? Number(row.importance),

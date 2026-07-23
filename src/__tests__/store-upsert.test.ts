@@ -182,3 +182,20 @@ describe("store P0-2 idempotency (upsert-backed store/storeBatch)", () => {
     expect(rows.filter((r) => r.text === "batch-x" || r.text === "batch-y").length).toBe(2);
   });
 });
+
+describe("update() vector fallback (2026-07-23 null-vector regression)", () => {
+  it("metadata-only update preserves the original vector on healthy rows", async () => {
+    const store = makeStore();
+    const scope = "project:nullvec-test";
+    const entry = await store.store({
+      text: "健康行", vector: [0.1, 0.2, 0.3], category: "events", scope, importance: 0.7, metadata: "{}",
+    });
+    const updated = await store.update(entry.id, { metadata: JSON.stringify({ touched: true }) });
+    expect(updated).not.toBeNull();
+    // 修复 row.vector null-guard 后，正常行的 vector 必须原样保留（回归保护）
+    const rows = await store.list([scope]);
+    expect(rows.length).toBe(1);
+    const meta = JSON.parse(rows[0].metadata || "{}") as Record<string, unknown>;
+    expect(meta.touched).toBe(true);
+  });
+});
