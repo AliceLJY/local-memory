@@ -553,7 +553,8 @@ registerTool(
 
     // Synthesis uptake（Artel 借鉴）：升华产物被读回的比例——长期 0% = 升华管线
     // 在产无人消费的内容或读打点断链，是能报警的健康度数字。
-    const uptake = await computeSynthesisUptake(store);
+    // cap 取 totalCount 自适应库大小（2026-07-23 实测库已 117K，固定 cap 追不上增长）。
+    const uptake = await computeSynthesisUptake(store, stats.totalCount + 1_000);
     const uptakeLine = uptake.uptakeRate === null
       ? "  uptake: n/a (no derived insights found)"
       : `  uptake: ${(uptake.uptakeRate * 100).toFixed(1)}% (${uptake.derivedRead}/${uptake.derivedTotal} read ≥1)`;
