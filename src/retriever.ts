@@ -107,6 +107,7 @@ export interface RetrievalConfig {
   /**
    * Hotness blend weight. Blends access-frequency hotness into final score.
    * Formula: final = score * (1-alpha) + hotness * alpha.
+   * Zero-access rows keep their score unchanged (bonus-only cold start).
    * 0 = disabled (default), 0.15 = recommended.
    */
   hotnessWeight: number;
@@ -1870,14 +1871,6 @@ export class MemoryRetriever {
   }
 
   /**
-   * Blend access-frequency hotness into retrieval scores.
-   *
-   * Formula: final = score * (1 - alpha) + hotness * alpha
-   * where hotness = sigmoid(log1p(accessCount)) * exp(-decayRate * ageDays)
-   *
-   * No-op when hotnessWeight is 0 or AccessTracker is absent.
-   */
-  /**
    * B-1/E-1: Evolution decay blend — factor in composite decay score
    * (time × frequency × importance) as a scoring signal.
    * Weight increased from 0.05 to 0.10 with B-3 LLM importance assessment.
@@ -2087,6 +2080,15 @@ export class MemoryRetriever {
     return [...results, ...siblings].sort((a, b) => b.score - a.score);
   }
 
+  /**
+   * Blend access-frequency hotness into retrieval scores.
+   *
+   * Formula: final = score * (1 - alpha) + hotness * alpha
+   * where hotness = sigmoid(log1p(accessCount)) * exp(-decayRate * ageDays)
+   * Zero-access rows keep their incoming score; accessed rows retain this formula.
+   *
+   * No-op when hotnessWeight is 0 or AccessTracker is absent.
+   */
   private applyHotnessBlend(results: RetrievalResult[]): RetrievalResult[] {
     const raw = this.config.hotnessWeight;
     const alpha = Math.min(1, Math.max(0, Number.isFinite(raw) ? raw : 0));
@@ -2098,6 +2100,7 @@ export class MemoryRetriever {
         accessCount,
         lastAccessedAt || r.entry.timestamp,
       );
+      if (accessCount === 0) return r;
       return {
         ...r,
         score: clamp01(r.score * (1 - alpha) + hotness * alpha, 0),
