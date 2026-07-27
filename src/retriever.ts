@@ -1837,8 +1837,8 @@ export class MemoryRetriever {
 
     const now = Date.now();
     const decayed = results.map(r => {
-      // HP-7: Exempt core/pinned/recently-accessed from decay
-      if (isDecayExempt(r.entry.metadata, r.entry.importance)) return r;
+      // HP-7: Exempt core/pinned/recently-accessed (and procedural categories) from decay
+      if (isDecayExempt(r.entry.metadata, r.entry.importance, r.entry.category)) return r;
 
       const ts = (r.entry.timestamp && r.entry.timestamp > 0) ? r.entry.timestamp : now;
       const ageDays = (now - ts) / 86_400_000;
@@ -1878,8 +1878,8 @@ export class MemoryRetriever {
   private applyEvolutionDecayBlend(results: RetrievalResult[]): RetrievalResult[] {
     const EVOLUTION_BLEND_WEIGHT = 0.10;
     return results.map(r => {
-      // HP-7: Exempt entries get max decay score (1.0) → no penalty
-      if (isDecayExempt(r.entry.metadata, r.entry.importance)) {
+      // HP-7: Exempt entries (incl. procedural categories) get max decay score (1.0) → no penalty
+      if (isDecayExempt(r.entry.metadata, r.entry.importance, r.entry.category)) {
         return {
           ...r,
           score: clamp01(r.score * (1 - EVOLUTION_BLEND_WEIGHT) + 1.0 * EVOLUTION_BLEND_WEIGHT, 0),

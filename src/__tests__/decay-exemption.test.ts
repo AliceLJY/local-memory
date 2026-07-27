@@ -81,4 +81,49 @@ describe("HP-7: Decay exemption rules", () => {
       expect(isDecayExempt(meta, 0.98)).toBe(true);
     });
   });
+
+  describe("Rule 0: procedural category", () => {
+    // A procedural memory's defining trait is low access frequency + long validity.
+    // Rules 1-3 all key off access statistics, so without Rule 0 these entries land
+    // in the fastest-decaying tier forever.
+    const coldPeripheral = JSON.stringify({
+      tier: "peripheral",
+      accessCount: 0,
+      lastAccessedAt: 0,
+      tags: ["workflow"],
+    });
+
+    it("exempts patterns even when cold, peripheral and low-importance", () => {
+      expect(isDecayExempt(coldPeripheral, 0.30, "patterns")).toBe(true);
+    });
+
+    it("exempts patterns with no metadata at all", () => {
+      // Checked before the `!metadata` guard on purpose.
+      expect(isDecayExempt(undefined, 0.30, "patterns")).toBe(true);
+    });
+
+    it("exempts patterns with corrupt metadata", () => {
+      expect(isDecayExempt("not-json", 0.30, "patterns")).toBe(true);
+    });
+
+    it("does NOT exempt cases — they carry an episodic component and should decay", () => {
+      expect(isDecayExempt(coldPeripheral, 0.30, "cases")).toBe(false);
+    });
+
+    it("does NOT exempt declarative categories", () => {
+      for (const category of ["events", "profile", "preferences", "entities"]) {
+        expect(isDecayExempt(coldPeripheral, 0.30, category)).toBe(false);
+      }
+    });
+
+    it("is backward compatible: omitting category preserves Rule 1-3 behaviour", () => {
+      expect(isDecayExempt(coldPeripheral, 0.30)).toBe(false);
+      expect(isDecayExempt(JSON.stringify({ tags: ["pinned"] }), 0.40)).toBe(true);
+    });
+
+    it("does not exempt on unknown category strings", () => {
+      expect(isDecayExempt(coldPeripheral, 0.30, "skills")).toBe(false);
+      expect(isDecayExempt(coldPeripheral, 0.30, "")).toBe(false);
+    });
+  });
 });

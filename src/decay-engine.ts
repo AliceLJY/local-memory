@@ -123,18 +123,54 @@ export function computeArousalBoost(
 // ============================================================================
 
 /**
+ * Categories whose entries are procedural memory (knowing *how*), not declarative.
+ *
+ * Only `patterns` qualifies: RecallNest's skill schema stores skills under
+ * `category = "patterns"` (see memory-schema.ts), so this covers both workflow
+ * patterns and skills.
+ *
+ * `cases` is deliberately NOT here. A case is a problem/solution pair with a real
+ * episodic component ("that CI failure on 07-24"), and its solution can go stale
+ * when the underlying tool changes — it *should* decay. Procedural rules do not:
+ * see the "什么该衰减" discussion in hippo [[条件失效优于时间衰减]].
+ */
+export const PROCEDURAL_CATEGORIES = new Set<string>(["patterns"]);
+
+/**
  * Check if a memory should be exempt from time decay.
  * Exempt entries keep their original score without time-based penalties.
  *
  * Exemption rules:
+ * 0. Procedural category → knowing-how doesn't fade with wall-clock time
  * 1. Core tier + high importance (≥ 0.95) → identity/correction, must not fade
  * 2. Recently accessed (within 7 days) → actively used, not stale
  * 3. Pinned → user explicitly marked as persistent
+ *
+ * @param category Optional entry category. Omitting it preserves the pre-Rule-0
+ *                 behaviour exactly, so existing callers stay valid.
  */
 export function isDecayExempt(
   metadata: string | undefined,
   importance: number,
+  category?: string,
 ): boolean {
+  // Rule 0: Procedural memory is exempt from *time* decay.
+  //
+  // Rules 1-3 all key off access statistics or explicit user action, which
+  // systematically punishes procedural memory: its defining trait is low access
+  // frequency + long validity ("restart launchd with bootout+sleep+bootstrap" may
+  // be needed once a quarter but is correct every time). Combined with `patterns`
+  // carrying the highest retrieval threshold in DEFAULT_CATEGORY_MIN_SCORES (0.45),
+  // that produced a feedback trap: ranked lower → read less → ranked lower still.
+  //
+  // Cognitive-science backing: procedural memory is non-declarative (Squire) and is
+  // the most decay-resistant human memory type — a different curve, not a slower one.
+  //
+  // NOTE: this exempts from *time* decay only. Procedural memory still expires, but
+  // by condition (its premise changed), not by age. Deliberately checked before the
+  // `!metadata` guard so entries without metadata are still covered.
+  if (category !== undefined && PROCEDURAL_CATEGORIES.has(category)) return true;
+
   if (!metadata) return false;
 
   try {

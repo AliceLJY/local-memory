@@ -1,6 +1,45 @@
-import type { RetrievalConfig } from "./retriever.js";
+import {
+  DEFAULT_CATEGORY_MIN_SCORES,
+  DEFAULT_RETRIEVAL_CONFIG,
+  type RetrievalConfig,
+} from "./retriever.js";
 
 export type RetrievalProfileName = "default" | "writing" | "debug" | "fact-check";
+
+/**
+ * Scale the default per-category thresholds by how loose/tight a profile is overall.
+ *
+ * Why this exists: a profile used to override `hardMinScore` only, while
+ * `Retriever.minScoreFor()` reads `categoryMinScores` first and only falls back to
+ * `hardMinScore` for categories not listed. Since the default map lists every
+ * category, a profile's looser/tighter intent never reached category admission at
+ * all — picking `debug` ("I want episodic detail") still admitted `events` at 0.35
+ * and `patterns` at 0.45, exactly as `default` would.
+ *
+ * IMPORTANT: the returned map must stay complete. A partial map would silently send
+ * unlisted categories to `hardMinScore` instead of their default threshold.
+ *
+ * simplified: proportional scaling only — the *relative* ordering across categories
+ * is inherited from DEFAULT_CATEGORY_MIN_SCORES unchanged. Re-designing that ordering
+ * per profile (e.g. `debug` favouring episodic categories, `writing` favouring
+ * semantic ones) is the better end state but needs canary evidence to pick numbers;
+ * do that via `bun run eval:canary` before touching the ratios here.
+ */
+function scaledCategoryMinScores(profileHardMinScore: number): Record<string, number> {
+  const factor = profileHardMinScore / DEFAULT_RETRIEVAL_CONFIG.hardMinScore;
+  return Object.fromEntries(
+    Object.entries(DEFAULT_CATEGORY_MIN_SCORES).map(([category, minScore]) => [
+      category,
+      Math.round(minScore * factor * 1000) / 1000,
+    ]),
+  );
+}
+
+// Kept as named constants so each profile's `hardMinScore` and its scaled category
+// thresholds cannot drift apart.
+const WRITING_HARD_MIN_SCORE = 0.24;
+const DEBUG_HARD_MIN_SCORE = 0.34;
+const FACT_CHECK_HARD_MIN_SCORE = 0.38;
 
 export interface RetrievalProfileDefinition {
   name: RetrievalProfileName;
@@ -27,7 +66,8 @@ export const RETRIEVAL_PROFILES: Record<RetrievalProfileName, RetrievalProfileDe
       recencyHalfLifeDays: 90,
       recencyWeight: 0.06,
       timeDecayHalfLifeDays: 365,
-      hardMinScore: 0.24,
+      hardMinScore: WRITING_HARD_MIN_SCORE,
+      categoryMinScores: scaledCategoryMinScores(WRITING_HARD_MIN_SCORE),
       lengthNormAnchor: 800,
     },
   },
@@ -42,7 +82,8 @@ export const RETRIEVAL_PROFILES: Record<RetrievalProfileName, RetrievalProfileDe
       recencyHalfLifeDays: 7,
       recencyWeight: 0.15,
       timeDecayHalfLifeDays: 30,
-      hardMinScore: 0.34,
+      hardMinScore: DEBUG_HARD_MIN_SCORE,
+      categoryMinScores: scaledCategoryMinScores(DEBUG_HARD_MIN_SCORE),
       lengthNormAnchor: 420,
     },
   },
@@ -57,7 +98,8 @@ export const RETRIEVAL_PROFILES: Record<RetrievalProfileName, RetrievalProfileDe
       recencyHalfLifeDays: 21,
       recencyWeight: 0.08,
       timeDecayHalfLifeDays: 45,
-      hardMinScore: 0.38,
+      hardMinScore: FACT_CHECK_HARD_MIN_SCORE,
+      categoryMinScores: scaledCategoryMinScores(FACT_CHECK_HARD_MIN_SCORE),
       lengthNormAnchor: 360,
     },
   },
