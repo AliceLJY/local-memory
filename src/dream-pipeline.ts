@@ -45,6 +45,13 @@ export interface DreamConfig {
   extractPatterns: boolean;
   /** Max entries to scan per consolidation run (default: 500) */
   maxEntriesPerRun: number;
+  /** Wall-clock budget for one `dream --auto` sweep, ms (default: 6h).
+   *  防跨天兜底闸,不是调度器。2026-07-24 那轮跑了 4 天 15 小时(见 cli.ts --auto 分支
+   *  与 scripts/dream-consolidation.sh:57 的注释),期间堵死三天调度。
+   *  已知天花板:超预算后剩余 scope 直接丢弃,而每轮都从列表头重来 → 靠后的 scope 会被
+   *  系统性饿死。真解是 session scope TTL(只 dream 近 N 天活跃的),不是把预算调大——
+   *  scope 数 07-10 是 133、07-29 是 475,只增不减,加预算追不上。 */
+  autoRunBudgetMs: number;
   /** GC config for prune phase */
   gc: AutoGcConfig;
 }
@@ -56,6 +63,7 @@ export const DEFAULT_DREAM_CONFIG: DreamConfig = {
   minClusterSize: 3,
   extractPatterns: true,
   maxEntriesPerRun: 500,
+  autoRunBudgetMs: 6 * 60 * 60 * 1000,
   gc: DEFAULT_AUTO_GC_CONFIG,
 };
 
@@ -324,6 +332,53 @@ export async function runDream(params: {
       archivedCount: 0,
     },
   };
+}
+
+// ---------------------------------------------------------------------------
+// Failure triage (--auto sweep)
+// ---------------------------------------------------------------------------
+
+export type DreamFailureKind = "transient" | "fatal";
+
+/** 已知的环境性失败——重跑同一轮救不了,也不代表代码/数据有缺陷。
+ *  故意用精确 pattern 而非宽泛关键词:分类错成 transient 会静默真 bug,
+ *  错成 fatal 只是多一次告警。拿不准就让它落到 fatal。 */
+const TRANSIENT_FAILURE_PATTERNS: readonly RegExp[] = [
+  /lock '[^']*' timed out/i,      // distill-lock.ts 跨进程 store-write 锁竞争
+  /request was aborted/i,          // llm-client.ts:757 的 15s AbortController 超时
+  /econnreset|etimedout|socket hang up|fetch failed/i, // 网络层
+];
+
+/**
+ * 把单个 scope 的 dream 失败分成「环境性瞬态」和「代码/数据缺陷」。
+ *
+ * 2026-07-29 生产分诊依据(dream-consolidation-launchd.log):
+ *   fatal     — `TypeError: Array.from requires an array-like object`(store.ts 病行,d1a2a9c 已修)
+ *   transient — `lock 'store-write' timed out after 10000ms (held by another process)`
+ *   transient — `Error: Request was aborted.`
+ */
+export function classifyDreamFailure(message: string): DreamFailureKind {
+  return TRANSIENT_FAILURE_PATTERNS.some(re => re.test(message)) ? "transient" : "fatal";
+}
+
+/** transient 失败占比超过这个比例仍判整轮失败——否则"475 个全被锁挡住"会假绿。 */
+export const DREAM_TRANSIENT_BLOCK_RATIO = 0.2;
+
+/**
+ * 一轮 `dream --auto` 是否该判 blocked。
+ *
+ * 旧语义是「任意一个 scope 抛异常即 blocked」,在 475 个 scope 的规模下等于
+ * 「有一个撞上锁就整轮红」,而红了会让 shell 脚本走重试 → 重跑全量。
+ * 新语义:代码/数据缺陷一票否决;环境性失败要成规模才算整轮失败。
+ */
+export function shouldBlockDreamRun(params: {
+  totalScopes: number;
+  fatalFailures: number;
+  transientFailures: number;
+}): boolean {
+  if (params.fatalFailures > 0) return true;
+  if (params.totalScopes <= 0) return false;
+  return params.transientFailures / params.totalScopes > DREAM_TRANSIENT_BLOCK_RATIO;
 }
 
 // ---------------------------------------------------------------------------

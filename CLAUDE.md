@@ -42,5 +42,5 @@
 ## 6. 测试基线
 
 - 改完代码必须跑 `bun test`，全量通过才能 commit
-- 当前基线：1978 tests / 0 fail（2026-07-23 Artel 读闭环三件套落地后；novelty 闸默认关+distinct-reader+readBoost+uptake）
+- 当前基线：2008 tests / 0 fail（2026-07-29 dream `--auto` 失败分诊 + wall-clock 预算落地后，本次 +10；此前 1978 的记录停在 2026-07-23，中间几个 commit 涨的 20 个未同步）
 - 新增功能必须配套测试，基线只能涨不能降

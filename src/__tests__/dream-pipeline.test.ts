@@ -451,3 +451,74 @@ describe("semanticClusterThreshold default", () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// --auto 失败分诊 + wall-clock 预算（2026-07-29 dream blocked 根因修复）
+// ---------------------------------------------------------------------------
+
+import { classifyDreamFailure, shouldBlockDreamRun, DREAM_TRANSIENT_BLOCK_RATIO } from "../dream-pipeline.js";
+
+describe("classifyDreamFailure", () => {
+  // 下面三条都是 dream-consolidation-launchd.log 里的生产原文，不是构造的样本。
+  it("treats the store-write lock contention as transient", () => {
+    expect(
+      classifyDreamFailure(
+        `Failed to store memory in "/Users/x/recallnest/data/lancedb":  lock 'store-write' timed out after 10000ms (held by another process)`,
+      ),
+    ).toBe("transient");
+  });
+
+  it("treats the LLM abort as transient", () => {
+    // llm-client.ts:757 的 15s AbortController 超时
+    expect(classifyDreamFailure("Request was aborted.")).toBe("transient");
+  });
+
+  it("treats the null-vector TypeError as fatal", () => {
+    // 07-18~07-23 的真凶（store.ts 病行，d1a2a9c 已修）。这类必须一票否决——
+    // 判成 transient 会让代码缺陷被静默。
+    expect(
+      classifyDreamFailure("Array.from requires an array-like object - not null or undefined"),
+    ).toBe("fatal");
+  });
+
+  it("defaults unknown errors to fatal rather than silencing them", () => {
+    expect(classifyDreamFailure("something nobody has seen before")).toBe("fatal");
+    expect(classifyDreamFailure("")).toBe("fatal");
+  });
+
+  it("does not classify on scope ids that merely contain digits", () => {
+    // 回归：4 天 15 小时那次的根因是 shell 层在整个输出（含全部 hex scope id）上 grep
+    // "403"，被 cc:44036269 假命中。分类器只看错误消息，绝不能被 id 里的数字带跑。
+    expect(classifyDreamFailure("[scope=cc:44036269] unexpected failure")).toBe("fatal");
+  });
+});
+
+describe("shouldBlockDreamRun", () => {
+  it("blocks on any fatal failure", () => {
+    expect(shouldBlockDreamRun({ totalScopes: 475, fatalFailures: 1, transientFailures: 0 })).toBe(true);
+  });
+
+  it("does not block on a handful of transient failures", () => {
+    // 旧语义下这就是「475 个里 1 个撞锁 → 整轮红 → 脚本重试 → 重跑全量」的起点。
+    expect(shouldBlockDreamRun({ totalScopes: 475, fatalFailures: 0, transientFailures: 5 })).toBe(false);
+  });
+
+  it("still blocks when transient failures are widespread", () => {
+    // 全被锁挡住不能判假绿。
+    const over = Math.ceil(475 * DREAM_TRANSIENT_BLOCK_RATIO) + 1;
+    expect(shouldBlockDreamRun({ totalScopes: 475, fatalFailures: 0, transientFailures: over })).toBe(true);
+  });
+
+  it("is clean when nothing failed, and safe on an empty sweep", () => {
+    expect(shouldBlockDreamRun({ totalScopes: 475, fatalFailures: 0, transientFailures: 0 })).toBe(false);
+    expect(shouldBlockDreamRun({ totalScopes: 0, fatalFailures: 0, transientFailures: 0 })).toBe(false);
+  });
+});
+
+describe("autoRunBudgetMs default", () => {
+  it("caps one --auto sweep well below a day", () => {
+    // 07-24 那轮 4 天 15 小时，堵死三天调度。预算是防跨天的兜底闸。
+    expect(DEFAULT_DREAM_CONFIG.autoRunBudgetMs).toBe(6 * 60 * 60 * 1000);
+    expect(DEFAULT_DREAM_CONFIG.autoRunBudgetMs).toBeLessThan(24 * 60 * 60 * 1000);
+  });
+});

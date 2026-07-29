@@ -54,7 +54,19 @@ for attempt in 1 2 3; do
     fi
 
     # 鉴权 / 网络瞬态错误重试 + 退避(同 weekly-distill 5-22 模式)
-    if [ "$attempt" -lt 3 ] && grep -qaiE "403|ECONNRESET|timeout|Request not allowed" "$DREAM_OUT" 2>/dev/null; then
+    #
+    # 2026-07-29: 匹配范围必须限定在 "dream failed:" 之后的错误消息里,不能在整个输出上 grep。
+    # 旧写法 `grep -qaiE "403|..." "$DREAM_OUT"` 会扫到达标 scope 列表——那里印着全部 scope ID
+    # (十六进制),`cc:44036269` 的 "44036269" 含 "403" 子串 → 假命中 → 判定为瞬态错误 → 重跑
+    # 全量 scope。07-24 那次就是这么跑了 4 天 15 小时的(三轮 11h→39h→61h,scope 数 395→404→451,
+    # 重试跨天期间又攒出新 scope,越重试越多)。
+    # 日志实证:07-18/19 匹配 0 次 → 只跑 1 轮;07-23/24 匹配 3/2 次 → 重试满 3 轮。
+    # 概率:单个 8 位 hex ID 含 "403" 约 0.146%,475 个 ID 至少中一个约 50%——scope 越多越容易中。
+    # 词表故意不扩:`lock ... timed out` 不匹配 "timeout" 是对的,重跑全量去重试一次锁竞争
+    # 代价不成比例(该类失败改由 cli.ts 的失败分级消化)。
+    if [ "$attempt" -lt 3 ] && grep -a "dream failed:" "$DREAM_OUT" 2>/dev/null \
+        | sed 's/.*dream failed: //' \
+        | grep -qaiE "403|ECONNRESET|timeout|Request not allowed"; then
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] 瞬态失败,退避 30s 后重试..."
         sleep 30
     else

@@ -38,7 +38,7 @@ import {
 import { runDoctor, formatDoctorResults } from "./doctor.js";
 import { persistCaseMemory, persistMemory, persistWorkflowPattern } from "./capture-engine.js";
 import { scanMemoryPromotions, buildPromoteScanDeps, formatPromoteScanResult } from "./memory-promotion.js";
-import { runDream, formatDreamResult, DEFAULT_DREAM_CONFIG } from "./dream-pipeline.js";
+import { runDream, formatDreamResult, DEFAULT_DREAM_CONFIG, classifyDreamFailure, shouldBlockDreamRun } from "./dream-pipeline.js";
 import { listScopesAboveThreshold } from "./activity-counter.js";
 import {
   CaseMemoryInputSchema,
@@ -1605,22 +1605,51 @@ program
         process.exit(0);
       }
       console.log(`dream --auto: ${scopes.length} 个达标 scope → ${scopes.join(", ")}`);
-      let anyFailed = false;
+
+      // Wall-clock 预算(2026-07-29 补)：防单轮跑成跨天。07-24 那轮跑了 4 天 15 小时，
+      // 把 07-25~27 三天的调度全堵死（上一次没结束，launchd 起不了新的）。
+      // 天花板见 DreamConfig.autoRunBudgetMs 的注释——截断会让靠后 scope 系统性饿死，
+      // 真解是 session scope TTL，不是把预算调大。
+      const budgetMs = Number(process.env.RECALLNEST_DREAM_BUDGET_MS ?? DEFAULT_DREAM_CONFIG.autoRunBudgetMs);
+      const deadline = Date.now() + budgetMs;
+
+      let fatalFailures = 0;
+      let transientFailures = 0;
+      let processed = 0;
       for (const scope of scopes) {
+        if (Date.now() > deadline) {
+          console.warn(
+            `[dream] wall-clock 预算 ${Math.round(budgetMs / 60_000)} 分钟耗尽：已处理 ` +
+              `${processed}/${scopes.length}，剩余 ${scopes.length - processed} 个 scope 本轮跳过`,
+          );
+          break;
+        }
+        processed++;
         try {
           const result = await runDream({ store, llm, embedder, scope, force: Boolean(options.force), activityStatsPath, kgStore });
           console.log(`[scope=${scope}] ${formatDreamResult(result)}`);
         } catch (err) {
-          anyFailed = true;
           // 单 scope 失败不阻断其他 scope。
           // 打完整 stack 而不只是 message：像「Array.from requires an array-like object」
           // 这种原生错误，只有 message 时根本定位不到是哪一行抛的——2026-07-18/19 连着两天
           // 因此 blocked，回头查日志除了这一句什么线索都没有，只能靠猜。
+          // 分类基于 message（不是 stack）：stack 里的文件路径不该参与判定。
+          const message = err instanceof Error ? err.message : String(err);
+          if (classifyDreamFailure(message) === "transient") transientFailures++;
+          else fatalFailures++;
           console.error(`[scope=${scope}] dream failed: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
         }
       }
-      console.log(anyFailed ? "[[DREAM_STATUS]] blocked" : "[[DREAM_STATUS]] ok");
-      process.exit(anyFailed ? 1 : 0);
+
+      // 旧语义是「任一 scope 抛异常即 blocked」，在 475 个 scope 的规模下等于「有一个撞上
+      // store-write 锁就整轮红」，而整轮红会让 shell 脚本重试 → 重跑全量。改为：代码/数据
+      // 缺陷一票否决，环境性失败要成规模才算整轮失败。比例按已处理数算，不按总数。
+      const blocked = shouldBlockDreamRun({ totalScopes: processed, fatalFailures, transientFailures });
+      if (fatalFailures > 0 || transientFailures > 0) {
+        console.log(`[dream] 失败统计：fatal=${fatalFailures} transient=${transientFailures}（已处理 ${processed}）`);
+      }
+      console.log(blocked ? "[[DREAM_STATUS]] blocked" : "[[DREAM_STATUS]] ok");
+      process.exit(blocked ? 1 : 0);
     }
 
     try {
