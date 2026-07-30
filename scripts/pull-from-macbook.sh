@@ -184,6 +184,36 @@ DESKTOP_N=$(find "$DESKTOP_STAGING" -name '*.jsonl' ! -name 'audit.jsonl' 2>/dev
 find "$DESKTOP_STAGING" -name '*.jsonl' ! -name 'audit.jsonl' -exec cp -p {} "$DESKTOP_IMPORT/" \; 2>/dev/null
 log "Desktop 对话扁平化 ${DESKTOP_N} 个 jsonl → data/desktop-import"
 
+# 4d. rsync MacBook 的 agy(Antigravity) 对话 → ~/machine-data/macbook-agy/
+#     agy 双机都在用，但它的数据既不在 .claude/projects 也不在 .codex/.kimi-code 的 sessions 下，
+#     2026-07-30 之前完全没进同步链 —— MacBook 上的 agy 对话永远汇不进 mini 全集。
+#     拉到独立目录而非合并进本机 ~/.gemini/，避免污染 agy 自己的数据区（UUID 虽全局唯一不会碰撞，
+#     但混进别机会话会让 agy 的历史列表出现本机从没跑过的 session）。
+#     转换+导入由 agy-conversations-sync.sh 负责，它会同时扫本机和这一份。
+log "→ rsync MacBook agy 对话"
+AGY_MAC="$HOME/machine-data/macbook-agy"
+mkdir -p "$AGY_MAC/brain" "$AGY_MAC/conversations"
+
+# brain：只拉 transcript_full.jsonl。其余是 scratch / .user_uploaded 工作文件，
+# 占了 64M 里的绝大部分且对入库无用。
+rsync -az --partial --rsync-path=/opt/homebrew/bin/rsync --timeout=120 --prune-empty-dirs \
+  --include='*/' --include='transcript_full.jsonl' --exclude='*' \
+  -e "$SSH_OPTS" \
+  mac:~/.gemini/antigravity-cli/brain/ \
+  "$AGY_MAC/brain/" \
+  >> "$ROTATING_LOG" 2>&1 || { EC=$?; log "⚠️ agy brain rsync 失败 exit=$EC"; }
+
+# conversations：Antigravity IDE 的 .db。Alice 2026-07-30 明确「这些是转化的，你不要动他」——
+# 这里只做只读拉取，转换走 antigravity-db-to-jsonl.py 读副本，绝不回写源文件。
+rsync -az --partial --rsync-path=/opt/homebrew/bin/rsync --timeout=180 \
+  --include='*.db' --exclude='*' \
+  -e "$SSH_OPTS" \
+  mac:~/.gemini/antigravity/conversations/ \
+  "$AGY_MAC/conversations/" \
+  >> "$ROTATING_LOG" 2>&1 || { EC=$?; log "⚠️ agy conversations rsync 失败 exit=$EC"; }
+
+log "MacBook agy 已拉取：brain $(find "$AGY_MAC/brain" -name transcript_full.jsonl 2>/dev/null | wc -l | tr -d ' ') 个 transcript / conversations $(ls "$AGY_MAC/conversations"/*.db 2>/dev/null | wc -l | tr -d ' ') 个 db"
+
 # 5. 触发 incremental-ingest（无论上面有没有 partial 失败，已拉到的部分也值得 ingest）
 if [ $EC -eq 0 ]; then
   log "✅ rsync 完成，触发 ingest"
