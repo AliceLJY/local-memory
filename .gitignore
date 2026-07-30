@@ -12,3 +12,20 @@ skills/
 skills-lock.json
 __pycache__/
 *.pyc
+
+# ── 运行产物：绝不入库（2026-07-31 加）──────────────────────────
+# 教训：下面这些目录曾把真实记忆内容、真实对话、本机路径和机器名带进公开仓，
+# 挂了三个月才被发现。它们都是"拿真实数据跑出来的产物"，不是源码。
+# 生成类脚本请一律输出到这些目录，不要写到仓库其他位置。
+daily-reflections/
+eval/reports/
+reports/*-real-*.md
+scripts/viz-dashboard.html
+scripts/viz-*.html
+*.dashboard.html
+logs/
+*.log
+data/
+*.lance/
+*.db
+.recallnest-cache/
