@@ -504,7 +504,7 @@ RecallNest 起源于 [memory-lancedb-pro](https://github.com/CortexReach/memory-
 | [claude-code-studio](https://github.com/AliceLJY/claude-code-studio) | Claude Code 多会话协作平台 |
 | [cc-genius](https://github.com/AliceLJY/cc-genius) | Web 版 Claude 客户端（PWA）—— 自托管，iPad 可用 |
 | [agent-nexus](https://github.com/AliceLJY/agent-nexus) | 一键安装：记忆 + 远程控制 |
-| [cc-cabin](https://github.com/AliceLJY/cc-cabin) | Claude Code 完整工作流脚手架 |
+| cc-empire *(private)* | Claude Code 完整工作流脚手架 |
 
 </details>
 
