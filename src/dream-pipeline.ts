@@ -52,6 +52,19 @@ export interface DreamConfig {
    *  系统性饿死。真解是 session scope TTL(只 dream 近 N 天活跃的),不是把预算调大——
    *  scope 数 07-10 是 133、07-29 是 475,只增不减,加预算追不上。 */
   autoRunBudgetMs: number;
+  /** Scopes the `--auto` sweep hands off to a dedicated schedule instead of running inline.
+   *  Exact match only — a prefix rule would silently swallow future `memory-*` scopes.
+   *
+   *  2026-07-30 实测的动机：那轮 6 小时只处理了 15/507 个 scope，而这 15 个的规模是
+   *  118/37/15/190/3075/84/136/76/14/31/39/15/10/6/55 —— `memory` 一个 scope 独占
+   *  3075 条（全部 3891 条的 79%），其余都是几十条的小 scope。配合上面那条「每轮都从
+   *  列表头重来」，等于每天花掉整个预算巩固同一个巨型 scope，靠后的 492 个永远排不到。
+   *  把它挪进 com.recallnest.dream-memory-weekly（周日 12:00，走 DREAM_SCOPE=memory）
+   *  后，日常轮次的预算全部留给小 scope。
+   *
+   *  这是缓解不是根治：scope 只增不减仍在（07-10 是 133、07-29 是 475、07-30 是 507），
+   *  真解仍是 session scope TTL —— 只 dream 近 N 天活跃的。 */
+  autoExcludeScopes: readonly string[];
   /** GC config for prune phase */
   gc: AutoGcConfig;
 }
@@ -64,6 +77,7 @@ export const DEFAULT_DREAM_CONFIG: DreamConfig = {
   extractPatterns: true,
   maxEntriesPerRun: 500,
   autoRunBudgetMs: 6 * 60 * 60 * 1000,
+  autoExcludeScopes: ["memory"],
   gc: DEFAULT_AUTO_GC_CONFIG,
 };
 
@@ -379,6 +393,28 @@ export function shouldBlockDreamRun(params: {
   if (params.fatalFailures > 0) return true;
   if (params.totalScopes <= 0) return false;
   return params.transientFailures / params.totalScopes > DREAM_TRANSIENT_BLOCK_RATIO;
+}
+
+/**
+ * 把 `--auto` 的达标 scope 列表拆成「本轮跑」和「交给专用 schedule」两份。
+ *
+ * 精确匹配,不做前缀——前缀规则会连带吞掉将来可能出现的 `memory-*`。
+ * 保持原顺序:调用方靠列表顺序决定谁先跑,排序策略的改动不该藏进这个函数。
+ *
+ * 用处见 DreamConfig.autoExcludeScopes 的注释:2026-07-30 实测 `memory` 一个 scope
+ * 独占 79% 的记忆条数,把它挪走后日常轮次的 6h 预算才轮得到靠后的小 scope。
+ */
+export function partitionAutoDreamScopes(
+  scopes: readonly string[],
+  excluded: readonly string[],
+): { run: string[]; deferred: string[] } {
+  const excludeSet = new Set(excluded);
+  const run: string[] = [];
+  const deferred: string[] = [];
+  for (const scope of scopes) {
+    (excludeSet.has(scope) ? deferred : run).push(scope);
+  }
+  return { run, deferred };
 }
 
 // ---------------------------------------------------------------------------

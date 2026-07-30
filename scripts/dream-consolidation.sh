@@ -10,18 +10,34 @@ cd "$(dirname "$0")/.."
 LOG_DIR="${HOME}/recallnest/logs"
 mkdir -p "$LOG_DIR"
 
-# Last run state (调度面调试 + 漏跑判断)
-LAST_RUN_FILE="${HOME}/recallnest/data/.last-dream-run"
 NOW=$(date '+%Y-%m-%d %H:%M:%S')
 
 # dream --auto: 从 activity-counter 拉写计数达标(>= minWritesForDream)的所有 scope,逐个跑 dream
 # (单 scope 失败不阻断其他)。per-scope 计数 = 每个活跃 scope 独立触发,不再全局单点。
-# DREAM_SCOPE 保留仅供手动单 scope 调试(不走 --auto 时)。
-DREAM_SCOPE="${DREAM_SCOPE:-cc}"
+#
+# 2026-07-30: DREAM_SCOPE 从"仅供手动调试"的死变量(以前设了也没用——第 47 行硬编码 --auto)
+# 接成真正的模式开关。动机:巨型 scope 需要独立排期,否则它一个人吃光 --auto 的 wall-clock
+# 预算——07-30 那轮 6h 只跑完 15/507 个 scope,而 memory 一个占了全部记忆条数的 79%。
+#   未设 DREAM_SCOPE  → --auto,日常轮次(com.recallnest.dream-consolidation,每天 04:00)
+#   DREAM_SCOPE=<s>   → --scope <s>,专用轮次(com.recallnest.dream-memory-weekly,周日 12:00)
+# 排除名单在代码侧:dream-pipeline.ts 的 DreamConfig.autoExcludeScopes,两边要对得上。
+#
+# Last run state (调度面调试 + 漏跑判断) 也按模式分开,否则两个 job 会互相盖掉对方的
+# "上次跑成功"时间,漏跑判断直接失真。
+if [ -n "${DREAM_SCOPE:-}" ]; then
+    DREAM_ARGS="--scope $DREAM_SCOPE"
+    MODE_LABEL="scope=$DREAM_SCOPE"
+    LAST_RUN_FILE="${HOME}/recallnest/data/.last-dream-run-${DREAM_SCOPE}"
+else
+    DREAM_ARGS="--auto"
+    # 这个字符串要和原来逐字一致:dream-checkup.sh 靠 "Dream consolidation starting" 起止行取耗时。
+    MODE_LABEL="auto: 所有写计数达标的 scope"
+    LAST_RUN_FILE="${HOME}/recallnest/data/.last-dream-run"
+fi
 
 # Dry-run mode: DREAM_DRY_RUN=1 ./dream-consolidation.sh
 if [ "${DREAM_DRY_RUN:-0}" = "1" ]; then
-    echo "[$NOW] DRY RUN — would invoke dream pipeline (scope=$DREAM_SCOPE); skipping"
+    echo "[$NOW] DRY RUN — would invoke dream pipeline ($MODE_LABEL); skipping"
     exit 0
 fi
 
@@ -32,7 +48,7 @@ if [ "${DREAM_FORCE:-0}" = "1" ]; then
     echo "[$NOW] FORCE mode — skipping min-writes gate"
 fi
 
-echo "[$NOW] Dream consolidation starting (auto: 所有写计数达标的 scope)"
+echo "[$NOW] Dream consolidation starting ($MODE_LABEL)"
 
 DREAM_OUT=$(mktemp /tmp/rn-dream.XXXXXX)
 trap "rm -f $DREAM_OUT" EXIT
@@ -44,7 +60,7 @@ for attempt in 1 2 3; do
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] dream 尝试 $attempt/3"
     : > "$DREAM_OUT"
 
-    "$HOME/.bun/bin/bun" run "$HOME/recallnest/src/cli.ts" dream --auto $FORCE_FLAG 2>&1 | tee "$DREAM_OUT"
+    "$HOME/.bun/bin/bun" run "$HOME/recallnest/src/cli.ts" dream $DREAM_ARGS $FORCE_FLAG 2>&1 | tee "$DREAM_OUT"
     DREAM_EXIT=${PIPESTATUS[0]}
 
     STATUS_LINE=$(grep -aoE '\[\[DREAM_STATUS\]\] (ok|blocked|skip)' "$DREAM_OUT" 2>/dev/null | tail -1)

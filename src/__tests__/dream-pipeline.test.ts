@@ -456,7 +456,7 @@ describe("semanticClusterThreshold default", () => {
 // --auto 失败分诊 + wall-clock 预算（2026-07-29 dream blocked 根因修复）
 // ---------------------------------------------------------------------------
 
-import { classifyDreamFailure, shouldBlockDreamRun, DREAM_TRANSIENT_BLOCK_RATIO } from "../dream-pipeline.js";
+import { classifyDreamFailure, shouldBlockDreamRun, DREAM_TRANSIENT_BLOCK_RATIO, partitionAutoDreamScopes } from "../dream-pipeline.js";
 
 describe("classifyDreamFailure", () => {
   // 下面三条都是 dream-consolidation-launchd.log 里的生产原文，不是构造的样本。
@@ -520,5 +520,53 @@ describe("autoRunBudgetMs default", () => {
     // 07-24 那轮 4 天 15 小时，堵死三天调度。预算是防跨天的兜底闸。
     expect(DEFAULT_DREAM_CONFIG.autoRunBudgetMs).toBe(6 * 60 * 60 * 1000);
     expect(DEFAULT_DREAM_CONFIG.autoRunBudgetMs).toBeLessThan(24 * 60 * 60 * 1000);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 巨型 scope 移交专用 schedule（2026-07-30 预算被单个 scope 吃光的修复）
+// ---------------------------------------------------------------------------
+
+describe("autoExcludeScopes / partitionAutoDreamScopes", () => {
+  it("hands memory off by default", () => {
+    // 07-30 实测：6h 的 --auto 只跑完 15/507，而 memory 一个 scope 占 3075/3891 条（79%）。
+    // 它留在日常轮次里，等于每天拿整个预算巩固同一个 scope，靠后的 492 个永远排不到。
+    expect(DEFAULT_DREAM_CONFIG.autoExcludeScopes).toContain("memory");
+  });
+
+  it("splits the sweep list without reordering either side", () => {
+    // 顺序必须原样保留：调用方靠列表顺序决定谁先跑，排序策略不该藏在这个函数里。
+    const { run, deferred } = partitionAutoDreamScopes(
+      ["cc:82a919ea", "cc:f23f3893", "memory", "global", "cc:b11f3d48"],
+      ["memory"],
+    );
+    expect(run).toEqual(["cc:82a919ea", "cc:f23f3893", "global", "cc:b11f3d48"]);
+    expect(deferred).toEqual(["memory"]);
+  });
+
+  it("matches exactly, never by prefix", () => {
+    // 前缀规则会顺手吞掉将来的 memory-* / memory:* scope —— 那是静默失效：它们既不在
+    // 日常轮次里跑，也没有专用 job 负责，谁都不会发现。
+    const { run, deferred } = partitionAutoDreamScopes(
+      ["memory", "memory-archive", "memory:cc", "cc:memory"],
+      ["memory"],
+    );
+    expect(deferred).toEqual(["memory"]);
+    expect(run).toEqual(["memory-archive", "memory:cc", "cc:memory"]);
+  });
+
+  it("is a no-op when nothing is excluded", () => {
+    const scopes = ["cc:aaa", "global"];
+    const { run, deferred } = partitionAutoDreamScopes(scopes, []);
+    expect(run).toEqual(scopes);
+    expect(deferred).toEqual([]);
+  });
+
+  it("can defer every eligible scope, which is not the same as an empty sweep", () => {
+    // cli.ts 靠 eligible.length 区分「真没人达标」和「达标的全被挪走了」——两种空混成
+    // 一句话，排障会从第一步就跑偏。
+    const { run, deferred } = partitionAutoDreamScopes(["memory"], ["memory"]);
+    expect(run).toEqual([]);
+    expect(deferred).toEqual(["memory"]);
   });
 });

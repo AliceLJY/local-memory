@@ -38,7 +38,7 @@ import {
 import { runDoctor, formatDoctorResults } from "./doctor.js";
 import { persistCaseMemory, persistMemory, persistWorkflowPattern } from "./capture-engine.js";
 import { scanMemoryPromotions, buildPromoteScanDeps, formatPromoteScanResult } from "./memory-promotion.js";
-import { runDream, formatDreamResult, DEFAULT_DREAM_CONFIG, classifyDreamFailure, shouldBlockDreamRun } from "./dream-pipeline.js";
+import { runDream, formatDreamResult, DEFAULT_DREAM_CONFIG, classifyDreamFailure, shouldBlockDreamRun, partitionAutoDreamScopes } from "./dream-pipeline.js";
 import { listScopesAboveThreshold } from "./activity-counter.js";
 import {
   CaseMemoryInputSchema,
@@ -1598,9 +1598,23 @@ program
     const kgStore = isKGModeEnabled() ? new KGStore({ dbPath: store.dbPath }) : null;
 
     if (options.auto) {
-      const scopes = listScopesAboveThreshold(DEFAULT_DREAM_CONFIG.minWritesForDream, { statsPath: activityStatsPath });
+      const eligible = listScopesAboveThreshold(DEFAULT_DREAM_CONFIG.minWritesForDream, { statsPath: activityStatsPath });
+      // 巨型 scope 交给专用 schedule,不占日常轮次的 wall-clock 预算(理由见
+      // DreamConfig.autoExcludeScopes:07-30 那轮 6h 只跑了 15/507,而 memory 独占 79% 的条数)。
+      const { run: scopes, deferred } = partitionAutoDreamScopes(eligible, DEFAULT_DREAM_CONFIG.autoExcludeScopes);
+      if (deferred.length > 0) {
+        // 不静默:被挪走的 scope 必须在日志里看得见,否则"今天怎么没跑 memory"只能靠翻代码回答。
+        // 前缀刻意用 `[dream]` 而不是 `dream --auto:`——后者是 dream-checkup.sh 抓「达标 scope 数」
+        // 的锚点,多一行同前缀的会混进它的取数。
+        console.log(`[dream] ${deferred.length} 个 scope 交给专用 schedule，本轮不跑 → ${deferred.join(", ")}`);
+      }
       if (scopes.length === 0) {
-        console.log("dream --auto: 无达标 scope（写计数均低于门槛）");
+        // 两种空:一种是真没人达标,一种是达标的全被挪走了——混成一句会让排障从这里开始跑偏。
+        console.log(
+          eligible.length === 0
+            ? "dream --auto: 无达标 scope（写计数均低于门槛）"
+            : "dream --auto: 达标 scope 全部交给专用 schedule，本轮无事可做",
+        );
         console.log("[[DREAM_STATUS]] skip");
         process.exit(0);
       }
