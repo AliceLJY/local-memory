@@ -1,0 +1,90 @@
+[
+  {
+    "title": "RecallNest sparse startup context cleanup",
+    "problem": "resume_context was returning noisy transcript fragments and unrelated memories instead of a clean RecallNest continuity handoff.",
+    "context": "This showed up when a fresh RecallNest window recovered issue chatter or unrelated pins before the actual project state.",
+    "solutionSteps": [
+      "Filter low-signal stable recall so raw transcript fragments and issue chatter do not enter startup context.",
+      "Backfill stable context from checkpoint focus, summary, and decisions when a project checkpoint exists.",
+      "Use a lightweight task focus fallback only when no checkpoint-backed context is available."
+    ],
+    "outcome": "Fresh RecallNest windows now recover checkpoint-led or task-led context instead of noisy transcript snippets.",
+    "scope": "recallnest",
+    "tools": ["resume_context", "checkpoint_session"],
+    "tags": ["continuity", "recallnest", "startup-context"]
+  },
+  {
+    "title": "Three-terminal continuity trigger validation",
+    "problem": "Claude Code, Codex, and Gemini CLI were configured with MCP, but fresh windows were not consistently calling resume_context or checkpoint_session at the right time.",
+    "context": "The fix had to live in the integration layer, not only in RecallNest core retrieval logic.",
+    "solutionSteps": [
+      "Install managed continuity rules into each terminal's global instruction file during setup.",
+      "Make the rules explicitly require resume_context before repo exploration on continue-style prompts.",
+      "Validate the behavior in a fresh terminal window and confirm checkpoint_session is called before handoff."
+    ],
+    "outcome": "The three terminals now have a working continuity trigger loop, so startup recall and handoff checkpoints happen without manual reminders.",
+    "scope": "recallnest",
+    "tools": ["resume_context", "checkpoint_session"],
+    "tags": ["continuity", "integration", "three-terminals"]
+  },
+  {
+    "title": "RecallNest scope fallback cleanup",
+    "problem": "resume_context stayed too narrow on project scope and surfaced ongoing notes instead of stable handoff context.",
+    "context": "This showed up after checkpoint isolation, when project continuity still preferred plan-like transcript snippets over durable cases.",
+    "solutionSteps": [
+      "Reject plan-like non-durable snippets during case and pattern selection.",
+      "Prefer durable or explicitly structured task results over raw transcript notes.",
+      "Trigger fallback queries only after filtered task results are empty."
+    ],
+    "outcome": "RecallNest project continuity now surfaces durable case memories instead of raw transcript fragments.",
+    "tools": ["resume_context", "search_memory", "eval:continuity"],
+    "tags": ["continuity", "recallnest", "source-aware"],
+    "scope": "recallnest",
+    "importance": 0.86
+  },
+  {
+    "title": "Continuity eval checkpoint isolation",
+    "problem": "continuity eval results drifted because they were reading whichever live latest checkpoint happened to exist locally.",
+    "context": "The noisy checkpoint input made eval regressions look worse than the actual continuity composer behavior.",
+    "solutionSteps": [
+      "Allow continuity eval cases to define their own checkpoint fixtures.",
+      "Build an in-memory checkpoint store from the fixture set instead of reading live session-checkpoints.",
+      "Re-run continuity eval and confirm checkpoint summaries come from the case fixture."
+    ],
+    "outcome": "continuity eval became deterministic and no longer depends on live latest checkpoint state.",
+    "tools": ["eval:continuity", "resume_context", "checkpoint_session"],
+    "tags": ["continuity", "eval", "checkpoint"],
+    "scope": "recallnest",
+    "importance": 0.85
+  },
+  {
+    "title": "RecallNest MCP transport regression",
+    "problem": "Scoped RecallNest continuity work around MCP transport could still drift unless the project-specific transport fixes were easy to recover.",
+    "context": "This came up while expanding mixed-project continuity regressions for transport-related task terms.",
+    "solutionSteps": [
+      "Store the RecallNest transport rollout as a scoped workflow pattern instead of leaving it in transient notes.",
+      "Store the transport regression cleanup as a scoped case so project-specific fixes can reappear in recentCases.",
+      "Filter scoped task results so foreign project transport rollouts do not replace RecallNest transport context."
+    ],
+    "outcome": "Scoped RecallNest transport work now recalls RecallNest-specific rollout and fix context instead of generic or foreign project results.",
+    "tools": ["resume_context", "search_memory", "eval:continuity"],
+    "tags": ["continuity", "scope", "transport", "mcp"],
+    "scope": "project:recallnest",
+    "importance": 0.87
+  },
+  {
+    "title": "Telegram bridge MCP transport regression",
+    "problem": "Bridge-specific MCP transport fixes should stay recoverable inside the bridge project without leaking into other scoped continuity requests.",
+    "context": "The bridge project uses similar transport nouns, so foreign-project filtering must still keep the bridge fixes isolated.",
+    "solutionSteps": [
+      "Store the bridge transport rollout as a bridge-scoped workflow pattern.",
+      "Store the bridge transport regression as a bridge-scoped case.",
+      "Rely on scoped task-result filtering so bridge transport fixes do not bleed into RecallNest continuity."
+    ],
+    "outcome": "Bridge transport continuity stays available inside the bridge project and stays out of unrelated project scopes.",
+    "tools": ["resume_context", "search_memory"],
+    "tags": ["continuity", "scope", "transport", "bridge"],
+    "scope": "project:telegram-bridge",
+    "importance": 0.74
+  }
+]

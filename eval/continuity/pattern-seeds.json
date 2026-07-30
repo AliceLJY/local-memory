@@ -1,0 +1,100 @@
+[
+  {
+    "title": "Cross-window continuity handoff",
+    "trigger": "When opening a fresh terminal window for the same project or after context loss",
+    "steps": [
+      "Call resume_context before coding.",
+      "Read stable context and the latest checkpoint before planning work.",
+      "Continue from the recovered state instead of restating the whole project."
+    ],
+    "outcome": "A fresh window starts with the right project background and fewer manual reminders.",
+    "scope": "recallnest",
+    "tools": ["resume_context", "latest_checkpoint"],
+    "tags": ["continuity", "handoff"],
+    "importance": 0.92
+  },
+  {
+    "title": "Checkpoint before switching windows",
+    "trigger": "When leaving an active coding window that will likely be resumed later",
+    "steps": [
+      "Summarize the current task, decisions, open loops, and next actions.",
+      "Write checkpoint_session with the current sessionId or shared scope.",
+      "Only then close the window or switch terminals."
+    ],
+    "outcome": "The next window can recover active work state without depending on raw transcript recall.",
+    "scope": "recallnest",
+    "tools": ["checkpoint_session"],
+    "tags": ["continuity", "checkpoint"],
+    "importance": 0.9
+  },
+  {
+    "title": "Promote recurring continuity workflow",
+    "trigger": "When the same startup or handoff workflow repeats across multiple windows",
+    "steps": [
+      "Rewrite the workflow as title, trigger, ordered steps, and expected outcome.",
+      "Store it with store_workflow_pattern or POST /v1/pattern.",
+      "Prefer the stored durable pattern over temporary fallback rules in future windows."
+    ],
+    "outcome": "Continuity logic gradually moves from built-in fallback to reusable durable patterns.",
+    "scope": "recallnest",
+    "tools": ["store_workflow_pattern", "/v1/pattern"],
+    "tags": ["continuity", "promotion"],
+    "importance": 0.88
+  },
+  {
+    "title": "Recall before repo exploration",
+    "trigger": "When a fresh window continues an existing project and startup context still looks sparse",
+    "steps": [
+      "Call resume_context before reading local files or docs.",
+      "If stable context is still thin, run search_memory with the project name and task nouns.",
+      "Only after recall is established, inspect the repo and continue implementation."
+    ],
+    "outcome": "Fresh windows recover both stable background and task-specific memory before local exploration drifts.",
+    "scope": "recallnest",
+    "tools": ["resume_context", "search_memory"],
+    "tags": ["continuity", "startup", "retrieval"],
+    "importance": 0.91
+  },
+  {
+    "title": "Scoped project continuity recall",
+    "trigger": "When continuing a named project that already has a shared scope or project key",
+    "steps": [
+      "Call resume_context with the project scope when it is known.",
+      "Prefer scoped durable entities, patterns, and cases before falling back to global memory.",
+      "Use search_memory only after scoped continuity results are reviewed."
+    ],
+    "outcome": "Project-specific context appears before unrelated global memories in fresh windows.",
+    "scope": "recallnest",
+    "tools": ["resume_context", "latest_checkpoint", "search_memory"],
+    "tags": ["continuity", "scope", "project"],
+    "importance": 0.89
+  },
+  {
+    "title": "RecallNest MCP transport rollout",
+    "trigger": "When RecallNest continuity work touches MCP transport wiring under project scope",
+    "steps": [
+      "Call resume_context with project:recallnest before transport changes.",
+      "Review scoped patterns and cases for prior transport fixes before editing adapters.",
+      "Keep transport rollout notes scoped to RecallNest so other projects cannot bleed into startup context."
+    ],
+    "outcome": "RecallNest transport changes recover project-specific continuity without leaking neighboring project rollout notes.",
+    "scope": "project:recallnest",
+    "tools": ["resume_context", "search_memory", "eval:continuity"],
+    "tags": ["continuity", "scope", "transport", "mcp"],
+    "importance": 0.87
+  },
+  {
+    "title": "Telegram bridge MCP transport rollout",
+    "trigger": "When Telegram bridge relay work touches MCP transport wiring under project scope",
+    "steps": [
+      "Call resume_context with project:telegram-bridge before bridge transport edits.",
+      "Review bridge-specific rollout notes before changing relay adapters.",
+      "Keep bridge transport rollout guidance isolated from other projects."
+    ],
+    "outcome": "Telegram bridge transport changes recover bridge-specific continuity without contaminating other project scopes.",
+    "scope": "project:telegram-bridge",
+    "tools": ["resume_context", "search_memory"],
+    "tags": ["continuity", "scope", "transport", "bridge"],
+    "importance": 0.74
+  }
+]

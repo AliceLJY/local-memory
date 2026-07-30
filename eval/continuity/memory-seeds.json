@@ -1,0 +1,26 @@
+[
+  {
+    "text": "RecallNest is the shared memory layer for Claude Code, Codex, and Gemini CLI.",
+    "category": "entities",
+    "scope": "recallnest",
+    "importance": 0.92,
+    "tags": ["recallnest", "continuity", "project"],
+    "canonicalKey": "entities:recallnest:shared-memory-layer"
+  },
+  {
+    "text": "RecallNest continuity revolves around three primitives: store_memory for durable facts, checkpoint_session for live handoff state, and resume_context for startup recovery.",
+    "category": "entities",
+    "scope": "recallnest",
+    "importance": 0.89,
+    "tags": ["recallnest", "continuity", "architecture"],
+    "canonicalKey": "entities:recallnest:continuity-primitives"
+  },
+  {
+    "text": "RecallNest exposes continuity through both HTTP API and MCP, so different agents can share one memory layer and the same handoff model.",
+    "category": "entities",
+    "scope": "recallnest",
+    "importance": 0.84,
+    "tags": ["recallnest", "api", "mcp"],
+    "canonicalKey": "entities:recallnest:api-mcp-surface"
+  }
+]

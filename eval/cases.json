@@ -1,0 +1,182 @@
+[
+  {
+    "name": "telegram_bridge",
+    "query": "telegram bridge",
+    "profile": "debug",
+    "limit": 5,
+    "expectAny": ["telegram-cli-bridge", "telegram-ai-bridge", "Telegram bridge"],
+    "expectScopePrefixes": ["cc", "asset"],
+    "notes": "Bridge maintenance and migration history should be easy to recall."
+  },
+  {
+    "name": "openclaw_memory",
+    "query": "OpenClaw 记忆系统",
+    "profile": "writing",
+    "limit": 6,
+    "expectAny": ["OpenClaw", "记忆系统", "memory-lancedb-pro", "LanceDB"],
+    "expectScopePrefixes": ["cc", "memory", "asset"],
+    "notes": "Core memory architecture discussion should be recoverable."
+  },
+  {
+    "name": "writing_style",
+    "query": "写作风格 口语化 不端着",
+    "profile": "writing",
+    "limit": 5,
+    "expectAny": ["口语化", "不端着", "可自嘲", "写作风格", "不要太正式", "别装", "语言指纹"],
+    "expectScopePrefixes": ["cc", "asset"],
+    "notes": "Writing-style preferences. Use expectAny with synonyms to avoid penalizing paraphrase."
+  },
+  {
+    "name": "visual_style",
+    "query": "审美偏好 手绘 撞色",
+    "profile": "default",
+    "limit": 5,
+    "expectAny": ["手绘", "涂鸦", "撞色", "高对比", "审美", "配图风格", "插画"],
+    "expectScopePrefixes": ["cc", "asset"],
+    "notes": "Visual preferences. Loosened from expectAll to expectAny with synonyms."
+  },
+  {
+    "name": "working_relationship",
+    "query": "我们相处态度 怎么聊",
+    "profile": "default",
+    "limit": 5,
+    "expectAny": ["直接", "少空话", "逻辑", "讲清楚", "表达方式", "Claude Code", "好搭子", "口语化", "不端着", "对话风格"],
+    "expectScopePrefixes": ["cc", "asset"],
+    "notes": "Abstract relationship queries. Broadened expectAny synonym set."
+  },
+  {
+    "name": "aws_ssh_access",
+    "query": "aws bot ssh 怎么连",
+    "profile": "debug",
+    "limit": 6,
+    "expectAny": ["AWS bot", "aws bot", "ssh", "key2", "Discord", "容器", "EC2", "aws-podcast", "hermes-aws"],
+    "expectScopePrefixes": ["cc"],
+    "notes": "AWS access query. Lengthened query and expanded synonyms; pure 'aws ssh' was too short for retriever."
+  },
+  {
+    "name": "fuzzy_bot_crash",
+    "query": "上次那个 bot 突然挂了怎么排查",
+    "profile": "debug",
+    "limit": 5,
+    "expectAny": ["崩溃", "crash", "error", "报错", "排查", "修复", "docker", "重启", "service", "launchd", "503", "exit", "OOM"],
+    "expectScopePrefixes": ["cc"],
+    "notes": "Fuzzy colloquial query about bot crash. Expanded debug-vocab synonyms."
+  },
+  {
+    "name": "fuzzy_ai_feelings",
+    "query": "之前聊过 AI 到底有没有感受",
+    "profile": "writing",
+    "limit": 5,
+    "expectAny": ["意识", "consciousness", "experiencing", "感受", "自由意志", "sentience", "AI照见", "感觉", "心智", "存在"],
+    "expectScopePrefixes": ["cc"],
+    "notes": "Vague conversational query about AI consciousness. Added more synonyms."
+  },
+  {
+    "name": "fuzzy_image_style",
+    "query": "那个配图风格轮换的逻辑是怎么搞的",
+    "profile": "default",
+    "limit": 5,
+    "expectAny": ["风格", "style", "轮换", "catalog", "配图"],
+    "expectScopePrefixes": ["cc"],
+    "notes": "Casual question about image style rotation should find implementation discussions."
+  },
+  {
+    "name": "chatgpt_subscription_history",
+    "query": "我的 chatgpt 订阅是谁帮我买的",
+    "profile": "default",
+    "limit": 5,
+    "expectAny": ["群友", "加拿大", "堂姐", "澳洲", "代订", "顶号", "subscription", "ChatGPT Plus", "aliceljyalice"],
+    "expectScopePrefixes": ["cc"],
+    "notes": "Life fact: ChatGPT subscription provenance. FAILURES 2026-05-12. Expected to fail until capture hook (step 3) lands."
+  },
+  {
+    "name": "email_archive_lookup",
+    "query": "翻一下我邮箱里之前你帮我写的那封信",
+    "profile": "default",
+    "limit": 5,
+    "expectAny": ["邮箱", "邮件", "gmail", "draft", "信", "回信", "草稿"],
+    "expectScopePrefixes": ["cc"],
+    "notes": "Implicit 'go look at my email' should trigger recall of past email-drafting sessions. FAILURES 2026-05-12."
+  },
+  {
+    "name": "cross_window_realtime_sync",
+    "query": "刚刚隔壁窗口和你讨论的那事",
+    "profile": "default",
+    "limit": 5,
+    "expectAny": ["隔壁窗口", "其他窗口", "另一个窗口", "刚刚讨论", "之前不是说过", "上个 session", "session", "刚才那个"],
+    "expectScopePrefixes": ["cc"],
+    "notes": "Cross-window real-time sync gap. FAILURES 2026-05-10. Needs auto-checkpoint hook."
+  },
+  {
+    "name": "taobao_mcp_provenance",
+    "query": "taobao 这个 mcp 是官方的吗",
+    "profile": "default",
+    "limit": 5,
+    "expectAny": ["taobao", "淘宝", "MCP", "官方", "source", "github.com", "mcp-server", "provenance"],
+    "expectScopePrefixes": ["cc"],
+    "notes": "MCP tool provenance (official vs third-party). FAILURES 2026-05-01. Capture gap."
+  },
+  {
+    "name": "recallnest_alias_resolution",
+    "query": "帮我看我的记忆项目",
+    "profile": "default",
+    "limit": 5,
+    "expectAny": ["recallnest", "RecallNest", "记忆项目", "AliceLJY/recallnest", "MemoryStore", "LanceDB", "MCP"],
+    "expectScopePrefixes": ["cc", "project:recallnest"],
+    "notes": "Entity alias: '我的记忆项目' → recallnest. FAILURES 2026-04-25. Needs alias dictionary (step 2)."
+  },
+  {
+    "name": "store_memory_promise_drift",
+    "query": "之前你答应过的那些事记进 memory 了吗",
+    "profile": "default",
+    "limit": 5,
+    "expectAny": ["store_memory", "记忆", "memory", "承诺", "答应", "audit", "落地", "已存", "未存"],
+    "expectScopePrefixes": ["cc"],
+    "notes": "store_memory promise drift. FAILURES 2026-04-24. Needs audit trail."
+  },
+  {
+    "name": "skill_lifecycle_amnesia",
+    "query": "github-analyzer 这个 skill 还在吗",
+    "profile": "default",
+    "limit": 5,
+    "expectAny": ["github-analyzer", "repo-insight", "skill", "废弃", "替换", "deprecated", "已删除", "skills/"],
+    "expectScopePrefixes": ["cc"],
+    "notes": "Skill lifecycle (replace/deprecate). FAILURES 2026-04-21. Needs scan_skill_promotions extension."
+  },
+  {
+    "name": "rn_self_introspection",
+    "query": "recallnest 都有哪些 mcp tool",
+    "profile": "default",
+    "limit": 6,
+    "expectAny": ["search_memory", "store_memory", "checkpoint", "resume_context", "MCP tool", "tools", "capability"],
+    "expectScopePrefixes": ["cc", "project:recallnest"],
+    "notes": "RN self-introspection. FAILURES 2026-04-20. Capability digest needed."
+  },
+  {
+    "name": "rn_ingest_telemetry",
+    "query": "recallnest 这两天 ingest 跑得怎么样",
+    "profile": "default",
+    "limit": 5,
+    "expectAny": ["ingest", "import_conversations", "成功", "失败", "已导入", "telemetry", "weekly-distill", "条目数"],
+    "expectScopePrefixes": ["cc", "project:recallnest"],
+    "notes": "RN ingest telemetry as queryable events. FAILURES 2026-04-20."
+  },
+  {
+    "name": "mini_migration_scope_drift",
+    "query": "mini 搬迁那次配置是怎么处理的",
+    "profile": "default",
+    "limit": 5,
+    "expectAny": ["mini", "搬迁", "迁移", "migration", "mini-migration", "macbook", "双机"],
+    "expectScopePrefixes": ["cc"],
+    "notes": "Scope spelling drift (mini-migration vs migration:mini). FAILURES 2026-04-17. Needs scope normalize OR 0-hit fallback."
+  },
+  {
+    "name": "infra_endpoint_capture",
+    "query": "cc-genius tailscale 地址",
+    "profile": "default",
+    "limit": 5,
+    "expectAny": ["tailscale", "cc-genius", "endpoint", "100.", "ts.net", "网址", "URL", "ip"],
+    "expectScopePrefixes": ["cc"],
+    "notes": "Infrastructure endpoint hard fact. FAILURES 2026-04-14. Needs infra entity type."
+  }
+]

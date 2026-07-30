@@ -1,0 +1,278 @@
+[
+  {
+    "name": "scope-727da608-v1-WITH",
+    "query": "recallnest 的 capture 用不用 LLM，是不是纯 heuristic",
+    "profile": "fact-check",
+    "limit": 8,
+    "targets": [
+      "727da608"
+    ],
+    "expectTopK": 3,
+    "scope": "project:recallnest",
+    "notes": "P1.1 scope 影响 — 目标 727da608 变体1 带 scope=project:recallnest"
+  },
+  {
+    "name": "scope-727da608-v1-WITHOUT",
+    "query": "recallnest 的 capture 用不用 LLM，是不是纯 heuristic",
+    "profile": "fact-check",
+    "limit": 8,
+    "targets": [
+      "727da608"
+    ],
+    "expectTopK": 3,
+    "notes": "P1.1 scope 影响 — 目标 727da608 变体1 不带 scope(裸 retrieve)"
+  },
+  {
+    "name": "scope-727da608-v2-WITH",
+    "query": "ingest 去重为什么会把携带新信息的内容误删",
+    "profile": "fact-check",
+    "limit": 8,
+    "targets": [
+      "727da608"
+    ],
+    "expectTopK": 3,
+    "scope": "project:recallnest",
+    "notes": "P1.1 scope 影响 — 目标 727da608 变体2 带 scope=project:recallnest"
+  },
+  {
+    "name": "scope-727da608-v2-WITHOUT",
+    "query": "ingest 去重为什么会把携带新信息的内容误删",
+    "profile": "fact-check",
+    "limit": 8,
+    "targets": [
+      "727da608"
+    ],
+    "expectTopK": 3,
+    "notes": "P1.1 scope 影响 — 目标 727da608 变体2 不带 scope(裸 retrieve)"
+  },
+  {
+    "name": "scope-727da608-v3-WITH",
+    "query": "recallnest 早期 ingest 排除太厉害是什么原因、后来怎么修的",
+    "profile": "fact-check",
+    "limit": 8,
+    "targets": [
+      "727da608"
+    ],
+    "expectTopK": 3,
+    "scope": "project:recallnest",
+    "notes": "P1.1 scope 影响 — 目标 727da608 变体3 带 scope=project:recallnest"
+  },
+  {
+    "name": "scope-727da608-v3-WITHOUT",
+    "query": "recallnest 早期 ingest 排除太厉害是什么原因、后来怎么修的",
+    "profile": "fact-check",
+    "limit": 8,
+    "targets": [
+      "727da608"
+    ],
+    "expectTopK": 3,
+    "notes": "P1.1 scope 影响 — 目标 727da608 变体3 不带 scope(裸 retrieve)"
+  },
+  {
+    "name": "scope-a2fe9b62-v1-WITH",
+    "query": "mem0 对 recallnest 有没有借鉴价值",
+    "profile": "fact-check",
+    "limit": 8,
+    "targets": [
+      "a2fe9b62"
+    ],
+    "expectTopK": 3,
+    "scope": "project:recallnest",
+    "notes": "P1.1 scope 影响 — 目标 a2fe9b62 变体1 带 scope=project:recallnest"
+  },
+  {
+    "name": "scope-a2fe9b62-v1-WITHOUT",
+    "query": "mem0 对 recallnest 有没有借鉴价值",
+    "profile": "fact-check",
+    "limit": 8,
+    "targets": [
+      "a2fe9b62"
+    ],
+    "expectTopK": 3,
+    "notes": "P1.1 scope 影响 — 目标 a2fe9b62 变体1 不带 scope(裸 retrieve)"
+  },
+  {
+    "name": "scope-a2fe9b62-v2-WITH",
+    "query": "mem0 的招牌设计 recallnest 有没有独立实现",
+    "profile": "fact-check",
+    "limit": 8,
+    "targets": [
+      "a2fe9b62"
+    ],
+    "expectTopK": 3,
+    "scope": "project:recallnest",
+    "notes": "P1.1 scope 影响 — 目标 a2fe9b62 变体2 带 scope=project:recallnest"
+  },
+  {
+    "name": "scope-a2fe9b62-v2-WITHOUT",
+    "query": "mem0 的招牌设计 recallnest 有没有独立实现",
+    "profile": "fact-check",
+    "limit": 8,
+    "targets": [
+      "a2fe9b62"
+    ],
+    "expectTopK": 3,
+    "notes": "P1.1 scope 影响 — 目标 a2fe9b62 变体2 不带 scope(裸 retrieve)"
+  },
+  {
+    "name": "scope-a2fe9b62-v3-WITH",
+    "query": "mem0 借鉴审计的核心结论是什么",
+    "profile": "fact-check",
+    "limit": 8,
+    "targets": [
+      "a2fe9b62"
+    ],
+    "expectTopK": 3,
+    "scope": "project:recallnest",
+    "notes": "P1.1 scope 影响 — 目标 a2fe9b62 变体3 带 scope=project:recallnest"
+  },
+  {
+    "name": "scope-a2fe9b62-v3-WITHOUT",
+    "query": "mem0 借鉴审计的核心结论是什么",
+    "profile": "fact-check",
+    "limit": 8,
+    "targets": [
+      "a2fe9b62"
+    ],
+    "expectTopK": 3,
+    "notes": "P1.1 scope 影响 — 目标 a2fe9b62 变体3 不带 scope(裸 retrieve)"
+  },
+  {
+    "name": "scope-491c8b30-v1-WITH",
+    "query": "工作记忆要不要做 scope 隔离",
+    "profile": "default",
+    "limit": 8,
+    "targets": [
+      "491c8b30"
+    ],
+    "expectTopK": 3,
+    "scope": "project:recallnest",
+    "notes": "P1.1 scope 影响 — 目标 491c8b30 变体1 带 scope=project:recallnest"
+  },
+  {
+    "name": "scope-491c8b30-v1-WITHOUT",
+    "query": "工作记忆要不要做 scope 隔离",
+    "profile": "default",
+    "limit": 8,
+    "targets": [
+      "491c8b30"
+    ],
+    "expectTopK": 3,
+    "notes": "P1.1 scope 影响 — 目标 491c8b30 变体1 不带 scope(裸 retrieve)"
+  },
+  {
+    "name": "scope-491c8b30-v2-WITH",
+    "query": "单位/工作记忆该不该 forget 清理",
+    "profile": "default",
+    "limit": 8,
+    "targets": [
+      "491c8b30"
+    ],
+    "expectTopK": 3,
+    "scope": "project:recallnest",
+    "notes": "P1.1 scope 影响 — 目标 491c8b30 变体2 带 scope=project:recallnest"
+  },
+  {
+    "name": "scope-491c8b30-v2-WITHOUT",
+    "query": "单位/工作记忆该不该 forget 清理",
+    "profile": "default",
+    "limit": 8,
+    "targets": [
+      "491c8b30"
+    ],
+    "expectTopK": 3,
+    "notes": "P1.1 scope 影响 — 目标 491c8b30 变体2 不带 scope(裸 retrieve)"
+  },
+  {
+    "name": "scope-491c8b30-v3-WITH",
+    "query": "Alice 对工作记忆隔离是怎么决定的",
+    "profile": "default",
+    "limit": 8,
+    "targets": [
+      "491c8b30"
+    ],
+    "expectTopK": 3,
+    "scope": "project:recallnest",
+    "notes": "P1.1 scope 影响 — 目标 491c8b30 变体3 带 scope=project:recallnest"
+  },
+  {
+    "name": "scope-491c8b30-v3-WITHOUT",
+    "query": "Alice 对工作记忆隔离是怎么决定的",
+    "profile": "default",
+    "limit": 8,
+    "targets": [
+      "491c8b30"
+    ],
+    "expectTopK": 3,
+    "notes": "P1.1 scope 影响 — 目标 491c8b30 变体3 不带 scope(裸 retrieve)"
+  },
+  {
+    "name": "scope-dbcb317a-v1-WITH",
+    "query": "recallnest 本地两个目录反复踩坑怎么解决的",
+    "profile": "debug",
+    "limit": 8,
+    "targets": [
+      "dbcb317a"
+    ],
+    "expectTopK": 3,
+    "scope": "project:recallnest",
+    "notes": "P1.1 scope 影响 — 目标 dbcb317a 变体1 带 scope=project:recallnest"
+  },
+  {
+    "name": "scope-dbcb317a-v1-WITHOUT",
+    "query": "recallnest 本地两个目录反复踩坑怎么解决的",
+    "profile": "debug",
+    "limit": 8,
+    "targets": [
+      "dbcb317a"
+    ],
+    "expectTopK": 3,
+    "notes": "P1.1 scope 影响 — 目标 dbcb317a 变体1 不带 scope(裸 retrieve)"
+  },
+  {
+    "name": "scope-dbcb317a-v2-WITH",
+    "query": "~/recallnest 和 ~/Projects/recallnest 是什么关系",
+    "profile": "debug",
+    "limit": 8,
+    "targets": [
+      "dbcb317a"
+    ],
+    "expectTopK": 3,
+    "scope": "project:recallnest",
+    "notes": "P1.1 scope 影响 — 目标 dbcb317a 变体2 带 scope=project:recallnest"
+  },
+  {
+    "name": "scope-dbcb317a-v2-WITHOUT",
+    "query": "~/recallnest 和 ~/Projects/recallnest 是什么关系",
+    "profile": "debug",
+    "limit": 8,
+    "targets": [
+      "dbcb317a"
+    ],
+    "expectTopK": 3,
+    "notes": "P1.1 scope 影响 — 目标 dbcb317a 变体2 不带 scope(裸 retrieve)"
+  },
+  {
+    "name": "scope-dbcb317a-v3-WITH",
+    "query": "recallnest 用符号链接统一目录是怎么回事",
+    "profile": "debug",
+    "limit": 8,
+    "targets": [
+      "dbcb317a"
+    ],
+    "expectTopK": 3,
+    "scope": "project:recallnest",
+    "notes": "P1.1 scope 影响 — 目标 dbcb317a 变体3 带 scope=project:recallnest"
+  },
+  {
+    "name": "scope-dbcb317a-v3-WITHOUT",
+    "query": "recallnest 用符号链接统一目录是怎么回事",
+    "profile": "debug",
+    "limit": 8,
+    "targets": [
+      "dbcb317a"
+    ],
+    "expectTopK": 3,
+    "notes": "P1.1 scope 影响 — 目标 dbcb317a 变体3 不带 scope(裸 retrieve)"
+  }
+]

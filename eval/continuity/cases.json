@@ -1,0 +1,302 @@
+[
+  {
+    "name": "writing_style_continuity",
+    "task": "继续写我的AI小木屋的文章",
+    "profile": "writing",
+    "limitPerSection": 3,
+    "includeLatestCheckpoint": false,
+    "expectStableAny": ["口语化", "不端着"],
+    "notes": "Fresh windows should carry over stable writing-style preferences."
+  },
+  {
+    "name": "writing_style_sparse_continue",
+    "task": "不要让我重复前情，接着写",
+    "profile": "writing",
+    "limitPerSection": 3,
+    "includeLatestCheckpoint": false,
+    "expectStableAny": ["口语化", "不端着"],
+    "forbid": ["Telegram bridge", "MCP transport"],
+    "notes": "A sparse writing prompt should still recover the user's durable writing-style preferences."
+  },
+  {
+    "name": "writing_style_mixed_continuity",
+    "task": "接着上个窗口的写作风格",
+    "profile": "writing",
+    "limitPerSection": 3,
+    "includeLatestCheckpoint": false,
+    "expectStableAny": ["口语化", "不端着"],
+    "expectPatternsAny": ["resume_context"],
+    "forbid": ["Telegram bridge", "MCP transport"],
+    "notes": "A mixed style+continuity prompt should keep writing-style preferences and continuity guidance together."
+  },
+  {
+    "name": "visual_style_continuity",
+    "task": "给文章做封面和配图",
+    "profile": "default",
+    "limitPerSection": 3,
+    "includeLatestCheckpoint": false,
+    "expectStableAny": ["手绘涂鸦", "高对比撞色"],
+    "notes": "Visual direction should survive without the user restating it."
+  },
+  {
+    "name": "project_context_continuity",
+    "task": "一起继续排查 RecallNest 的连续性问题",
+    "profile": "default",
+    "limitPerSection": 3,
+    "includeLatestCheckpoint": false,
+    "expectStableAny": ["RecallNest"],
+    "forbid": ["https://", "笑不活了", "open issues", "Telegram bridge", "MCP transport", "Three-terminal continuity trigger validation", "Scoped recall leaked conversational durable pins", "Scoped mixed-project pin collision leaked foreign project summaries", "Scoped entity recall leaked foreign project entities via shared tool nouns", "Scoped task results leaked foreign project patterns and cases", "incremental A2A details", "Borderline transcript dedup"],
+    "notes": "Fresh windows should at least recover the active project context."
+  },
+  {
+    "name": "generic_named_recallnest_task_purity",
+    "task": "继续整理 RecallNest 实施清单，不要让我重复前情",
+    "profile": "default",
+    "limitPerSection": 3,
+    "includeLatestCheckpoint": false,
+    "expectStableAny": ["recallnest"],
+    "expectCasesAny": ["RecallNest sparse startup context cleanup"],
+    "forbid": ["Telegram bridge", "MCP transport", "smoke:claude-continuity", "doctor baseline", "seed:continuity", "workflow_observe", "workflow observation", "Three-terminal continuity trigger validation", "Scoped recall leaked conversational durable pins", "Scoped mixed-project pin collision leaked foreign project summaries", "Scoped entity recall leaked foreign project entities via shared tool nouns", "Scoped task results leaked foreign project patterns and cases", "incremental A2A details", "Borderline transcript dedup"],
+    "notes": "A generic named RecallNest continue prompt should keep project continuity context while suppressing same-project transport, smoke, doctor, or seed task results."
+  },
+  {
+    "name": "project_scope_entity_continuity",
+    "task": "继续这个项目，不要让我重复前情",
+    "scope": "project:recallnest",
+    "profile": "default",
+    "limitPerSection": 3,
+    "includeLatestCheckpoint": false,
+    "expectStableAny": ["RecallNest", "checkpoint_session", "resume_context"],
+    "forbid": ["https://", "笑不活了", "open issues", "Telegram bridge", "MCP transport", "smoke:claude-continuity", "incremental A2A details", "Borderline transcript dedup", "profile forwarding gap", "sparse writing prompts", "profile: writing"],
+    "notes": "When the project scope is known, stable project entities should survive even if the task prompt is sparse."
+  },
+  {
+    "name": "workflow_pattern_gap_check",
+    "task": "开个新窗口继续做同一个终端项目",
+    "profile": "default",
+    "limitPerSection": 3,
+    "includeLatestCheckpoint": false,
+    "expectPatternsAny": ["search_memory", "resume_context", "checkpoint"],
+    "forbid": ["Telegram bridge", "MCP transport"],
+    "notes": "This is a stretch case. It should start passing as more workflow patterns are promoted into durable memory."
+  },
+  {
+    "name": "recallnest_checkpoint_continuity",
+    "task": "继续 recallnest",
+    "scope": "recallnest",
+    "profile": "default",
+    "limitPerSection": 3,
+    "includeLatestCheckpoint": true,
+    "checkpoint": {
+      "sessionId": "eval-recallnest-checkpoint",
+      "scope": "recallnest",
+      "task": "RecallNest continuity layer — 状态交接给下个窗口",
+      "summary": "RecallNest Phase 3/4 并行推进中。核心三件套 store_memory、checkpoint_session、resume_context 已上线，当前继续收 resume_context compose。",
+      "decisions": ["Phase 3/4 并行推进，continuity layer 是当前核心方向"],
+      "nextActions": ["继续优化 resume_context compose 质量"],
+      "entities": ["RecallNest"],
+      "updatedAt": "2026-03-16T03:30:00.000Z"
+    },
+    "expectCheckpointAny": ["Phase 3", "resume_context", "store_memory"],
+    "forbid": ["[助手]", "手绘涂鸦", "本地没 clone", "https://", "笑不活了", "open issues", "MCP transport", "continuity eval checkpoint isolation", "Three-terminal continuity trigger validation"],
+    "notes": "When a project checkpoint exists, resume_context should prefer checkpoint-led continuity over noisy transcript fragments."
+  },
+  {
+    "name": "project_scope_checkpoint_continuity",
+    "task": "继续这个项目，不要让我重复前情",
+    "scope": "project:recallnest",
+    "profile": "default",
+    "limitPerSection": 3,
+    "includeLatestCheckpoint": true,
+    "checkpoint": {
+      "sessionId": "eval-project-recallnest-checkpoint",
+      "scope": "project:recallnest",
+      "task": "RecallNest continuity acceptance — project scope handoff",
+      "summary": "RecallNest 项目范围下已完成 continuity baseline setup、doctor baseline 和 headless Claude Code smoke，下一步继续扩 continuity eval case。",
+      "decisions": ["继续把 project-scope continuity 做成稳定回归信号"],
+      "nextActions": ["补更多 scoped project continuity cases", "决定 CC smoke 的 inference 告警是否升级为失败"],
+      "entities": ["RecallNest", "seed:continuity", "doctor", "smoke:claude-continuity"],
+      "updatedAt": "2026-03-17T08:40:00.000Z"
+    },
+    "expectStableAny": ["RecallNest"],
+    "expectCheckpointAny": ["doctor", "smoke:claude-continuity", "continuity eval case"],
+    "forbid": ["[助手]", "手绘涂鸦", "https://", "笑不活了", "open issues", "Telegram bridge", "MCP transport", "incremental A2A details", "Borderline transcript dedup", "profile forwarding gap", "sparse writing prompts", "profile: writing"],
+    "notes": "Project-scoped checkpoints should compose cleanly when the scope uses the explicit `project:` key."
+  },
+  {
+    "name": "project_task_pivot_recall",
+    "task": "回到 RecallNest 项目，处理主动 recall regression",
+    "sessionId": "eval-task-pivot-recall",
+    "profile": "default",
+    "limitPerSection": 3,
+    "includeLatestCheckpoint": true,
+    "checkpoint": {
+      "sessionId": "eval-task-pivot-recall",
+      "scope": "project:recallnest",
+      "task": "RecallNest task-pivot recall regression",
+      "summary": "RecallNest 已补上 HTTP auto-recall，下一步把 task-pivot 的主动 recall 变成 smoke 和 eval 的稳定回归信号。",
+      "decisions": ["任务切换时也要先回忆，不能只在 continue 场景触发"],
+      "nextActions": ["补 task-pivot continuity eval case", "补 Claude Code smoke task-pivot case"],
+      "entities": ["RecallNest", "auto-recall", "search_memory", "smoke:claude-continuity"],
+      "updatedAt": "2026-03-17T14:40:00.000Z"
+    },
+    "expectStableAny": ["RecallNest", "auto-recall"],
+    "expectPatternsAny": ["search_memory"],
+    "expectCheckpointAny": ["smoke", "eval"],
+    "forbid": ["[助手]", "https://", "笑不活了", "open issues", "MCP transport", "incremental A2A details", "Borderline transcript dedup"],
+    "notes": "A named project task pivot should still surface continuity context and search_memory guidance even without an explicit continue prompt."
+  },
+  {
+    "name": "associative_recall_vague_query",
+    "task": "之前弄过那个什么 Nest 的记忆系统",
+    "profile": "default",
+    "limitPerSection": 3,
+    "includeLatestCheckpoint": false,
+    "expectStableAny": ["RecallNest", "checkpoint", "memory"],
+    "forbid": ["https://", "笑不活了", "Telegram bridge", "MCP transport"],
+    "notes": "Vague associative query should still retrieve relevant memories through fuzzy matching, not require exact keywords."
+  },
+  {
+    "name": "non_recallnest_named_task_isolation",
+    "task": "A2A code Claude SDK calling error",
+    "profile": "default",
+    "limitPerSection": 3,
+    "includeLatestCheckpoint": false,
+    "expectStableAny": ["a2a"],
+    "forbid": ["RecallNest", "口语化", "手绘涂鸦"],
+    "notes": "An unscoped named external task should fall back to task focus instead of leaking RecallNest entities or unrelated style pins."
+  },
+  {
+    "name": "bridge_project_pin_filter",
+    "task": "继续 telegram ai bridge 项目",
+    "profile": "default",
+    "limitPerSection": 3,
+    "includeLatestCheckpoint": false,
+    "expectStableAny": ["telegram"],
+    "forbid": ["[助手]", "README", "RecallNest", "口语化", "MCP transport"],
+    "notes": "An external bridge task should not surface raw conversational pins or unrelated RecallNest/style context."
+  },
+  {
+    "name": "scoped_bridge_pin_isolation",
+    "task": "继续 RecallNest continuity bridge 适配",
+    "scope": "project:recallnest",
+    "profile": "default",
+    "limitPerSection": 3,
+    "includeLatestCheckpoint": false,
+    "expectStableAny": ["RecallNest"],
+    "forbid": ["[助手]", "README", "telegram-cli-bridge", "MCP transport", "smoke:claude-continuity"],
+    "notes": "A scoped RecallNest task should not surface raw bridge transcript pins even when durable pinned assets mention bridge terms."
+  },
+  {
+    "name": "scoped_foreign_project_pin_collision",
+    "task": "继续 RecallNest bridge README 适配",
+    "scope": "project:recallnest",
+    "profile": "default",
+    "limitPerSection": 3,
+    "includeLatestCheckpoint": false,
+    "expectStableAny": ["RecallNest"],
+    "forbid": ["telegram-cli-bridge", "Telegram bridge README adaptation plan", "MCP transport", "smoke:claude-continuity"],
+    "notes": "A scoped RecallNest task with overlapping bridge and README terms should not surface pinned summaries from a different project."
+  },
+  {
+    "name": "scoped_foreign_project_entity_collision",
+    "task": "继续 RecallNest MCP transport 适配",
+    "scope": "project:recallnest",
+    "profile": "default",
+    "limitPerSection": 3,
+    "includeLatestCheckpoint": false,
+    "expectStableAny": ["RecallNest"],
+    "forbid": ["Telegram bridge MCP transport"],
+    "notes": "A scoped RecallNest task with shared tool nouns should not surface entity summaries from a different project."
+  },
+  {
+    "name": "scoped_foreign_project_task_result_collision",
+    "task": "继续 RecallNest continuity MCP transport rollout",
+    "scope": "project:recallnest",
+    "profile": "default",
+    "limitPerSection": 3,
+    "includeLatestCheckpoint": false,
+    "expectStableAny": ["RecallNest"],
+    "expectPatternsAny": ["RecallNest MCP transport rollout"],
+    "expectCasesAny": ["RecallNest MCP transport regression"],
+    "forbid": ["Telegram bridge MCP transport"],
+    "notes": "A scoped RecallNest continuity task with shared tool nouns should not surface foreign-project patterns, cases, or workflow fallback results."
+  },
+  {
+    "name": "vague_nest_task_entity_recall",
+    "task": "之前弄过那个什么 Nest 的记忆系统",
+    "profile": "default",
+    "limitPerSection": 3,
+    "includeLatestCheckpoint": false,
+    "expectStableAny": ["RecallNest"],
+    "forbid": ["口语化", "手绘涂鸦", "Telegram AI bridge", "Telegram bridge", "MCP transport"],
+    "notes": "A vague associative Nest task should still recover RecallNest without dragging in unrelated writing or external-task context."
+  },
+  {
+    "name": "cross_language_recall",
+    "task": "continue my AI writing project",
+    "profile": "default",
+    "limitPerSection": 3,
+    "includeLatestCheckpoint": false,
+    "scope": "project:recallnest",
+    "expectStableAny": ["AI", "写作", "公众号"],
+    "forbid": ["https://", "Telegram bridge", "MCP transport", "smoke:claude-continuity"],
+    "notes": "English prompt should still retrieve Chinese-language durable memories when the scope is known."
+  },
+  {
+    "name": "scope_isolation_check",
+    "task": "继续我的项目",
+    "scope": "project:recallnest",
+    "profile": "default",
+    "limitPerSection": 3,
+    "includeLatestCheckpoint": false,
+    "expectStableAny": ["RecallNest"],
+    "forbid": ["content-alchemy", "content-publisher", "digital-clone", "Telegram bridge", "MCP transport", "smoke:claude-continuity", "profile forwarding gap", "sparse writing prompts", "profile: writing", "shared components skewed later continuity previews", "single-case replay", "per-case fresh components"],
+    "notes": "When querying with project:recallnest scope, should NOT leak memories from other projects like content-alchemy or digital-clone."
+  },
+  {
+    "name": "legacy_null_scope_isolation",
+    "task": "之前我记得有个关于",
+    "profile": "default",
+    "limitPerSection": 3,
+    "includeLatestCheckpoint": false,
+    "scope": "project:recallnest",
+    "expectStableAny": ["RecallNest"],
+    "forbid": ["null:", "global:", "undefined", "Telegram bridge", "MCP transport", "smoke:claude-continuity"],
+    "notes": "Legacy memories without proper scope should not leak into scoped queries. The scope policy should filter them out."
+  },
+  {
+    "name": "shorthand_memory_project_recall",
+    "task": "那个记忆项目，之前做到哪了",
+    "profile": "default",
+    "limitPerSection": 3,
+    "includeLatestCheckpoint": false,
+    "expectStableAny": ["RecallNest", "checkpoint", "memory"],
+    "expectPatternsAny": ["resume_context"],
+    "forbid": ["Telegram bridge", "MCP transport", "smoke:claude-continuity"],
+    "notes": "记忆项目 is a colloquial shorthand for RecallNest. Should trigger associative recall and continuity guidance."
+  },
+  {
+    "name": "shorthand_cross_terminal_memory_recall",
+    "task": "继续那个跨终端记忆",
+    "profile": "default",
+    "limitPerSection": 3,
+    "includeLatestCheckpoint": false,
+    "expectStableAny": ["RecallNest", "checkpoint", "memory"],
+    "expectPatternsAny": ["resume_context"],
+    "forbid": ["Telegram bridge", "MCP transport", "smoke:claude-continuity"],
+    "notes": "跨终端记忆 is an associative cue for RecallNest. Should route to RecallNest entity and continuity guidance."
+  },
+  {
+    "name": "english_pick_up_continuity",
+    "task": "pick up where we left off on RecallNest",
+    "profile": "default",
+    "limitPerSection": 3,
+    "includeLatestCheckpoint": false,
+    "expectStableAny": ["RecallNest"],
+    "expectPatternsAny": ["resume_context"],
+    "expectCasesAny": ["RecallNest"],
+    "forbid": ["Telegram bridge", "MCP transport", "smoke:claude-continuity"],
+    "notes": "English pick up / left off should trigger continuity guidance just like Chinese continuation verbs."
+  }
+]

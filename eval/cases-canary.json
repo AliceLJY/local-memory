@@ -1,0 +1,58 @@
+[
+  {
+    "name": "canary-A-mem0-borrow",
+    "query": "mem0 对 recallnest 有没有借鉴作用",
+    "profile": "fact-check",
+    "limit": 8,
+    "targets": ["a2fe9b62"],
+    "expectTopK": 3,
+    "notes": "A 单目标：mem0→recallnest 借鉴审计结论该被召回。"
+  },
+  {
+    "name": "canary-A-dual-dir-fix",
+    "query": "recallnest 本地两个目录反复踩坑是怎么解决的",
+    "profile": "debug",
+    "limit": 8,
+    "targets": ["dbcb317a"],
+    "expectTopK": 3,
+    "notes": "A 单目标：dual-dir 符号链接统一 case（dbcb317a, cases, imp 0.9, baseline rank1）。原 target e40ab64b 系标注错——e40ab64b 实为『RecallNest 演进优先 workflow pattern』，与本 query 无关；dbcb317a 才是『~/recallnest→~/Projects/recallnest symlink 统一』。"
+  },
+  {
+    "name": "canary-B-capture-heuristic-evolution",
+    "query": "recallnest 的 capture 是纯 heuristic 吗，提取到底用不用 LLM",
+    "profile": "fact-check",
+    "limit": 8,
+    "targets": ["727da608"],
+    "expectOrder": ["727da608", "a2fe9b62"],
+    "expectTopK": 3,
+    "notes": "B 新旧对：727da608(cases,imp0.8) 正文明确『修正 a2fe9b62 中 capture 纯heuristic/zero-LLM 的不准确表述』，是本 query 准确答案；a2fe9b62(events,imp0.72,mem0借鉴审计) 含被纠正的旧表述。expectOrder 测『两者同时召回时准确版 727 须排在旧版 a2 前』——纯排名对比(rank 唯一，<与≤等价)，不靠结构化 supersede。校准修正：原 notes『验 confidence/recency/decay』机制声称不成立(二者无 evolution 链/降权链，靠内容质量排序)；且主话题不重合(727=ingest去重史 / a2=mem0审计)，实测 a2 常落选(baseline rank=null)，故本 case 当前主要测 727 召回质量+弱新旧序保护，非真正新旧竞争。理想 B 类应换一对同话题、会同时召回的新旧记忆(P1 后续)。"
+  },
+  {
+    "name": "canary-C-scope-isolation-noise",
+    "query": "工作记忆要不要做 scope 隔离",
+    "profile": "default",
+    "limit": 8,
+    "targets": ["491c8b30"],
+    "hardNegatives": ["b59e86b2"],
+    "expectTopK": 2,
+    "notes": "C 干扰项：491c8b30(元决策『工作记忆不做 scope 隔离』,baseline rank1) 应召回。hardNegative b59e86b2(entities,imp0.65,scope=codex:019cfba5) 是 codex 端关于 scope 模型/associative access/隔离的设计讨论片段——词面同话题、别处语境(非 Alice 元决策)，baseline rank2 进了 top。补此 hardNeg 后本 case 在当前裸 retrieve 下会 fail，暴露『跨-scope 旁支讨论被召回进 top』的真问题(契合 P0 scope 主题)。"
+  },
+  {
+    "name": "canary-D-writing-style",
+    "query": "Alice 的写作风格偏好是什么",
+    "profile": "writing",
+    "limit": 6,
+    "expectContentAny": ["口语化", "不端着", "剧评腔", "书面非口语", "可自嘲"],
+    "expectTopK": 3,
+    "notes": "D 稳定偏好：不钉 id，召回文本命中要点即算对。"
+  },
+  {
+    "name": "canary-D-visual-style",
+    "query": "Alice 的配图审美偏好",
+    "profile": "default",
+    "limit": 6,
+    "expectContentAny": ["手绘", "撞色", "高对比", "静物无人物", "涂鸦"],
+    "expectTopK": 3,
+    "notes": "D 稳定偏好：同上。"
+  }
+]
