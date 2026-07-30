@@ -494,7 +494,7 @@ Part of the **小试AI** open-source AI workflow:
 | Project | Description |
 |---------|-------------|
 | [babel-memory](https://github.com/AliceLJY/babel-memory) | Multilingual preprocessing for BM25 — 27+ languages, zero deps |
-| [cc-empire](https://github.com/AliceLJY/cc-empire) | Hooks/rules/methodology — the connective tissue of the whole ecosystem |
+| cc-empire *(private)* | Hooks/rules/methodology — the connective tissue of the whole ecosystem |
 | [telegram-ai-bridge](https://github.com/AliceLJY/telegram-ai-bridge) | Telegram bots for Claude, Codex, and Gemini |
 | [tg-bridge-channel](https://github.com/AliceLJY/tg-bridge-channel) | Sister Telegram bridge using Claude Agent View background sessions |
 | [wechat-ai-bridge](https://github.com/AliceLJY/wechat-ai-bridge) | Run Claude Code / Codex / Gemini in WeChat with session management |
