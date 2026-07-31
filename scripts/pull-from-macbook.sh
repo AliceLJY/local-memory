@@ -205,12 +205,25 @@ rsync -az --partial --rsync-path=/opt/homebrew/bin/rsync --timeout=120 --prune-e
 
 # conversations：Antigravity IDE 的 .db。Alice 2026-07-30 明确「这些是转化的，你不要动他」——
 # 这里只做只读拉取，转换走 antigravity-db-to-jsonl.py 读副本，绝不回写源文件。
-rsync -az --partial --rsync-path=/opt/homebrew/bin/rsync --timeout=180 \
-  --include='*.db' --exclude='*' \
-  -e "$SSH_OPTS" \
-  mac:~/.gemini/antigravity/conversations/ \
-  "$AGY_MAC/conversations/" \
-  >> "$ROTATING_LOG" 2>&1 || { EC=$?; log "⚠️ agy conversations rsync 失败 exit=$EC"; }
+# 2026-07-31 订正：源路径原写死 ~/.gemini/antigravity/conversations（桌面 app 的目录）。
+# 实测 MacBook 只装/只用 CLI，该目录不存在，CLI 对话在 ~/.gemini/antigravity-cli/conversations。
+# 两个都试，缺哪个跳哪个（rsync 对不存在的源返回 23，不当失败处理）。
+for AGY_SRC in antigravity-cli/conversations antigravity/conversations; do
+  rsync -az --partial --rsync-path=/opt/homebrew/bin/rsync --timeout=180 \
+    --include='*.db' --exclude='*' \
+    -e "$SSH_OPTS" \
+    "mac:~/.gemini/$AGY_SRC/" \
+    "$AGY_MAC/conversations/" \
+    >> "$ROTATING_LOG" 2>&1
+  RC=$?
+  if [ $RC -eq 0 ]; then
+    log "   agy conversations 已拉: $AGY_SRC"
+  elif [ $RC -eq 23 ] || [ $RC -eq 24 ]; then
+    log "   agy conversations 跳过(源不存在): $AGY_SRC"
+  else
+    EC=$RC; log "⚠️ agy conversations rsync 失败 exit=$RC ($AGY_SRC)"
+  fi
+done
 
 log "MacBook agy 已拉取：brain $(find "$AGY_MAC/brain" -name transcript_full.jsonl 2>/dev/null | wc -l | tr -d ' ') 个 transcript / conversations $(ls "$AGY_MAC/conversations"/*.db 2>/dev/null | wc -l | tr -d ' ') 个 db"
 
