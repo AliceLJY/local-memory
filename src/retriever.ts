@@ -254,6 +254,14 @@ export const DEFAULT_RETRIEVAL_CONFIG: RetrievalConfig = {
  * （mem0/recallnest/GitHub），避免日常语义 query 误触发 BM25 噪声。
  */
 export function hasExactToken(query: string): boolean {
+  // 【为什么中文 query 不触发本函数 —— 这是实测后的决定，不是 ASCII-only 的遗漏】
+  // 2026-08-01 用临时开关对 5 条真实中文 query 做过 A/B：强制让中文触发 BM25 补偿后，
+  // 3/4 的 query 零新增（BM25 捞回的条目 vector 早已召回，被 vecIds 去重滤掉），
+  // 唯一有新增的那次补进 3 条、其中 1 条是当天无关对话，且补偿结果是**插在队首**的。
+  // 中文分词本身没问题（babel-memory 已注册，detectLang 正确返回 zh，
+  // "双机契约" → "双机 契约"），所以这不是 tokenizer 问题 ——
+  // 是 BM25 对中文**语义类** query 的边际收益本就接近零，放开只会拿噪声占前三名。
+  // 若将来要重开，先复现那组 A/B，别只凭"中文没走 BM25"这个现象下判断。
   for (const t of query.split(/[\s，。、；：（）()【】「」"'`?？!！]+/)) {
     if (t.length < 5) continue;
     // 全大写 + 下划线常量（必须含下划线，避免 JSON/HTTP/GitHub 等普通缩写/驼峰误触发）
