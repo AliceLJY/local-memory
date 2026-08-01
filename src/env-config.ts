@@ -61,6 +61,27 @@ export const errorSignatureBoost = (): boolean =>
 
 export const usageDecay = (): boolean => process.env.RECALLNEST_USAGE_DECAY === "true";
 
+// --- LA-1: Layer admission (tri-state, defaults to off) ---
+
+/**
+ * 资格层准入模式：默认检索是否只召回 durable 层（提炼结论），把 evidence
+ * （transcript 碎片）留给 deja / 显式溯源。
+ *
+ *   off      — 默认，完全不生效（现网行为不变）
+ *   observe  — 只计算并记录"会过滤掉什么"，返回结果不变（影子期）
+ *   on       — 真正过滤
+ */
+export const layerAdmission = (): "off" | "observe" | "on" => {
+  const v = process.env.RECALLNEST_LAYER_ADMISSION;
+  return v === "on" || v === "observe" ? v : "off";
+};
+
+/** durable 层命中数低于此值时回退到全量候选池，避免"宁缺毋滥"变成"什么都没有"。 */
+export const layerAdmissionMin = (): number => {
+  const n = Number(process.env.RECALLNEST_LAYER_ADMISSION_MIN);
+  return Number.isFinite(n) && n > 0 ? n : 3;
+};
+
 // --- String settings with `||` default (empty string falls through) ---
 
 export const dataDir = (): string => process.env.RECALLNEST_DATA_DIR || "data";

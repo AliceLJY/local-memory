@@ -14,7 +14,7 @@ import { expandQuery } from "./query-expander.js";
 import { detectLang, tokenizeFts } from "./language-hook.js";
 import { type AccessTracker, computeHotnessScore, parseAccessMetadata } from "./access-tracker.js";
 import { weibullDecay, resolveTier, isDecayExempt, adjustHalfLifeForEmotion, computeArousalBoost } from "./decay-engine.js";
-import { logWarn } from "./stderr-log.js";
+import { logInfo, logWarn } from "./stderr-log.js";
 import { extractBoundaryMetadata, isDurableMemoryScope, isTranscriptScope } from "./memory-boundaries.js";
 import type { TraceCollector } from "./retrieval-trace.js";
 import { extractTopicTag } from "./topic-tag.js";
@@ -1263,10 +1263,14 @@ export class MemoryRetriever {
       ? hardFiltered
       : hardFiltered.filter(r => isActiveMemory(r.entry.metadata));
 
-    trace?.startStage("noise_filter", evolutionFiltered.length);
+    // LA-1: 资格层准入 —— 默认让 durable 层回答，evidence 留给 deja / 显式溯源。
+    // 放在各类 dedup 之前：先定"谁有资格进候选集"，再谈多样性与去重。
+    const layerAdmitted = this.applyLayerAdmission(evolutionFiltered, trace);
+
+    trace?.startStage("noise_filter", layerAdmitted.length);
     const denoised = this.config.filterNoise
-      ? filterNoise(evolutionFiltered, r => r.entry.text)
-      : evolutionFiltered;
+      ? filterNoise(layerAdmitted, r => r.entry.text)
+      : layerAdmitted;
     trace?.endStage(denoised.length, denoised.map(r => r.score));
 
     // RIF: demote near-duplicate weak results to improve diversity
@@ -1765,6 +1769,49 @@ export class MemoryRetriever {
     });
 
     return weighted.sort((a, b) => b.score - a.score);
+  }
+
+  /** LA-1: 一条结果是否属于 evidence 层（transcript 碎片）。判据与 applyBoundaryWeight 保持一致。 */
+  private isEvidenceLayer(r: RetrievalResult): boolean {
+    const boundary = extractBoundaryMetadata(r.entry.metadata);
+    if (boundary) return boundary.layer === "evidence";
+    return isTranscriptScope(r.entry.scope);
+  }
+
+  /**
+   * LA-1: 资格层准入 —— 决定"哪一层来回答这个 query"，而非调整分数。
+   *
+   * 与 applyBoundaryWeight 的区别是本方法存在的全部理由：那个改分数（排序层），
+   * 会让来源盖过相关性（`retriever-boundary-weight.test.ts` 明确禁止这点）；
+   * 本方法只挑选候选集，层内相关性排序原封不动。
+   *
+   * durable 命中不足 `layerAdmissionMin` 时回退到全量候选池 —— 新主题在结论层
+   * 往往是空的，宁缺毋滥不能变成什么都不给。
+   */
+  private applyLayerAdmission(
+    results: RetrievalResult[],
+    trace?: TraceCollector,
+  ): RetrievalResult[] {
+    const mode = envConfig.layerAdmission();
+    if (mode === "off" || results.length === 0) return results;
+
+    const durable = results.filter(r => !this.isEvidenceLayer(r));
+    const dropped = results.length - durable.length;
+    const thin = durable.length < envConfig.layerAdmissionMin();
+
+    if (mode === "observe") {
+      logInfo(
+        `[layer-admission] observe: durable=${durable.length} evidence=${dropped} ` +
+        `total=${results.length} action=${thin ? "fallback(keep-all)" : "would-drop-evidence"}`,
+      );
+      return results;
+    }
+
+    if (thin) return results;
+
+    trace?.startStage("layer_admission", results.length);
+    trace?.endStage(durable.length, durable.map(r => r.score));
+    return durable;
   }
 
   private applyBoundaryWeight(results: RetrievalResult[]): RetrievalResult[] {
