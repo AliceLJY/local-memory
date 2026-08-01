@@ -61,8 +61,13 @@ export interface IngestBoundaryResolution {
   boundary: MemoryBoundaryMetadata;
 }
 
-const TRANSCRIPT_SOURCES = new Set(["cc", "codex", "gemini"]);
-const TRANSCRIPT_SCOPE_PREFIXES = ["cc:", "codex:", "gemini:"];
+// 在栈各端的 transcript 来源与 scope 前缀。
+// ⚠️ 接入新的 AI 端时必须同步这两处 —— 漏掉的端不会被认成 evidence 层，
+// 其会话碎片既不会被降权，也会被 layer admission 当成 durable 结论放行。
+// （kimi / antigravity 就漏了：kimi 2026-07-19 进栈、antigravity 07-29 进栈，
+//   直到 08-01 才发现库里的 `kimi:` scope 一直被当结论对待。）
+const TRANSCRIPT_SOURCES = new Set(["cc", "codex", "gemini", "kimi", "antigravity"]);
+const TRANSCRIPT_SCOPE_PREFIXES = ["cc:", "codex:", "gemini:", "kimi:", "antigravity:"];
 
 export function getConflictPolicyForCategory(category: DurableMemoryCategory): MemoryConflictPolicy {
   return category === "events" || category === "cases"
