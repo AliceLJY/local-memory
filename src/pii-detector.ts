@@ -41,6 +41,9 @@ interface PIIRule {
   redact: boolean;
   /** For key=value style rules: keep the key name, scrub only the value */
   keepPrefix?: RegExp;
+  /** Custom scrubber for structured credentials where preserving a safe
+   *  prefix/suffix is clearer than replacing the whole match. */
+  replacement?: (match: string) => string;
   /** Checksum gate for broad numeric patterns: redact ONLY when this returns
    *  true (scan still warns regardless). Keeps snowflake IDs / order numbers
    *  from being destructively rewritten. */
@@ -74,6 +77,41 @@ function isValidLuhn(candidate: string): boolean {
 }
 
 const PII_RULES: PIIRule[] = [
+  // --- Structured credentials commonly found in shell/config transcripts ---
+  {
+    type: "uri_credentials",
+    severity: "high",
+    pattern: /\b[a-z][a-z0-9+.-]{1,20}:\/\/[^\s\/:@]+:[^\s\/@]+@/gi,
+    redact: true,
+    replacement: (match) => {
+      const schemeEnd = match.indexOf("://") + 3;
+      return `${match.slice(0, schemeEnd)}[REDACTED:uri_credentials]@`;
+    },
+  },
+  {
+    type: "basic_auth",
+    severity: "high",
+    pattern: /\b(?:Authorization\s*:\s*)?Basic\s+[A-Za-z0-9+/]{8,}={0,2}/gi,
+    redact: true,
+    replacement: (match) => {
+      const prefix = match.match(/^(?:Authorization\s*:\s*)?Basic\s+/i)?.[0] ?? "Basic ";
+      return `${prefix}[REDACTED:basic_auth]`;
+    },
+  },
+  {
+    type: "cookie_header",
+    severity: "high",
+    pattern: /\b(?:Cookie|Set-Cookie)\s*:\s*[^\r\n]+/gi,
+    redact: true,
+    replacement: (match) => `${match.slice(0, match.indexOf(":") + 1)} [REDACTED:cookie_header]`,
+  },
+  {
+    type: "sensitive_assignment",
+    severity: "high",
+    pattern: /["']?(?:database[_-]?url|aws[_-]?secret[_-]?access[_-]?key|client[_-]?secret|access[_-]?token|refresh[_-]?token|auth[_-]?token|session[_-]?(?:id|token)|cookie|private[_-]?key)["']?\s*[=:]\s*["']?[^\s"',;]{8,}/gi,
+    redact: true,
+    keepPrefix: /^["']?(?:database[_-]?url|aws[_-]?secret[_-]?access[_-]?key|client[_-]?secret|access[_-]?token|refresh[_-]?token|auth[_-]?token|session[_-]?(?:id|token)|cookie|private[_-]?key)["']?\s*[=:]\s*["']?/i,
+  },
   // --- Vendor-prefixed token literals (high confidence, full scrub) ---
   {
     type: "anthropic_key",
@@ -109,6 +147,12 @@ const PII_RULES: PIIRule[] = [
     type: "jwt",
     severity: "high",
     pattern: /\beyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\b/g,
+    redact: true,
+  },
+  {
+    type: "segmented_token",
+    severity: "high",
+    pattern: /\b[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g,
     redact: true,
   },
   {
@@ -228,6 +272,7 @@ export function redactSecrets(text: string): RedactResult {
         return match; // checksum failed → leave intact (detection-only)
       }
       redacted++;
+      if (rule.replacement) return rule.replacement(match);
       if (rule.keepPrefix) {
         const prefixMatch = match.match(rule.keepPrefix);
         if (prefixMatch) {
