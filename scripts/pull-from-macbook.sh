@@ -237,7 +237,22 @@ for AGY_SRC in antigravity-cli/conversations antigravity/conversations; do
   fi
 done
 
-log "MacBook agy 已拉取：brain $(find "$AGY_MAC/brain" -name transcript_full.jsonl 2>/dev/null | wc -l | tr -d ' ') 个 transcript / conversations $(ls "$AGY_MAC/conversations"/*.db 2>/dev/null | wc -l | tr -d ' ') 个 db"
+# legacy-pb：2026-07-29 由 AGY 迁移成 45 个明文 SQLite 的旧 Antigravity IDE 原件。
+# 明文内容已在 mini，但加密 .pb 原件此前仍只留在 MacBook Downloads；只读复制到隔离归档，
+# 不放进 ~/.gemini，也不让任何自动任务回写源目录。
+mkdir -p "$AGY_MAC/legacy-pb"
+rsync -az --partial --rsync-path=/opt/homebrew/bin/rsync --timeout=180 \
+  --include='*.pb' --exclude='*' \
+  -e "$SSH_OPTS" \
+  mac:~/Downloads/antigravity-rescue/conversations/ \
+  "$AGY_MAC/legacy-pb/" \
+  >> "$ROTATING_LOG" 2>&1
+RC=$?
+if [ $RC -ne 0 ] && [ $RC -ne 23 ] && [ $RC -ne 24 ]; then
+  EC=$RC; log "⚠️ agy legacy .pb rsync 失败 exit=$RC"
+fi
+
+log "MacBook agy 已拉取：brain $(find "$AGY_MAC/brain" -name transcript_full.jsonl 2>/dev/null | wc -l | tr -d ' ') 个 transcript / conversations $(ls "$AGY_MAC/conversations"/*.db 2>/dev/null | wc -l | tr -d ' ') 个 db / legacy-pb $(find "$AGY_MAC/legacy-pb" -maxdepth 1 -name '*.pb' 2>/dev/null | wc -l | tr -d ' ') 个原件"
 
 # 5. 触发 incremental-ingest（无论上面有没有 partial 失败，已拉到的部分也值得 ingest）
 if [ $EC -eq 0 ]; then
