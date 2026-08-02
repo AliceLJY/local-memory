@@ -1,5 +1,5 @@
 #!/bin/bash
-# pull-from-macbook.sh — 在 mini 上跑：反拉 MacBook 的 CC + Codex jsonl，然后触发本地 ingest
+# pull-from-macbook.sh — 在 mini 上跑：反拉 MacBook 的四端会话原始数据，然后触发本地 ingest
 # 设计：mini 常开，MacBook 不一定在线 → ssh 检测，离线安静退出（不报错），下个周期再试
 #
 # 装机方式：放到 ~/recallnest/scripts/pull-from-macbook.sh + launchctl 加载 com.recallnest.pull-from-macbook.plist
@@ -163,7 +163,19 @@ print(f"merged Kimi session_index entries={len(entries)}")
 PY
 fi
 
-# 4c. rsync Claude Desktop（local agent mode）本地对话 → data/desktop-import
+# 4c. rsync Gemini CLI sessions（~/.gemini/tmp/**/chats/session-*.json）
+#      AGY 对外是一个端，但底层历史既可能来自 Gemini CLI，也可能来自 Antigravity。
+#      Gemini CLI 的会话格式由 RecallNest/Deja 直接支持；此前未进双机同步链，旧会话只留在 MacBook。
+log "→ rsync MacBook Gemini CLI sessions"
+mkdir -p "$HOME/.gemini/tmp"
+rsync -az --partial --rsync-path=/opt/homebrew/bin/rsync --timeout=120 --prune-empty-dirs \
+  --include='*/' --include='session-*.json' --exclude='*' \
+  -e "$SSH_OPTS" \
+  mac:~/.gemini/tmp/ \
+  "$HOME/.gemini/tmp/" \
+  >> "$ROTATING_LOG" 2>&1 || { EC=$?; log "⚠️ Gemini CLI sessions rsync 失败 exit=$EC"; }
+
+# 4d. rsync Claude Desktop（local agent mode）本地对话 → data/desktop-import
 #     desktop app 跑的 CC/local agent 对话在 ~/Library/Application Support/Claude/
 #     local-agent-mode-sessions/<...>/.claude/projects/<...>/*.jsonl，标准 projects rsync 扫不到。
 #     扁平化到 data/desktop-import/，复用现成 desktop 通道（config.sources.desktop / --source all）。
@@ -184,7 +196,7 @@ DESKTOP_N=$(find "$DESKTOP_STAGING" -name '*.jsonl' ! -name 'audit.jsonl' 2>/dev
 find "$DESKTOP_STAGING" -name '*.jsonl' ! -name 'audit.jsonl' -exec cp -p {} "$DESKTOP_IMPORT/" \; 2>/dev/null
 log "Desktop 对话扁平化 ${DESKTOP_N} 个 jsonl → data/desktop-import"
 
-# 4d. rsync MacBook 的 agy(Antigravity) 对话 → ~/machine-data/macbook-agy/
+# 4e. rsync MacBook 的 agy(Antigravity) 对话 → ~/machine-data/macbook-agy/
 #     agy 双机都在用，但它的数据既不在 .claude/projects 也不在 .codex/.kimi-code 的 sessions 下，
 #     2026-07-30 之前完全没进同步链 —— MacBook 上的 agy 对话永远汇不进 mini 全集。
 #     拉到独立目录而非合并进本机 ~/.gemini/，避免污染 agy 自己的数据区（UUID 虽全局唯一不会碰撞，
