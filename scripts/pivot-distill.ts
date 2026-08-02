@@ -84,7 +84,7 @@ export interface SessionMeta {
   updated?: string;
   sizeBytes: number;
   mtimeNs: string;
-  origin: "deja" | "codex-archive" | "agy-converted";
+  origin: "deja" | "codex-archive" | "claude-desktop" | "agy-converted" | "agy-archive";
   fingerprint: string;
 }
 
@@ -161,7 +161,9 @@ export interface CliOptions {
   outputDir: string;
   dejaBin: string;
   codexArchiveRoot: string;
+  claudeDesktopRoot: string;
   agyConvertedRoot: string;
+  agyArchiveRoot: string;
   minSize: number;
   maxSampleChars: number;
   limit?: number;
@@ -353,6 +355,15 @@ function archivedCodexSessions(root: string): DejaSession[] {
   }));
 }
 
+function claudeDesktopSessions(root: string): DejaSession[] {
+  return findJsonlRecursively(root).map((path) => ({
+    id: stableSessionId(basename(path), path),
+    harness: "claude",
+    project: "desktop-import",
+    path,
+  }));
+}
+
 export function agySessionIdFromPath(path: string): string {
   let cursor = dirname(path);
   while (cursor !== dirname(cursor)) {
@@ -386,6 +397,15 @@ function convertedAgySessions(root: string): DejaSession[] {
     id: stableSessionId(agySessionIdFromPath(path), path),
     harness: "antigravity",
     project: "macbook-agy",
+    path,
+  }));
+}
+
+function archivedAgySessions(root: string): DejaSession[] {
+  return findJsonlRecursively(root).map((path) => ({
+    id: stableSessionId(basename(path), path),
+    harness: "antigravity",
+    project: "legacy-archive",
     path,
   }));
 }
@@ -468,7 +488,9 @@ export function loadSessionInventory(options: CliOptions, model = "inventory"): 
 
   for (const source of payload.sessions) add(source, "deja");
   for (const source of archivedCodexSessions(options.codexArchiveRoot)) add(source, "codex-archive");
+  for (const source of claudeDesktopSessions(options.claudeDesktopRoot)) add(source, "claude-desktop");
   for (const source of convertedAgySessions(options.agyConvertedRoot)) add(source, "agy-converted");
+  for (const source of archivedAgySessions(options.agyArchiveRoot)) add(source, "agy-archive");
 
   return {
     sessions: [...sessions.values()].sort((a, b) => a.date.localeCompare(b.date) || a.key.localeCompare(b.key)),
@@ -955,7 +977,13 @@ function summarizeInventory(
   meta: Pick<ReturnType<typeof loadSessionInventory>, "dejaVersion" | "dejaSchemaVersion" | "excluded" | "missingPaths">,
 ): InventorySummary {
   const byHarness = emptyHarnessCounts();
-  const origins: InventorySummary["origins"] = { deja: 0, "codex-archive": 0, "agy-converted": 0 };
+  const origins: InventorySummary["origins"] = {
+    deja: 0,
+    "codex-archive": 0,
+    "claude-desktop": 0,
+    "agy-converted": 0,
+    "agy-archive": 0,
+  };
   for (const session of sessions) {
     byHarness[session.harness]++;
     origins[session.origin]++;
@@ -1419,7 +1447,9 @@ export function parseCliOptions(argv: string[]): CliOptions {
     outputDir: defaultOutputDir(),
     dejaBin: join(homedir(), ".local", "bin", "deja"),
     codexArchiveRoot: join(homedir(), ".codex", "archived_sessions"),
+    claudeDesktopRoot: join(homedir(), "recallnest", "data", "desktop-import"),
     agyConvertedRoot: join(homedir(), "machine-data", "macbook-agy"),
+    agyArchiveRoot: join(homedir(), ".cache", "agy-sync", "db-jsonl"),
     minSize: DEFAULT_MIN_SIZE,
     maxSampleChars: DEFAULT_SAMPLE_CHARS,
     allowDejaVersionMismatch: false,
@@ -1442,7 +1472,9 @@ export function parseCliOptions(argv: string[]): CliOptions {
     } else if (arg === "--output-dir") options.outputDir = resolve(next());
     else if (arg === "--deja-bin") options.dejaBin = resolve(next());
     else if (arg === "--codex-archive-root") options.codexArchiveRoot = resolve(next());
+    else if (arg === "--claude-desktop-root") options.claudeDesktopRoot = resolve(next());
     else if (arg === "--agy-converted-root") options.agyConvertedRoot = resolve(next());
+    else if (arg === "--agy-archive-root") options.agyArchiveRoot = resolve(next());
     else if (arg === "--min-size") options.minSize = parseInteger(arg, next());
     else if (arg === "--max-sample-chars") options.maxSampleChars = parseInteger(arg, next());
     else if (arg === "--limit") options.limit = parseInteger(arg, next());

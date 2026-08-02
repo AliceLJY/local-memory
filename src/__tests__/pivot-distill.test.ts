@@ -210,6 +210,14 @@ describe("pivot-distill transcript adapters", () => {
       text: "转换后的用户内容",
       timestamp: undefined,
     }]);
+    expect(extractTurnsFromRecord({
+      type: "assistant",
+      message: { role: "assistant", content: "旧 SQLite 转换后的回答" },
+    }, "antigravity-jsonl")).toEqual([{
+      role: "assistant",
+      text: "旧 SQLite 转换后的回答",
+      timestamp: undefined,
+    }]);
   });
 
   it("coalesces streamed assistant parts but keeps user turns separate", () => {
@@ -365,10 +373,18 @@ describe("pivot-distill resume identity and CLI", () => {
     const defaults = parseCliOptions([]);
     expect(defaults.mode).toBe("inventory");
     expect(defaults.minSize).toBe(100_000);
-    const parsed = parseCliOptions(["--mode", "estimate", "--min-size", "200000", "--limit", "12"]);
+    const parsed = parseCliOptions([
+      "--mode", "estimate",
+      "--min-size", "200000",
+      "--limit", "12",
+      "--claude-desktop-root", "/tmp/desktop-import",
+      "--agy-archive-root", "/tmp/agy-archive",
+    ]);
     expect(parsed.mode).toBe("estimate");
     expect(parsed.minSize).toBe(200_000);
     expect(parsed.limit).toBe(12);
+    expect(parsed.claudeDesktopRoot).toBe("/tmp/desktop-import");
+    expect(parsed.agyArchiveRoot).toBe("/tmp/agy-archive");
     expect(parseCliOptions(["--mode", "run", "--allow-external-llm"]).allowExternalLlm).toBeTrue();
   });
 
