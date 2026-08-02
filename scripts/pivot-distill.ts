@@ -41,6 +41,7 @@ export const DEFAULT_MIN_SIZE = 100_000;
 export const DEFAULT_SAMPLE_CHARS = 24_000;
 export const SUPPORTED_DEJA_SCHEMA = 2;
 export const VERIFIED_DEJA_VERSION = "0.16.5";
+export const JUDGE_MAX_OUTPUT_TOKENS = 1_800;
 
 export type RunMode = "inventory" | "estimate" | "run";
 export type RawHarness = "claude" | "codex" | "kimi" | "gemini" | "antigravity";
@@ -1018,9 +1019,11 @@ async function runEstimate(sessions: SessionMeta[], options: CliOptions): Promis
   const selected = options.limit ? candidates.slice(0, options.limit) : candidates;
   const byHarness = emptyHarnessCounts();
   let totalSampleChars = 0;
+  let totalRequestChars = 0;
   let totalTurns = 0;
   let totalSampledTurns = 0;
   let totalRedactions = 0;
+  let llmEligibleSessions = 0;
   let emptySessions = 0;
   let changedSessions = 0;
   let failedSessions = 0;
@@ -1031,6 +1034,10 @@ async function runEstimate(sessions: SessionMeta[], options: CliOptions): Promis
       if (prepared.changed) changedSessions++;
       if (prepared.sample.chars === 0) emptySessions++;
       totalSampleChars += prepared.sample.chars;
+      if (!prepared.changed && prepared.sample.chars >= 100) {
+        llmEligibleSessions++;
+        totalRequestChars += JUDGE_SYSTEM_PROMPT.length + judgePrompt(session, prepared.sample.text).length;
+      }
       totalTurns += prepared.sample.originalTurns;
       totalSampledTurns += prepared.sample.sampledTurns;
       totalRedactions += prepared.sample.redactions;
@@ -1048,11 +1055,14 @@ async function runEstimate(sessions: SessionMeta[], options: CliOptions): Promis
     sessions: selected.length,
     byHarness,
     totalSampleChars,
+    totalRequestChars,
+    llmEligibleSessions,
     estimatedInputTokens: {
-      lowerBound: Math.ceil(totalSampleChars / 4),
-      upperBound: Math.ceil(totalSampleChars / 1.5),
-      note: "Character-based range only; use official model pricing before run mode.",
+      lowerBound: Math.ceil(totalRequestChars / 4),
+      upperBound: Math.ceil(totalRequestChars),
+      note: "Includes system prompt, per-session metadata, and redacted sample. Character-based range only; use official model pricing before run mode.",
     },
+    estimatedMaxOutputTokens: llmEligibleSessions * JUDGE_MAX_OUTPUT_TOKENS,
     totalTurns,
     totalSampledTurns,
     totalRedactions,
@@ -1297,7 +1307,7 @@ async function runJudgment(sessions: SessionMeta[], options: CliOptions): Promis
       for (let attempt = failures.length + 1; attempt <= 3; attempt++) {
         let raw = "";
         try {
-          raw = await llm.chatLong(JUDGE_SYSTEM_PROMPT, judgePrompt(session, prepared.sample.text), 1800);
+          raw = await llm.chatLong(JUDGE_SYSTEM_PROMPT, judgePrompt(session, prepared.sample.text), JUDGE_MAX_OUTPUT_TOKENS);
           if (!raw) throw new Error("LLM returned an empty response");
           const judged = validateJudgeResponse(raw, prepared.sample.text, prepared.sample.userText, session);
           successful = {
