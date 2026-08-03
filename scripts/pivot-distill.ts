@@ -45,8 +45,8 @@ import { normalizeCanonicalKey } from "../src/memory-boundaries.js";
 import { redactSecrets } from "../src/pii-detector.js";
 import { loadConfig, loadDotEnv, resolveEnv } from "../src/runtime-config.js";
 
-export const PROMPT_VERSION = "pivot-v3";
-export const PIPELINE_VERSION = "pivot-pipeline-v3";
+export const PROMPT_VERSION = "pivot-v4";
+export const PIPELINE_VERSION = "pivot-pipeline-v4";
 export const PIVOT_MODEL = "qwen3.7-plus-2026-05-26";
 export const DEFAULT_MIN_SIZE = 1;
 export const DEFAULT_SAMPLE_CHARS = 24_000;
@@ -984,6 +984,15 @@ function labelForRole(role: PreparedSampleTurn["role"]): string {
   return role === "user" ? "用户：" : "助手：";
 }
 
+// Models quoting "verbatim from the input" legitimately copy the rendered role
+// label; grounding must compare against the unlabeled turn text.
+export function stripRoleLabel(quote: string): string {
+  for (const label of ["用户：", "助手："]) {
+    if (quote.startsWith(label)) return quote.slice(label.length).trim();
+  }
+  return quote;
+}
+
 function minimumContentLength(length: number): number {
   return length <= MIN_TURN_PAYLOAD + OMISSION_MARKER.length * 2 ? length : MIN_TURN_PAYLOAD;
 }
@@ -1281,8 +1290,8 @@ export function validateJudgeResponse(
     if (item.anchor.includes(OMISSION_MARKER)) {
       throw new Error("candidate anchor cannot quote the sampling omission marker");
     }
-    const anchor = item.anchor.trim();
-    if (!userGrounding.some((turn) => turn.text.includes(anchor))) {
+    const anchor = stripRoleLabel(item.anchor.trim());
+    if (anchor.length < 2 || !userGrounding.some((turn) => turn.text.includes(anchor))) {
       throw new Error("candidate anchor is not grounded in a sampled user turn");
     }
     if (typeof item.key !== "string" || item.key.trim().length < 2 || item.key.length > 120) {
@@ -1308,10 +1317,12 @@ export function validateJudgeResponse(
       throw new Error("case requires at least two grounded evidence quotes");
     }
     for (const quote of evidence) {
+      const quoteText = stripRoleLabel(quote.trim());
       if (
         quote.includes(OMISSION_MARKER) ||
         quote.length > 500 ||
-        !sample.groundingTurns.some((turn) => turn.text.includes(quote.trim()))
+        quoteText.length === 0 ||
+        !sample.groundingTurns.some((turn) => turn.text.includes(quoteText))
       ) {
         throw new Error("candidate evidence is not grounded in the sampled session");
       }
@@ -1325,7 +1336,7 @@ export function validateJudgeResponse(
       text: redactForExternalModel(item.text.trim()).text,
       anchor: redactForExternalModel(anchor).text,
       canonicalKey,
-      evidence: evidence.map((quote) => redactForExternalModel(quote.trim()).text),
+      evidence: evidence.map((quote) => redactForExternalModel(stripRoleLabel(quote.trim())).text),
       proposedScope: "memory:pivot",
       proposedCategory: categoryForKind(kind),
       tags: [
@@ -1400,7 +1411,7 @@ export const JUDGE_SYSTEM_PROMPT = `你是历史会话中的“关键转折提�
 4. case：具体问题如何被解决，必须同时有问题和已验证的解法。
 
 不要收：普通进度、计划、寒暄、工具输出、代码细节罗列、尚未验证的猜测、助手单方面建议、系统/开发者提示词。
-anchor 必须逐字摘自“用户：”文本，作为用户以后会怎么问起这件事的口语锚点；evidence 中每一句也必须逐字存在于输入，且不得引用 ${OMISSION_MARKER}。judgment_shift / decision 至少给 1 条 evidence；case 至少给 2 条 evidence，分别覆盖问题与已验证解法；preference_rule 的最低证据是用户 anchor。text 用自然中文写，不加【类型】【契机】等模板前缀。
+anchor 必须逐字摘自“用户：”文本，作为用户以后会怎么问起这件事的口语锚点；evidence 中每一句也必须逐字存在于输入，且不得引用 ${OMISSION_MARKER}。引用时不要把行首的“用户：”“助手：”角色标签抄进 anchor 或 evidence，只引标签后的正文。judgment_shift / decision 至少给 1 条 evidence；case 至少给 2 条 evidence，分别覆盖问题与已验证解法；preference_rule 的最低证据是用户 anchor。text 用自然中文写，不加【类型】【契机】等模板前缀。
 
 只输出一个 JSON 对象：
 {"hasPivot":false,"candidates":[]}

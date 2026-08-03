@@ -28,8 +28,10 @@ import {
   OMISSION_MARKER,
   parseCliOptions,
   parserKindFor,
+  PIPELINE_VERSION,
   PIVOT_MODEL,
   pivotRequestProfileHash,
+  PROMPT_VERSION,
   readSessionTurns,
   redactForExternalModel,
   retryDecision,
@@ -426,6 +428,42 @@ describe("pivot-distill sampling and validation", () => {
     ]);
   });
 
+  it("grounds anchors and evidence that copy the rendered role labels", () => {
+    const sample = buildStratifiedSample([
+      { role: "user", text: "这条路以后不要再走" },
+      { role: "assistant", text: "已记录原因" },
+    ], 500);
+    const result = validateJudgeResponse(JSON.stringify({
+      hasPivot: true,
+      candidates: [{
+        kind: "decision",
+        text: "Alice 决定不再采用旧路线，因为它会让同一数据形成两个真相源。",
+        anchor: "用户：这条路以后不要再走",
+        key: "拒绝双真相源",
+        evidence: ["助手：已记录原因"],
+      }],
+    }), sample, session());
+    expect(result.hasPivot).toBeTrue();
+    expect(result.candidates[0].anchor).toBe("这条路以后不要再走");
+    expect(result.candidates[0].evidence).toEqual(["已记录原因"]);
+  });
+
+  it("rejects evidence that is only a bare role label", () => {
+    expect(() => validateJudgeResponse(JSON.stringify({
+      hasPivot: true,
+      candidates: [{
+        kind: "decision",
+        text: "Alice 决定不再采用旧路线，因为它会让同一数据形成两个真相源。",
+        anchor: "这条路以后不要再走",
+        key: "拒绝双真相源",
+        evidence: ["助手："],
+      }],
+    }), buildStratifiedSample([
+      { role: "user", text: "这条路以后不要再走" },
+      { role: "assistant", text: "已记录原因" },
+    ], 500), session())).toThrow("substantive");
+  });
+
   it("rejects hallucinated anchors and inconsistent empty verdicts", () => {
     expect(() => validateJudgeResponse(JSON.stringify({
       hasPivot: true,
@@ -551,8 +589,8 @@ describe("pivot-distill sampling and validation", () => {
         mode: "transport",
         selectionHash,
         outboundSampleSha256: entry.sampleSha256,
-        promptVersion: "pivot-v3",
-        pipelineVersion: "pivot-pipeline-v3",
+        promptVersion: PROMPT_VERSION,
+        pipelineVersion: PIPELINE_VERSION,
         model: PIVOT_MODEL,
         requestProfileHash: fixture.descriptor.requestProfileHash,
         bundleHash: fixture.descriptor.bundleHash,
