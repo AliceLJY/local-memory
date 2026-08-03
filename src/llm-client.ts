@@ -106,10 +106,55 @@ export interface LLMConfig {
   apiKey: string;
   model: string;
   baseURL: string;
+  /** SDK-level retries. Undefined preserves the OpenAI SDK default. */
+  maxRetries?: number;
   /** Request timeout in ms (default: 15000) */
   timeoutMs?: number;
   /** Temperature (default: 0.1 for consistency) */
   temperature?: number;
+}
+
+export type DetailedChatTokenLimit =
+  | { parameter: "max_tokens"; value: number }
+  | { parameter: "max_completion_tokens"; value: number };
+
+export interface DetailedChatOptions {
+  /** Per-request temperature override. Defaults to the client configuration. */
+  temperature?: number;
+  /** OpenAI-compatible JSON object response mode. */
+  responseFormat?: { type: "json_object" };
+  /** Provider extension used by Qwen-compatible endpoints. */
+  enableThinking?: boolean;
+  /** Explicitly records both the token-limit field name and its value. */
+  tokenLimit?: DetailedChatTokenLimit;
+}
+
+export interface DetailedChatUsage {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  cachedPromptTokens?: number;
+  reasoningTokens?: number;
+}
+
+export interface DetailedChatResult {
+  content: string | null;
+  finishReason: string | null;
+  responseModel: string;
+  usage: DetailedChatUsage | null;
+}
+
+interface OpenAICompatibleLongChatRequest {
+  model: string;
+  messages: [
+    { role: "system"; content: string },
+    { role: "user"; content: string },
+  ];
+  temperature: number;
+  max_tokens?: number;
+  max_completion_tokens?: number;
+  response_format?: { type: "json_object" };
+  enable_thinking?: boolean;
 }
 
 export interface DedupDecision {
@@ -190,9 +235,13 @@ export class LLMClient {
 
   constructor(config: LLMConfig, breakerConfig?: Partial<CircuitBreakerConfig>) {
     const apiKey = resolveEnvVars(config.apiKey);
+    if (config.maxRetries !== undefined && (!Number.isInteger(config.maxRetries) || config.maxRetries < 0)) {
+      throw new Error("LLM maxRetries must be a non-negative integer");
+    }
     this.client = new OpenAI({
       apiKey,
       baseURL: config.baseURL,
+      ...(config.maxRetries !== undefined ? { maxRetries: config.maxRetries } : {}),
     });
     this.model = config.model;
     this.temperature = config.temperature ?? 0.1;
@@ -696,29 +745,68 @@ export class LLMClient {
     }
   }
 
-  async chatLong(system: string, user: string, maxTokens = 2000): Promise<string | null> {
+  async chatLongDetailed(
+    system: string,
+    user: string,
+    options: DetailedChatOptions = {},
+  ): Promise<DetailedChatResult | null> {
     if (!this.breaker.canAttempt()) {
       return null;
     }
+
+    const tokenLimit = options.tokenLimit ?? { parameter: "max_tokens", value: 2000 };
+    if (!Number.isInteger(tokenLimit.value) || tokenLimit.value <= 0) {
+      throw new Error("Detailed chat token limit must be a positive integer");
+    }
+    const temperature = options.temperature ?? this.temperature;
+    if (!Number.isFinite(temperature)) {
+      throw new Error("Detailed chat temperature must be finite");
+    }
+    const request: OpenAICompatibleLongChatRequest = {
+      model: this.model,
+      messages: [
+        { role: "system", content: system },
+        { role: "user", content: user },
+      ],
+      temperature,
+    };
+    if (tokenLimit.parameter === "max_tokens") {
+      request.max_tokens = tokenLimit.value;
+    } else {
+      request.max_completion_tokens = tokenLimit.value;
+    }
+    if (options.responseFormat) request.response_format = options.responseFormat;
+    if (options.enableThinking !== undefined) request.enable_thinking = options.enableThinking;
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs * 2);
 
     try {
       const response = await this.client.chat.completions.create(
-        {
-          model: this.model,
-          messages: [
-            { role: "system", content: system },
-            { role: "user", content: user },
-          ],
-          temperature: this.temperature,
-          max_tokens: maxTokens,
-        },
+        request,
         { signal: controller.signal },
       );
 
-      const result = response.choices[0]?.message?.content?.trim() || null;
+      const choice = response.choices[0];
+      const usage = response.usage
+        ? {
+            promptTokens: response.usage.prompt_tokens,
+            completionTokens: response.usage.completion_tokens,
+            totalTokens: response.usage.total_tokens,
+            ...(response.usage.prompt_tokens_details?.cached_tokens !== undefined
+              ? { cachedPromptTokens: response.usage.prompt_tokens_details.cached_tokens }
+              : {}),
+            ...(response.usage.completion_tokens_details?.reasoning_tokens !== undefined
+              ? { reasoningTokens: response.usage.completion_tokens_details.reasoning_tokens }
+              : {}),
+          }
+        : null;
+      const result: DetailedChatResult = {
+        content: choice?.message?.content?.trim() || null,
+        finishReason: choice?.finish_reason ?? null,
+        responseModel: response.model,
+        usage,
+      };
       this.breaker.recordSuccess();
       return result;
     } catch (err) {
@@ -727,6 +815,13 @@ export class LLMClient {
     } finally {
       clearTimeout(timeout);
     }
+  }
+
+  async chatLong(system: string, user: string, maxTokens = 2000): Promise<string | null> {
+    const result = await this.chatLongDetailed(system, user, {
+      tokenLimit: { parameter: "max_tokens", value: maxTokens },
+    });
+    return result?.content ?? null;
   }
 
   // --------------------------------------------------------------------------

@@ -1,25 +1,49 @@
 import { describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
   acquireOutputLock,
+  aggregateDetailedUsage,
   agySessionIdFromPath,
+  assertExternalModeAuthorization,
+  assertPivotResponseMetadata,
+  buildPivotRequestProfile,
+  buildPivotLlmConfig,
   buildStratifiedSample,
   coalesceTurns,
   extractAgyUserText,
   extractTurnsFromRecord,
+  filteredDejaEnvironment,
+  frozenSampleHash,
   geminiJsonTurns,
   harnessFamily,
+  inventoryCompletenessReasons,
   isSyntheticSession,
+  loadFrozenBundle,
+  loadSessionInventory,
+  main,
+  OMISSION_MARKER,
   parseCliOptions,
   parserKindFor,
+  PIVOT_MODEL,
+  pivotRequestProfileHash,
+  readSessionTurns,
   redactForExternalModel,
+  retryDecision,
+  resolveBundleSamplePath,
   resolveClaudeSessionPath,
+  safeEndpoint,
+  selectFrozenEntries,
+  selectionIdentityHash,
   sessionFingerprint,
   stableSessionId,
+  storedResultMatches,
   validateJudgeResponse,
+  writeFrozenBundle,
+  type FrozenBundleDescriptor,
   type SessionMeta,
 } from "../../scripts/pivot-distill.js";
 
@@ -39,6 +63,46 @@ function session(overrides: Partial<SessionMeta> = {}): SessionMeta {
     fingerprint: "abc",
     ...overrides,
   };
+}
+
+function sha256(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function bundleIdentityHashForTest(input: {
+  requestProfileHash: string;
+  manifestSha256: string;
+  sessions: number;
+  eligibleSessions: number;
+  deferredSessions: number;
+}): string {
+  return sha256(JSON.stringify({ schemaVersion: 1, ...input }));
+}
+
+function createBundleFixture(): {
+  outputDir: string;
+  bundleDir: string;
+  descriptor: FrozenBundleDescriptor;
+} {
+  const outputDir = mkdtempSync(join(tmpdir(), "pivot-bundle-"));
+  const source = join(outputDir, "source.jsonl");
+  writeFileSync(source, "{}\n");
+  const sourceStat = statSync(source, { bigint: true });
+  const profile = buildPivotRequestProfile("https://example.invalid/compatible-mode/v1?ignored=1#fragment", 600);
+  const profileHash = pivotRequestProfileHash(profile);
+  const sample = buildStratifiedSample([
+    { role: "user", text: "以后必须保留可回查证据" },
+    { role: "assistant", text: "已记录这条规则" },
+  ], 600);
+  const descriptor = writeFrozenBundle(outputDir, [{
+    session: session({
+      path: source,
+      sizeBytes: Number(sourceStat.size),
+      mtimeNs: sourceStat.mtimeNs.toString(),
+    }),
+    sample,
+  }], profile, profileHash);
+  return { outputDir, bundleDir: join(outputDir, "input-bundle"), descriptor };
 }
 
 describe("pivot-distill harness normalization", () => {
@@ -238,12 +302,13 @@ describe("pivot-distill sampling and validation", () => {
       role: index % 2 === 0 ? "user" as const : "assistant" as const,
       text: `turn-${index}-${"x".repeat(90)}`,
     }));
-    const sample = buildStratifiedSample(turns, 260);
-    expect(sample.text.length).toBeLessThanOrEqual(260);
+    const sample = buildStratifiedSample(turns, 400);
+    expect(sample.text.length).toBeLessThanOrEqual(400);
     expect(sample.text).toContain("turn-0-");
     expect(sample.text).toContain("turn-4-");
     expect(sample.text).toContain("turn-8-");
-    expect(sample.sampledTurns).toBe(3);
+    expect(sample.sampledTurns).toBe(5);
+    expect(sample.sampledExchanges).toBe(3);
   });
 
   it("redacts a secret before the per-turn cut", () => {
@@ -253,6 +318,66 @@ describe("pivot-distill sampling and validation", () => {
     }], 2_000);
     expect(sample.text).toContain("[REDACTED:anthropic");
     expect(sample.text).not.toContain("sk-ant-");
+  });
+
+  it("keeps complete exchanges verbatim when the 24K-style cap is not reached", () => {
+    const turns = [
+      { role: "assistant" as const, text: "开头的 assistant-only 说明" },
+      { role: "user" as const, text: "连续用户一" },
+      { role: "user" as const, text: "连续用户二" },
+      { role: "assistant" as const, text: "回答二之一" },
+      { role: "assistant" as const, text: "回答二之二" },
+      { role: "user" as const, text: "结尾尚未回答" },
+    ];
+    const sample = buildStratifiedSample(turns, 2_000);
+    expect(sample.originalTurns).toBe(turns.length);
+    expect(sample.sampledTurns).toBe(turns.length);
+    expect(sample.exchanges).toBe(4);
+    expect(sample.sampledExchanges).toBe(4);
+    expect(sample.omittedTurns).toBe(0);
+    expect(sample.text).toContain("助手：回答二之一\n助手：回答二之二");
+    expect(sample.text).toEndWith("用户：结尾尚未回答");
+  });
+
+  it("preserves head, centered middle, and tail evidence in long user and assistant turns", () => {
+    const user = `USER_HEAD_${"u".repeat(180)}_USER_MIDDLE_${"v".repeat(180)}_USER_TAIL`;
+    const assistant = `ASSIST_HEAD_${"a".repeat(180)}_ASSIST_MIDDLE_${"b".repeat(180)}_ASSIST_TAIL`;
+    const sample = buildStratifiedSample([
+      { role: "user", text: user },
+      { role: "assistant", text: assistant },
+    ], 340);
+    expect(sample.text.length).toBeLessThanOrEqual(340);
+    expect(sample.text).toContain("USER_HEAD_");
+    expect(sample.text).toContain("USER_MIDDLE_");
+    expect(sample.text).toContain("USER_TAIL");
+    expect(sample.text).toContain("ASSIST_HEAD_");
+    expect(sample.text).toContain("ASSIST_MIDDLE_");
+    expect(sample.text).toContain("ASSIST_TAIL");
+    expect(sample.text).toContain(OMISSION_MARKER);
+    expect(sample.roles.user.truncatedTurns).toBe(1);
+    expect(sample.roles.assistant.truncatedTurns).toBe(1);
+    expect(sample.coverageRatio).toBeGreaterThan(0);
+    expect(sample.coverageRatio).toBeLessThan(1);
+  });
+
+  it("handles one-role sessions, multiple long turns, boundary rounding, and deterministic output", () => {
+    const turns = Array.from({ length: 6 }, (_, index) => ({
+      role: "user" as const,
+      text: `USER-${index}-HEAD-${"x".repeat(180)}-MID-${index}-${"y".repeat(180)}-TAIL-${index}`,
+    }));
+    const first = buildStratifiedSample(turns, 420);
+    const second = buildStratifiedSample(turns, 420);
+    expect(second).toEqual(first);
+    expect(first.text.length).toBeLessThanOrEqual(420);
+    expect(first.roles.assistant.turns).toBe(0);
+    expect(first.text).toContain("USER-0-HEAD");
+    expect(first.text).toContain("TAIL-5");
+    expect(first.sampledExchanges).toBeLessThan(turns.length);
+  });
+
+  it("rejects a cap too small for even one minimum exchange", () => {
+    expect(() => buildStratifiedSample([{ role: "user", text: "x".repeat(200) }], 20))
+      .toThrow("too small to preserve the required first/last exchanges");
   });
 
   it("redacts common transcript credentials and personal contacts before external LLM use", () => {
@@ -275,7 +400,10 @@ describe("pivot-distill sampling and validation", () => {
   });
 
   it("accepts grounded candidates and constructs controlled metadata", () => {
-    const sample = "用户：这条路以后不要再走\n助手：已记录原因";
+    const sample = buildStratifiedSample([
+      { role: "user", text: "这条路以后不要再走" },
+      { role: "assistant", text: "已记录原因" },
+    ], 500);
     const result = validateJudgeResponse(JSON.stringify({
       hasPivot: true,
       candidates: [{
@@ -285,7 +413,7 @@ describe("pivot-distill sampling and validation", () => {
         key: "拒绝双真相源",
         evidence: ["已记录原因"],
       }],
-    }), sample, "这条路以后不要再走", session());
+    }), sample, session());
     expect(result.hasPivot).toBeTrue();
     expect(result.candidates[0].canonicalKey).toBe("pivot-decision-拒绝双真相源");
     expect(result.candidates[0].proposedScope).toBe("memory:pivot");
@@ -307,13 +435,60 @@ describe("pivot-distill sampling and validation", () => {
         anchor: "输入里并不存在的原话",
         key: "保留证据",
       }],
-    }), "用户：请保留出处", "请保留出处", session())).toThrow("not grounded");
+    }), buildStratifiedSample([{ role: "user", text: "请保留出处" }], 500), session())).toThrow("not grounded");
     expect(() => validateJudgeResponse(
       JSON.stringify({ hasPivot: true, candidates: [] }),
-      "用户：请保留出处",
-      "请保留出处",
+      buildStratifiedSample([{ role: "user", text: "请保留出处" }], 500),
       session(),
     )).toThrow("requires at least one");
+  });
+
+  it("enforces evidence counts by pivot kind and forbids quoting omission markers", () => {
+    const base = {
+      text: "Alice 明确改变了既有判断，并给出了可以回查的真实原因与结果。",
+      anchor: "我改主意了",
+      key: "改变判断",
+    };
+    const sample = buildStratifiedSample([
+      { role: "user", text: "我改主意了" },
+      { role: "assistant", text: "旧判断失效" },
+      { role: "assistant", text: "新方案已经验证" },
+    ], 500);
+    expect(() => validateJudgeResponse(JSON.stringify({
+      hasPivot: true,
+      candidates: [{ kind: "judgment_shift", ...base, evidence: [] }],
+    }), sample, session())).toThrow("at least one");
+    expect(() => validateJudgeResponse(JSON.stringify({
+      hasPivot: true,
+      candidates: [{ kind: "case", ...base, evidence: ["旧判断失效"] }],
+    }), sample, session())).toThrow("at least two");
+    expect(() => validateJudgeResponse(JSON.stringify({
+      hasPivot: true,
+      candidates: [{ kind: "preference_rule", ...base, anchor: `我改${OMISSION_MARKER}主意了`, evidence: [] }],
+    }), buildStratifiedSample([{ role: "user", text: `我改${OMISSION_MARKER}主意了` }], 500), session()))
+      .toThrow("omission marker");
+  });
+
+  it("requires distinct substantive evidence grounded within individual turns", () => {
+    const sample = buildStratifiedSample([
+      { role: "user", text: "部署时出现连接失败" },
+      { role: "assistant", text: "先修配置文件" },
+      { role: "assistant", text: "之后验证服务恢复" },
+    ], 500);
+    const candidate = {
+      kind: "case",
+      text: "部署连接失败的问题通过修正配置并验证服务恢复得到了解决。",
+      anchor: "部署时出现连接失败",
+      key: "部署连接修复",
+    };
+    expect(() => validateJudgeResponse(JSON.stringify({
+      hasPivot: true,
+      candidates: [{ ...candidate, evidence: ["助手：", "助手："] }],
+    }), sample, session())).toThrow(/distinct|substantive/);
+    expect(() => validateJudgeResponse(JSON.stringify({
+      hasPivot: true,
+      candidates: [{ ...candidate, evidence: ["连接失败先修配置文件", "之后验证服务恢复"] }],
+    }), sample, session())).toThrow("not grounded");
   });
 
   it("rejects an anchor that appears only in an assistant turn", () => {
@@ -325,7 +500,10 @@ describe("pivot-distill sampling and validation", () => {
         anchor: "这句话只由助手说过",
         key: "助手冒充用户锚点",
       }],
-    }), "用户：另一句话\n助手：这句话只由助手说过", "另一句话", session())).toThrow("user turn");
+    }), buildStratifiedSample([
+      { role: "user", text: "另一句话" },
+      { role: "assistant", text: "这句话只由助手说过" },
+    ], 500), session())).toThrow("user turn");
   });
 
   it("rejects sensitive material in a model-proposed canonical key", () => {
@@ -336,8 +514,435 @@ describe("pivot-distill sampling and validation", () => {
         text: "Alice 明确决定采用这个方案，并说明了此前方案不再继续使用。",
         anchor: "采用这个方案",
         key: `token=${"s".repeat(24)}`,
+        evidence: ["采用这个方案"],
       }],
-    }), "用户：采用这个方案", "采用这个方案", session())).toThrow("sensitive material");
+    }), buildStratifiedSample([{ role: "user", text: "采用这个方案" }], 500), session()))
+      .toThrow("sensitive material");
+  });
+
+  it("round-trips all four validated pivot kinds through strict stored-result checks", () => {
+    const fixture = createBundleFixture();
+    const loaded = loadFrozenBundle(
+      fixture.bundleDir,
+      fixture.descriptor.bundleHash,
+      fixture.descriptor.requestProfileHash,
+    );
+    const entry = loaded.entries[0];
+    const selectionHash = selectionIdentityHash("transport", [entry]);
+    const evidenceByKind = {
+      judgment_shift: ["已记录这条规则"],
+      decision: ["已记录这条规则"],
+      preference_rule: [],
+      case: ["以后必须保留可回查证据", "已记录这条规则"],
+    } as const;
+    for (const kind of ["judgment_shift", "decision", "preference_rule", "case"] as const) {
+      const judged = validateJudgeResponse(JSON.stringify({
+        hasPivot: true,
+        candidates: [{
+          kind,
+          text: "用户明确要求以后必须保留可回查证据，最终结果需要能够追溯到真实出处。",
+          anchor: "以后必须保留可回查证据",
+          key: `round-trip-${kind}`,
+          evidence: evidenceByKind[kind],
+        }],
+      }), entry.sample, entry.session);
+      const storedResult = {
+        schemaVersion: 1,
+        mode: "transport",
+        selectionHash,
+        outboundSampleSha256: entry.sampleSha256,
+        promptVersion: "pivot-v3",
+        pipelineVersion: "pivot-pipeline-v3",
+        model: PIVOT_MODEL,
+        requestProfileHash: fixture.descriptor.requestProfileHash,
+        bundleHash: fixture.descriptor.bundleHash,
+        session: entry.session,
+        status: "ok",
+        hasPivot: true,
+        candidates: judged.candidates,
+        sample: entry.sample.metrics,
+        responseChars: 100,
+        attempts: 1,
+        responseModel: PIVOT_MODEL,
+        finishReason: "stop",
+        completedAt: "2026-08-03T00:00:00.000Z",
+      };
+      expect(storedResultMatches(
+        storedResult, entry, "transport", selectionHash, PIVOT_MODEL, fixture.descriptor.bundleHash,
+        fixture.descriptor.requestProfileHash, 3,
+      )).toBeTrue();
+      if (kind === "decision") {
+        expect(storedResultMatches(
+          { ...storedResult, session: { ...entry.session, date: "2026-08-04" } },
+          entry, "transport", selectionHash, PIVOT_MODEL, fixture.descriptor.bundleHash,
+          fixture.descriptor.requestProfileHash, 3,
+        )).toBeFalse();
+        expect(storedResultMatches(
+          {
+            ...storedResult,
+            candidates: [{ ...judged.candidates[0], unexpected: "must-not-pass-through" }],
+          },
+          entry, "transport", selectionHash, PIVOT_MODEL, fixture.descriptor.bundleHash,
+          fixture.descriptor.requestProfileHash, 3,
+        )).toBeFalse();
+      }
+    }
+  });
+});
+
+describe("pivot-distill request identity and frozen bundle", () => {
+  it("builds a credential-free fixed-model request profile whose hash covers every request choice", () => {
+    const endpoint = safeEndpoint("https://user:password@example.invalid//compatible-mode/v1/?token=secret#fragment");
+    expect(endpoint).toBe("https://example.invalid/compatible-mode/v1");
+    expect(endpoint).not.toContain("password");
+    expect(endpoint).not.toContain("token=");
+    const profile = buildPivotRequestProfile(
+      "https://user:password@example.invalid/compatible-mode/v1?token=secret#fragment",
+      24_000,
+    );
+    expect(profile.model).toBe(PIVOT_MODEL);
+    expect(profile.enableThinking).toBeFalse();
+    expect(profile.responseFormat).toEqual({ type: "json_object" });
+    expect(profile.tokenLimit).toEqual({ parameter: "max_tokens", value: 1_800 });
+    expect(profile.retryPolicy).toEqual({
+      maxSessionAttempts: 3,
+      sdkMaxRetries: 0,
+      backoffMs: [250, 500],
+      maxRetryAfterMs: 5_000,
+      retryableHttpStatuses: [408, 409, 429],
+      retryableServerErrorRange: "500-599",
+    });
+    expect(profile.promptHashes.system).toHaveLength(64);
+    expect(profile.promptHashes.userTemplate).toHaveLength(64);
+    expect(profile.promptHashes.jsonSchema).toHaveLength(64);
+    const identity = pivotRequestProfileHash(profile);
+    expect(pivotRequestProfileHash({ ...profile, temperature: 0.2 })).not.toBe(identity);
+    expect(pivotRequestProfileHash({
+      ...profile,
+      sampling: { ...profile.sampling, omissionMarker: "different" },
+    })).not.toBe(identity);
+    expect(pivotRequestProfileHash({
+      ...profile,
+      retryPolicy: { ...profile.retryPolicy, sdkMaxRetries: 1 },
+    })).not.toBe(identity);
+    expect(buildPivotLlmConfig({
+      apiKey: "test-key",
+      model: "qwen-turbo",
+      baseURL: "https://user:secret@example.invalid/v1?token=hidden#fragment",
+    }, profile, 12_345)).toMatchObject({
+      baseURL: "https://example.invalid/compatible-mode/v1",
+      model: PIVOT_MODEL,
+      maxRetries: 0,
+      timeoutMs: 12_345,
+    });
+  });
+
+  it("keeps retry cost bounded and aggregates usage from every billed attempt", () => {
+    const policy = buildPivotRequestProfile("https://example.invalid/v1").retryPolicy;
+    expect(retryDecision({ status: 429, headers: { "retry-after": "0.01" } }, 1, policy))
+      .toEqual({ retry: true, delayMs: 10 });
+    expect(retryDecision({ status: 500 }, 2, policy)).toEqual({ retry: true, delayMs: 500 });
+    expect(retryDecision({ status: 401 }, 1, policy)).toEqual({ retry: false, delayMs: 0 });
+    expect(retryDecision({ status: 429 }, 3, policy)).toEqual({ retry: false, delayMs: 0 });
+    expect(aggregateDetailedUsage([
+      { promptTokens: 10, completionTokens: 2, totalTokens: 12 },
+      { promptTokens: 11, completionTokens: 3, totalTokens: 14, cachedPromptTokens: 4 },
+    ])).toEqual({
+      promptTokens: 21,
+      completionTokens: 5,
+      totalTokens: 26,
+      cachedPromptTokens: 4,
+    });
+  });
+
+  it("makes the external stage and exact outbound sample set part of report identity", () => {
+    const fixture = createBundleFixture();
+    const loaded = loadFrozenBundle(
+      fixture.bundleDir, fixture.descriptor.bundleHash, fixture.descriptor.requestProfileHash,
+    );
+    expect(selectionIdentityHash("transport", loaded.entries))
+      .not.toBe(selectionIdentityHash("regression", loaded.entries));
+    const changed = structuredClone(loaded.entries);
+    changed[0].sampleSha256 = "f".repeat(64);
+    expect(selectionIdentityHash("transport", changed))
+      .not.toBe(selectionIdentityHash("transport", loaded.entries));
+  });
+
+  it("writes 0700/0600 bundles and reloads only exact expected identities", () => {
+    const fixture = createBundleFixture();
+    expect(statSync(fixture.bundleDir).mode & 0o777).toBe(0o700);
+    expect(statSync(join(fixture.bundleDir, "bundle.json")).mode & 0o777).toBe(0o600);
+    const loaded = loadFrozenBundle(
+      fixture.bundleDir,
+      fixture.descriptor.bundleHash,
+      fixture.descriptor.requestProfileHash,
+    );
+    expect(loaded.entries).toHaveLength(1);
+    expect(loaded.entries[0].status).toBe("eligible");
+    expect(frozenSampleHash(loaded.entries[0].sample)).toBe(loaded.entries[0].sampleSha256);
+    expect(() => loadFrozenBundle(
+      fixture.bundleDir,
+      "wrong-bundle",
+      fixture.descriptor.requestProfileHash,
+    )).toThrow("unexpected bundleHash");
+    expect(() => loadFrozenBundle(
+      fixture.bundleDir,
+      fixture.descriptor.bundleHash,
+      "wrong-profile",
+    )).toThrow("unexpected requestProfileHash");
+  });
+
+  it("rejects mutated samples, duplicate session keys, and paths outside the bundle root", () => {
+    const mutated = createBundleFixture();
+    const manifestEntry = JSON.parse(readFileSync(join(mutated.bundleDir, "manifest.jsonl"), "utf8")) as {
+      sampleFile: string;
+    };
+    const samplePath = join(mutated.bundleDir, manifestEntry.sampleFile);
+    const sample = JSON.parse(readFileSync(samplePath, "utf8")) as Record<string, unknown>;
+    sample.text = `X${String(sample.text).slice(1)}`;
+    writeFileSync(samplePath, `${JSON.stringify(sample)}\n`);
+    expect(() => loadFrozenBundle(
+      mutated.bundleDir,
+      mutated.descriptor.bundleHash,
+      mutated.descriptor.requestProfileHash,
+    )).toThrow("sample grounding projection mismatch");
+
+    const mutatedMetrics = createBundleFixture();
+    const metricsEntry = JSON.parse(
+      readFileSync(join(mutatedMetrics.bundleDir, "manifest.jsonl"), "utf8"),
+    ) as { sampleFile: string };
+    const metricsPath = join(mutatedMetrics.bundleDir, metricsEntry.sampleFile);
+    const metricsSample = JSON.parse(readFileSync(metricsPath, "utf8")) as {
+      metrics: { redactions: number };
+    };
+    metricsSample.metrics.redactions += 1;
+    writeFileSync(metricsPath, `${JSON.stringify(metricsSample)}\n`);
+    expect(() => loadFrozenBundle(
+      mutatedMetrics.bundleDir,
+      mutatedMetrics.descriptor.bundleHash,
+      mutatedMetrics.descriptor.requestProfileHash,
+    )).toThrow("sample hash mismatch");
+
+    const duplicate = createBundleFixture();
+    const originalLine = readFileSync(join(duplicate.bundleDir, "manifest.jsonl"), "utf8").trim();
+    const duplicatedManifest = `${originalLine}\n${originalLine}\n`;
+    const descriptor = JSON.parse(readFileSync(join(duplicate.bundleDir, "bundle.json"), "utf8")) as FrozenBundleDescriptor;
+    descriptor.manifestSha256 = sha256(duplicatedManifest);
+    descriptor.sessions = 2;
+    descriptor.eligibleSessions = 2;
+    descriptor.deferredSessions = 0;
+    descriptor.bundleHash = bundleIdentityHashForTest({
+      requestProfileHash: descriptor.requestProfileHash,
+      manifestSha256: descriptor.manifestSha256,
+      sessions: descriptor.sessions,
+      eligibleSessions: descriptor.eligibleSessions,
+      deferredSessions: descriptor.deferredSessions,
+    });
+    writeFileSync(join(duplicate.bundleDir, "manifest.jsonl"), duplicatedManifest);
+    writeFileSync(join(duplicate.bundleDir, "bundle.json"), `${JSON.stringify(descriptor)}\n`);
+    expect(() => loadFrozenBundle(
+      duplicate.bundleDir,
+      descriptor.bundleHash,
+      descriptor.requestProfileHash,
+    )).toThrow("duplicate session key");
+
+    expect(() => resolveBundleSamplePath(duplicate.bundleDir, "/tmp/outside.json"))
+      .toThrow("must stay relative");
+    expect(() => resolveBundleSamplePath(duplicate.bundleDir, "samples/../../outside.json"))
+      .toThrow("must stay relative");
+  });
+
+  it("rejects a request profile that no longer matches the fixed prompt/body/sampling contract", () => {
+    const fixture = createBundleFixture();
+    const descriptor = JSON.parse(readFileSync(join(fixture.bundleDir, "bundle.json"), "utf8")) as FrozenBundleDescriptor;
+    descriptor.requestProfile.temperature = 0.7;
+    writeFileSync(join(fixture.bundleDir, "bundle.json"), `${JSON.stringify(descriptor)}\n`);
+    expect(() => loadFrozenBundle(
+      fixture.bundleDir,
+      fixture.descriptor.bundleHash,
+      fixture.descriptor.requestProfileHash,
+    )).toThrow("current fixed pivot contract");
+  });
+
+  it("rejects duplicate keys before bundle creation and keeps assistant-only sessions deferred", () => {
+    const outputDir = mkdtempSync(join(tmpdir(), "pivot-bundle-duplicate-"));
+    const profile = buildPivotRequestProfile("https://example.invalid/v1", 500);
+    const profileHash = pivotRequestProfileHash(profile);
+    const userSample = buildStratifiedSample([{ role: "user", text: "保留证据" }], 500);
+    expect(() => writeFrozenBundle(outputDir, [
+      { session: session(), sample: userSample },
+      { session: session(), sample: userSample },
+    ], profile, profileHash)).toThrow("duplicate session key");
+
+    const assistantOnlyDir = mkdtempSync(join(tmpdir(), "pivot-bundle-deferred-"));
+    const assistantOnly = buildStratifiedSample([{ role: "assistant", text: "只有助手内容" }], 500);
+    const descriptor = writeFrozenBundle(assistantOnlyDir, [{ session: session(), sample: assistantOnly }], profile, profileHash);
+    const loaded = loadFrozenBundle(join(assistantOnlyDir, "input-bundle"), descriptor.bundleHash, descriptor.requestProfileHash);
+    expect(loaded.entries[0].status).toBe("deferred");
+    expect(loaded.entries[0].reason).toBe("no-parseable-user-text");
+  });
+});
+
+describe("pivot-distill source enumeration and parse integrity", () => {
+  it("filters inherited DEJA variables from both inventory subprocesses", () => {
+    expect(filteredDejaEnvironment({ DEJA_HOME: "/wrong", DEJA_CONFIG: "/wrong/config", KEEP_ME: "yes" }))
+      .toEqual({ KEEP_ME: "yes" });
+  });
+
+  it("enumerates four endpoint families plus Claude Desktop and both AGY origins with a fake Deja", () => {
+    const root = mkdtempSync(join(tmpdir(), "pivot-inventory-"));
+    const sourceRoot = join(root, "sources");
+    mkdirSync(sourceRoot, { recursive: true });
+    const dejaSessions = ([
+      ["claude", "claude.jsonl"],
+      ["codex", "codex.jsonl"],
+      ["kimi", "kimi.jsonl"],
+      ["gemini", "gemini.json"],
+    ] as const).map(([harness, name], index) => {
+      const path = join(sourceRoot, name);
+      writeFileSync(path, harness === "gemini" ? "{\"messages\":[]}" : "{}\n");
+      return { id: `deja-${index}-${harness}`, harness, path, project: "test" };
+    });
+    const codexArchiveRoot = join(root, "codex-archive");
+    const claudeDesktopRoot = join(root, "desktop");
+    const agyConvertedRoot = join(root, "agy", "brain", "session-one", ".system_generated", "logs");
+    const agyArchiveRoot = join(root, "agy-archive");
+    for (const directory of [codexArchiveRoot, claudeDesktopRoot, agyConvertedRoot, agyArchiveRoot]) {
+      mkdirSync(directory, { recursive: true });
+    }
+    writeFileSync(join(codexArchiveRoot, "archive.jsonl"), "{}\n");
+    writeFileSync(join(claudeDesktopRoot, "desktop.jsonl"), "{}\n");
+    writeFileSync(join(agyConvertedRoot, "transcript_full.jsonl"), "{}\n");
+    writeFileSync(join(agyArchiveRoot, "legacy.jsonl"), "{}\n");
+    const payload = JSON.stringify({ schema_version: 2, sessions: dejaSessions });
+    const dejaBin = join(root, "fake-deja.ts");
+    writeFileSync(dejaBin, `#!/usr/bin/env bun
+if (process.env.DEJA_HOME || process.env.DEJA_CONFIG) process.exit(91);
+if (process.argv[2] === "version") console.log("deja 0.16.5");
+else console.log(${JSON.stringify(payload)});
+`);
+    chmodSync(dejaBin, 0o700);
+    const options = parseCliOptions([
+      "--deja-bin", dejaBin,
+      "--codex-archive-root", codexArchiveRoot,
+      "--claude-desktop-root", claudeDesktopRoot,
+      "--agy-converted-root", join(root, "agy"),
+      "--agy-archive-root", agyArchiveRoot,
+    ]);
+    const previousDejaHome = process.env.DEJA_HOME;
+    const previousDejaConfig = process.env.DEJA_CONFIG;
+    process.env.DEJA_HOME = "/must-not-reach-child";
+    process.env.DEJA_CONFIG = "/must-not-reach-child/config";
+    try {
+      const loaded = loadSessionInventory(options);
+      expect(loaded.missingPaths).toBe(0);
+      expect(new Set(loaded.sessions.map((item) => item.harness))).toEqual(new Set(["claude-code", "codex", "kimi", "agy"]));
+      expect(loaded.sessions.some((item) => item.origin === "claude-desktop")).toBeTrue();
+      expect(loaded.sessions.some((item) => item.origin === "agy-converted")).toBeTrue();
+      expect(loaded.sessions.some((item) => item.origin === "agy-archive")).toBeTrue();
+      expect(loaded.sessions.some((item) => item.rawHarness === "gemini")).toBeTrue();
+      expect(inventoryCompletenessReasons(loaded.sessions, loaded.missingPaths)).toEqual([]);
+      expect(inventoryCompletenessReasons(
+        loaded.sessions.filter((item) => item.origin !== "claude-desktop"), 0,
+      )).toContain("origin=claude-desktop has zero sessions");
+      expect(inventoryCompletenessReasons(
+        loaded.sessions.filter((item) => item.rawHarness !== "gemini"), 0,
+      )).toContain("rawHarness=gemini has zero sessions");
+      expect(inventoryCompletenessReasons(loaded.sessions, 1)).toContain("missingPaths=1");
+    } finally {
+      if (previousDejaHome === undefined) delete process.env.DEJA_HOME;
+      else process.env.DEJA_HOME = previousDejaHome;
+      if (previousDejaConfig === undefined) delete process.env.DEJA_CONFIG;
+      else process.env.DEJA_CONFIG = previousDejaConfig;
+    }
+  });
+
+  it("treats malformed JSONL as a bundle-blocking parse failure", async () => {
+    const root = mkdtempSync(join(tmpdir(), "pivot-malformed-"));
+    const path = join(root, "bad.jsonl");
+    writeFileSync(path, "{\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"ok\"}}\nnot-json\n");
+    await expect(readSessionTurns(session({ path, parserKind: "codex-rollout" })))
+      .rejects.toThrow("Malformed JSONL at line 2");
+  });
+});
+
+describe("pivot-distill external authorization and exact selection", () => {
+  const common = [
+    "--input-bundle", "/tmp/frozen",
+    "--bundle-hash", "bundle-hash",
+    "--request-profile-hash", "profile-hash",
+    "--allow-external-llm",
+  ];
+
+  it("requires exact transport, separate regression, and dual full authorization", () => {
+    expect(() => assertExternalModeAuthorization(parseCliOptions([
+      "--mode", "transport", ...common,
+    ]))).toThrow("exactly one");
+    expect(() => assertExternalModeAuthorization(parseCliOptions([
+      "--mode", "transport", ...common, "--session-key", "codex:one",
+    ]))).not.toThrow();
+    expect(() => assertExternalModeAuthorization(parseCliOptions([
+      "--mode", "transport", ...common,
+      "--session-key", "codex:one",
+      "--output-dir", "/tmp/frozen/results",
+    ]))).toThrow("must not be the frozen input bundle");
+    expect(() => assertExternalModeAuthorization(parseCliOptions([
+      "--mode", "regression", ...common, "--session-key", "codex:one",
+    ]))).toThrow("allow-regression-run");
+    expect(() => assertExternalModeAuthorization(parseCliOptions([
+      "--mode", "regression", ...common, "--session-key", "codex:one", "--allow-regression-run",
+    ]))).not.toThrow();
+    expect(() => assertExternalModeAuthorization(parseCliOptions([
+      "--mode", "full", ...common,
+    ]))).toThrow("allow-full-run");
+    expect(() => assertExternalModeAuthorization(parseCliOptions([
+      "--mode", "full", ...common, "--allow-full-run",
+    ]))).not.toThrow();
+  });
+
+  it("rejects truncated or wrong-model responses even if their content could parse", () => {
+    expect(() => assertPivotResponseMetadata({ finishReason: "length", responseModel: PIVOT_MODEL }))
+      .toThrow("finish_reason=length");
+    expect(() => assertPivotResponseMetadata({ finishReason: "stop", responseModel: "rolling-alias" }))
+      .toThrow("response model mismatch");
+    expect(() => assertPivotResponseMetadata({ finishReason: "stop", responseModel: PIVOT_MODEL }))
+      .not.toThrow();
+  });
+
+  it("refuses transport before any live inventory branch when authorization is missing", async () => {
+    await expect(main([
+      "--mode", "transport",
+      "--deja-bin", "/definitely/not/a/deja/binary",
+      "--output-dir", join(tmpdir(), "must-not-be-created-by-unauthorized-transport"),
+    ])).rejects.toThrow("--allow-external-llm");
+  });
+
+  it("selects one exact frozen key while full selects every eligible sample", () => {
+    const fixture = createBundleFixture();
+    const loaded = loadFrozenBundle(
+      fixture.bundleDir,
+      fixture.descriptor.bundleHash,
+      fixture.descriptor.requestProfileHash,
+    );
+    const transport = parseCliOptions([
+      "--mode", "transport",
+      "--input-bundle", fixture.bundleDir,
+      "--bundle-hash", fixture.descriptor.bundleHash,
+      "--request-profile-hash", fixture.descriptor.requestProfileHash,
+      "--session-key", loaded.entries[0].session.key,
+      "--allow-external-llm",
+    ]);
+    expect(selectFrozenEntries(loaded, transport).map((entry) => entry.session.key))
+      .toEqual([loaded.entries[0].session.key]);
+    const full = parseCliOptions([
+      "--mode", "full",
+      "--input-bundle", fixture.bundleDir,
+      "--bundle-hash", fixture.descriptor.bundleHash,
+      "--request-profile-hash", fixture.descriptor.requestProfileHash,
+      "--allow-external-llm",
+      "--allow-full-run",
+    ]);
+    expect(selectFrozenEntries(loaded, full)).toHaveLength(fixture.descriptor.eligibleSessions);
   });
 });
 
@@ -361,6 +966,7 @@ describe("pivot-distill resume identity and CLI", () => {
     expect(sessionFingerprint({ ...base, date: "2026-08-03" })).not.toBe(fingerprint);
     expect(sessionFingerprint({ ...base, pipelineVersion: "pipeline-v2" })).not.toBe(fingerprint);
     expect(sessionFingerprint({ ...base, sampleSha256: "sample-v2" })).not.toBe(fingerprint);
+    expect(sessionFingerprint({ ...base, requestProfileHash: "profile-v2" })).not.toBe(fingerprint);
   });
 
   it("excludes synthetic digest sessions without keyword-deciding pivots", () => {
@@ -369,10 +975,10 @@ describe("pivot-distill resume identity and CLI", () => {
     expect(isSyntheticSession({ path: "/sessions/x.jsonl", project: "recallnest" })).toBeFalse();
   });
 
-  it("defaults to inventory and keeps run thresholds configurable", () => {
+  it("defaults to all non-synthetic sessions and parses frozen execution selectors", () => {
     const defaults = parseCliOptions([]);
     expect(defaults.mode).toBe("inventory");
-    expect(defaults.minSize).toBe(100_000);
+    expect(defaults.minSize).toBe(1);
     const parsed = parseCliOptions([
       "--mode", "estimate",
       "--min-size", "200000",
@@ -385,12 +991,24 @@ describe("pivot-distill resume identity and CLI", () => {
     expect(parsed.limit).toBe(12);
     expect(parsed.claudeDesktopRoot).toBe("/tmp/desktop-import");
     expect(parsed.agyArchiveRoot).toBe("/tmp/agy-archive");
-    expect(parseCliOptions(["--mode", "run", "--allow-external-llm"]).allowExternalLlm).toBeTrue();
+    const transport = parseCliOptions([
+      "--mode", "transport",
+      "--input-bundle", "/tmp/bundle",
+      "--bundle-hash", "bundle",
+      "--request-profile-hash", "profile",
+      "--session-key", "codex:one",
+      "--allow-external-llm",
+    ]);
+    expect(transport.mode).toBe("transport");
+    expect(transport.sessionKeys).toEqual(["codex:one"]);
+    expect(transport.allowExternalLlm).toBeTrue();
   });
 
   it("rejects concurrent writers to the same output directory", () => {
     const outputDir = mkdtempSync(join(tmpdir(), "pivot-distill-lock-"));
+    chmodSync(outputDir, 0o755);
     const release = acquireOutputLock(outputDir);
+    expect(statSync(outputDir).mode & 0o777).toBe(0o700);
     expect(() => acquireOutputLock(outputDir)).toThrow("already in use");
     release();
     const releaseAgain = acquireOutputLock(outputDir);
