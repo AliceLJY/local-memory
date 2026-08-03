@@ -2770,6 +2770,7 @@ async function runBundleJudgment(bundle: LoadedFrozenBundle, options: CliOptions
   const selected = selectFrozenEntries(bundle, options);
   const mode = options.mode as ExternalRunMode;
   const selectionHash = selectionIdentityHash(mode, selected);
+  let exhaustedSessions = 0;
   mkdirSync(join(options.outputDir, "results"), { recursive: true, mode: 0o700 });
   mkdirSync(join(options.outputDir, "invalid"), { recursive: true, mode: 0o700 });
   mkdirSync(join(options.outputDir, "attempts"), { recursive: true, mode: 0o700 });
@@ -3052,18 +3053,27 @@ async function runBundleJudgment(bundle: LoadedFrozenBundle, options: CliOptions
     });
     console.error(`[${options.mode}] ${index + 1}/${selected.length} ${session.key} ${result.status}`);
     if (!successful) {
-      compileRunReports(
-        options.outputDir, selected, model, mode, selectionHash, "partial", bundleHash, requestProfileHash,
-        requestProfile.retryPolicy.maxSessionAttempts,
-      );
-      throw new Error(
-        `Stopped after ${failures.length} failed attempt(s) on one session; ` +
-        "inspect the redacted invalid artifact before resuming",
-      );
+      // transport/regression are first-verification modes: stop on the first
+      // exhausted session so a human inspects before anything else is sent.
+      // full is a long-tail sweep: the invalid result is already on disk, so
+      // keep going and compile the final report as partial (plan step 23:
+      // failures stay partial; they are never dressed up as complete).
+      if (options.mode !== "full") {
+        compileRunReports(
+          options.outputDir, selected, model, mode, selectionHash, "partial", bundleHash, requestProfileHash,
+          requestProfile.retryPolicy.maxSessionAttempts,
+        );
+        throw new Error(
+          `Stopped after ${failures.length} failed attempt(s) on one session; ` +
+          "inspect the redacted invalid artifact before resuming",
+        );
+      }
+      exhaustedSessions += 1;
     }
   }
   compileRunReports(
-    options.outputDir, selected, model, mode, selectionHash, "complete", bundleHash, requestProfileHash,
+    options.outputDir, selected, model, mode, selectionHash,
+    exhaustedSessions > 0 ? "partial" : "complete", bundleHash, requestProfileHash,
     requestProfile.retryPolicy.maxSessionAttempts,
   );
 }
