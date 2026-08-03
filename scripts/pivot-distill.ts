@@ -2842,6 +2842,14 @@ async function runBundleJudgment(bundle: LoadedFrozenBundle, options: CliOptions
         elapsedMs: 0,
       });
       if (existingResult.status !== "ok") {
+        // full treats an exhausted invalid as a legitimate terminal state
+        // (same decision as the in-run long-tail policy): keep it on disk,
+        // count it, move on. First-verification modes still refuse so a
+        // human inspects before any retry spends more.
+        if (options.mode === "full") {
+          exhaustedSessions += 1;
+          continue;
+        }
         compileRunReports(
           options.outputDir, selected, model, mode, selectionHash, "partial", bundleHash, requestProfileHash,
           requestProfile.retryPolicy.maxSessionAttempts,
