@@ -46,7 +46,7 @@ import { redactSecrets } from "../src/pii-detector.js";
 import { loadConfig, loadDotEnv, resolveEnv } from "../src/runtime-config.js";
 
 export const PROMPT_VERSION = "pivot-v6";
-export const PIPELINE_VERSION = "pivot-pipeline-v5";
+export const PIPELINE_VERSION = "pivot-pipeline-v6";
 export const PIVOT_MODEL = "qwen3.7-plus-2026-05-26";
 export const DEFAULT_MIN_SIZE = 1;
 export const DEFAULT_SAMPLE_CHARS = 24_000;
@@ -1271,7 +1271,11 @@ export function validateJudgeResponse(
   }
   const userGrounding = sample.groundingTurns.filter((turn) => turn.role === "user");
   const candidates: JudgeCandidate[] = [];
+  // One malformed candidate must not void the session's other valid candidates;
+  // if none survive, the hasPivot=true check below still fails the response.
+  const droppedCandidates: string[] = [];
   for (const item of response.candidates as RawJudgeCandidate[]) {
+    try {
     if (!item || typeof item !== "object") throw new Error("candidate must be an object");
     const candidateKeys = Object.keys(item as Record<string, unknown>);
     if (candidateKeys.some((key) => !["kind", "text", "anchor", "key", "evidence"].includes(key))) {
@@ -1348,9 +1352,13 @@ export function validateJudgeResponse(
         `raw:${session.rawHarness}`,
       ],
     });
+    } catch (error) {
+      droppedCandidates.push((error as Error).message);
+    }
   }
   if (response.hasPivot && candidates.length === 0) {
-    throw new Error("hasPivot=true requires at least one valid candidate");
+    const detail = droppedCandidates.length > 0 ? `: ${droppedCandidates.join("; ")}` : "";
+    throw new Error(`hasPivot=true requires at least one valid candidate${detail}`);
   }
   return { hasPivot: response.hasPivot, candidates };
 }

@@ -514,6 +514,50 @@ describe("pivot-distill sampling and validation", () => {
     ], 500), session())).toThrow("requires at least two grounded");
   });
 
+  it("keeps valid candidates when a sibling candidate fails validation", () => {
+    const sample = buildStratifiedSample([
+      { role: "user", text: "这条路以后不要再走" },
+      { role: "assistant", text: "已记录原因" },
+    ], 500);
+    const result = validateJudgeResponse(JSON.stringify({
+      hasPivot: true,
+      candidates: [
+        {
+          kind: "decision",
+          text: "Alice 决定不再采用旧路线，因为它会让同一数据形成两个真相源。",
+          anchor: "这条路以后不要再走",
+          key: "拒绝双真相源",
+          evidence: ["已记录原因"],
+        },
+        {
+          kind: "case",
+          text: "记录了一次问题的解决过程，包含问题定位与验证后的修复方案说明。",
+          anchor: "输入里不存在的锚点句子",
+          key: "不合格案例",
+          evidence: ["已记录原因", "这句也不存在于输入之中"],
+        },
+      ],
+    }), sample, session());
+    expect(result.candidates.length).toBe(1);
+    expect(result.candidates[0].canonicalKey).toBe("pivot-decision-拒绝双真相源");
+  });
+
+  it("still fails when no candidate survives validation", () => {
+    expect(() => validateJudgeResponse(JSON.stringify({
+      hasPivot: true,
+      candidates: [{
+        kind: "decision",
+        text: "Alice 决定不再采用旧路线，因为它会让同一数据形成两个真相源。",
+        anchor: "输入里不存在的锚点句子",
+        key: "拒绝双真相源",
+        evidence: ["已记录原因"],
+      }],
+    }), buildStratifiedSample([
+      { role: "user", text: "这条路以后不要再走" },
+      { role: "assistant", text: "已记录原因" },
+    ], 500), session())).toThrow("requires at least one valid candidate");
+  });
+
   it("rejects hallucinated anchors and inconsistent empty verdicts", () => {
     expect(() => validateJudgeResponse(JSON.stringify({
       hasPivot: true,
