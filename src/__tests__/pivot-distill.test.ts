@@ -464,6 +464,56 @@ describe("pivot-distill sampling and validation", () => {
     ], 500), session())).toThrow("substantive");
   });
 
+  it("keeps verbatim evidence and drops a paraphrased quote without voiding the candidate", () => {
+    const sample = buildStratifiedSample([
+      { role: "user", text: "这条路以后不要再走" },
+      { role: "assistant", text: "已记录原因" },
+    ], 500);
+    const result = validateJudgeResponse(JSON.stringify({
+      hasPivot: true,
+      candidates: [{
+        kind: "decision",
+        text: "Alice 决定不再采用旧路线，因为它会让同一数据形成两个真相源。",
+        anchor: "这条路以后不要再走",
+        key: "拒绝双真相源",
+        evidence: ["已记录原因", "助手当时总结说旧路线会造成双真相源问题"],
+      }],
+    }), sample, session());
+    expect(result.candidates[0].evidence).toEqual(["已记录原因"]);
+  });
+
+  it("rejects a candidate when no evidence survives grounding", () => {
+    expect(() => validateJudgeResponse(JSON.stringify({
+      hasPivot: true,
+      candidates: [{
+        kind: "decision",
+        text: "Alice 决定不再采用旧路线，因为它会让同一数据形成两个真相源。",
+        anchor: "这条路以后不要再走",
+        key: "拒绝双真相源",
+        evidence: ["助手当时总结说旧路线会造成双真相源问题"],
+      }],
+    }), buildStratifiedSample([
+      { role: "user", text: "这条路以后不要再走" },
+      { role: "assistant", text: "已记录原因" },
+    ], 500), session())).toThrow("requires at least one grounded");
+  });
+
+  it("rejects a case that drops below two grounded evidence quotes", () => {
+    expect(() => validateJudgeResponse(JSON.stringify({
+      hasPivot: true,
+      candidates: [{
+        kind: "case",
+        text: "记录了一次问题的解决过程，包含问题定位与验证后的修复方案说明。",
+        anchor: "这条路以后不要再走",
+        key: "示例案例",
+        evidence: ["已记录原因", "这句在输入里根本不存在的概括描述"],
+      }],
+    }), buildStratifiedSample([
+      { role: "user", text: "这条路以后不要再走" },
+      { role: "assistant", text: "已记录原因" },
+    ], 500), session())).toThrow("requires at least two grounded");
+  });
+
   it("rejects hallucinated anchors and inconsistent empty verdicts", () => {
     expect(() => validateJudgeResponse(JSON.stringify({
       hasPivot: true,
@@ -526,7 +576,7 @@ describe("pivot-distill sampling and validation", () => {
     expect(() => validateJudgeResponse(JSON.stringify({
       hasPivot: true,
       candidates: [{ ...candidate, evidence: ["连接失败先修配置文件", "之后验证服务恢复"] }],
-    }), sample, session())).toThrow("not grounded");
+    }), sample, session())).toThrow("requires at least two grounded");
   });
 
   it("rejects an anchor that appears only in an assistant turn", () => {

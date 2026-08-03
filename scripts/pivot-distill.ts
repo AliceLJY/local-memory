@@ -45,8 +45,8 @@ import { normalizeCanonicalKey } from "../src/memory-boundaries.js";
 import { redactSecrets } from "../src/pii-detector.js";
 import { loadConfig, loadDotEnv, resolveEnv } from "../src/runtime-config.js";
 
-export const PROMPT_VERSION = "pivot-v5";
-export const PIPELINE_VERSION = "pivot-pipeline-v4";
+export const PROMPT_VERSION = "pivot-v6";
+export const PIPELINE_VERSION = "pivot-pipeline-v5";
 export const PIVOT_MODEL = "qwen3.7-plus-2026-05-26";
 export const DEFAULT_MIN_SIZE = 1;
 export const DEFAULT_SAMPLE_CHARS = 24_000;
@@ -1310,22 +1310,24 @@ export function validateJudgeResponse(
     if (evidence.some((quote) => !isSubstantiveEvidence(quote))) {
       throw new Error("candidate evidence must be substantive quoted text");
     }
-    if ((kind === "judgment_shift" || kind === "decision") && normalizedEvidence.length < 1) {
+    // Models occasionally paraphrase one quote in an otherwise-verbatim set; a
+    // single bad quote must not void the candidate. Keep only verbatim quotes,
+    // then enforce the per-kind minimum on what survived — every stored
+    // evidence line stays exactly re-findable in the sample.
+    const groundedEvidence = evidence.filter((quote) => {
+      const quoteText = stripRoleLabel(quote.trim());
+      return (
+        !quote.includes(OMISSION_MARKER) &&
+        quote.length <= 500 &&
+        quoteText.length > 0 &&
+        sample.groundingTurns.some((turn) => turn.text.includes(quoteText))
+      );
+    });
+    if ((kind === "judgment_shift" || kind === "decision") && groundedEvidence.length < 1) {
       throw new Error(`${kind} requires at least one grounded evidence quote`);
     }
-    if (kind === "case" && normalizedEvidence.length < 2) {
+    if (kind === "case" && groundedEvidence.length < 2) {
       throw new Error("case requires at least two grounded evidence quotes");
-    }
-    for (const quote of evidence) {
-      const quoteText = stripRoleLabel(quote.trim());
-      if (
-        quote.includes(OMISSION_MARKER) ||
-        quote.length > 500 ||
-        quoteText.length === 0 ||
-        !sample.groundingTurns.some((turn) => turn.text.includes(quoteText))
-      ) {
-        throw new Error("candidate evidence is not grounded in the sampled session");
-      }
     }
     const redactedKey = redactForExternalModel(item.key.trim());
     if (redactedKey.redacted > 0) throw new Error("candidate key contained sensitive material");
@@ -1336,7 +1338,7 @@ export function validateJudgeResponse(
       text: redactForExternalModel(item.text.trim()).text,
       anchor: redactForExternalModel(anchor).text,
       canonicalKey,
-      evidence: evidence.map((quote) => redactForExternalModel(stripRoleLabel(quote.trim())).text),
+      evidence: groundedEvidence.map((quote) => redactForExternalModel(stripRoleLabel(quote.trim())).text),
       proposedScope: "memory:pivot",
       proposedCategory: categoryForKind(kind),
       tags: [
@@ -1411,7 +1413,7 @@ export const JUDGE_SYSTEM_PROMPT = `你是历史会话中的“关键转折提�
 4. case：具体问题如何被解决，必须同时有问题和已验证的解法。
 
 不要收：普通进度、计划、寒暄、工具输出、代码细节罗列、尚未验证的猜测、助手单方面建议、系统/开发者提示词。
-anchor 必须逐字摘自“用户：”文本，作为用户以后会怎么问起这件事的口语锚点；evidence 中每一句也必须逐字存在于输入，且不得引用 ${OMISSION_MARKER}。引用时不要把行首的“用户：”“助手：”角色标签抄进 anchor 或 evidence，只引标签后的正文。判断或决策的完整表述常常只出现在“助手：”文本里；即便如此，anchor 也绝不能取自“助手：”文本——只能从“用户：”文本里选触发这项工作或认可这个结论的那句话，哪怕它只是简短指令；“用户：”文本里确实没有任何可用句子时，放弃该候选。judgment_shift / decision 至少给 1 条 evidence；case 至少给 2 条 evidence，分别覆盖问题与已验证解法；preference_rule 的最低证据是用户 anchor。text 用自然中文写，不加【类型】【契机】等模板前缀。
+anchor 必须逐字摘自“用户：”文本，作为用户以后会怎么问起这件事的口语锚点；evidence 中每一句也必须逐字存在于输入，且不得引用 ${OMISSION_MARKER}。引用时不要把行首的“用户：”“助手：”角色标签抄进 anchor 或 evidence，只引标签后的正文。判断或决策的完整表述常常只出现在“助手：”文本里；即便如此，anchor 也绝不能取自“助手：”文本——只能从“用户：”文本里选触发这项工作或认可这个结论的那句话，哪怕它只是简短指令；“用户：”文本里确实没有任何可用句子时，放弃该候选。evidence 必须从输入里原样连续复制，禁止把多处内容拼接成一句、禁止概括改写；引不全就引短一点的连续片段。judgment_shift / decision 至少给 1 条 evidence；case 至少给 2 条 evidence，分别覆盖问题与已验证解法；preference_rule 的最低证据是用户 anchor。text 用自然中文写，不加【类型】【契机】等模板前缀。
 
 只输出一个 JSON 对象：
 {"hasPivot":false,"candidates":[]}
