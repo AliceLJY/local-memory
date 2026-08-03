@@ -45,7 +45,7 @@ import { normalizeCanonicalKey } from "../src/memory-boundaries.js";
 import { redactSecrets } from "../src/pii-detector.js";
 import { loadConfig, loadDotEnv, resolveEnv } from "../src/runtime-config.js";
 
-export const PROMPT_VERSION = "pivot-v4";
+export const PROMPT_VERSION = "pivot-v5";
 export const PIPELINE_VERSION = "pivot-pipeline-v4";
 export const PIVOT_MODEL = "qwen3.7-plus-2026-05-26";
 export const DEFAULT_MIN_SIZE = 1;
@@ -1411,7 +1411,7 @@ export const JUDGE_SYSTEM_PROMPT = `你是历史会话中的“关键转折提�
 4. case：具体问题如何被解决，必须同时有问题和已验证的解法。
 
 不要收：普通进度、计划、寒暄、工具输出、代码细节罗列、尚未验证的猜测、助手单方面建议、系统/开发者提示词。
-anchor 必须逐字摘自“用户：”文本，作为用户以后会怎么问起这件事的口语锚点；evidence 中每一句也必须逐字存在于输入，且不得引用 ${OMISSION_MARKER}。引用时不要把行首的“用户：”“助手：”角色标签抄进 anchor 或 evidence，只引标签后的正文。judgment_shift / decision 至少给 1 条 evidence；case 至少给 2 条 evidence，分别覆盖问题与已验证解法；preference_rule 的最低证据是用户 anchor。text 用自然中文写，不加【类型】【契机】等模板前缀。
+anchor 必须逐字摘自“用户：”文本，作为用户以后会怎么问起这件事的口语锚点；evidence 中每一句也必须逐字存在于输入，且不得引用 ${OMISSION_MARKER}。引用时不要把行首的“用户：”“助手：”角色标签抄进 anchor 或 evidence，只引标签后的正文。判断或决策的完整表述常常只出现在“助手：”文本里；即便如此，anchor 也绝不能取自“助手：”文本——只能从“用户：”文本里选触发这项工作或认可这个结论的那句话，哪怕它只是简短指令；“用户：”文本里确实没有任何可用句子时，放弃该候选。judgment_shift / decision 至少给 1 条 evidence；case 至少给 2 条 evidence，分别覆盖问题与已验证解法；preference_rule 的最低证据是用户 anchor。text 用自然中文写，不加【类型】【契机】等模板前缀。
 
 只输出一个 JSON 对象：
 {"hasPivot":false,"candidates":[]}
