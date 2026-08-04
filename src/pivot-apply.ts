@@ -91,6 +91,32 @@ export type PivotApplyDisposition =
   | "conflict"
   | "rejected";
 
+/**
+ * The stock embedder only retries connection-class errors; HTTP 429/5xx throw
+ * straight through (embedder.ts isTransientEmbeddingError). A bulk apply makes
+ * thousands of calls, so rate-limit blips must not void a whole batch — retry
+ * with backoff here, and only here (single-write callers keep stock behavior).
+ */
+async function embedWithRetry(
+  embedder: PersistMemoryDeps["embedder"],
+  text: string,
+  delaysMs: readonly number[] = [1000, 5000, 15000],
+): Promise<number[]> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= delaysMs.length; attempt++) {
+    try {
+      return await embedder.embedPassage(text);
+    } catch (err) {
+      lastErr = err;
+      const msg = String((err as Error)?.message ?? err);
+      const retriable = /\b(429|500|502|503|504)\b|rate.?limit|overloaded/i.test(msg);
+      if (!retriable || attempt === delaysMs.length) throw err;
+      await new Promise((r) => setTimeout(r, delaysMs[attempt]));
+    }
+  }
+  throw lastErr;
+}
+
 export interface PivotApplyOutcome {
   candidateHash: string;
   batchId: string;
@@ -160,7 +186,12 @@ export async function persistPivotCandidate(
     };
   }
 
-  const vector = await deps.embedder.embedPassage(text);
+  const vector = await embedWithRetry(deps.embedder, text);
+  // The store layer never validates vector shape (only importEntry does), so an
+  // empty/short vector would land silently and poison retrieval — assert here.
+  if (!Array.isArray(vector) || vector.length === 0) {
+    throw new Error(`embedding returned an empty vector for candidate ${input.candidateHash.slice(0, 12)}`);
+  }
   const language = detectLang(text);
   const fts_text = tokenizeFts(text, language);
 

@@ -258,6 +258,38 @@ describe("persistPivotCandidate", () => {
     expect(storedEntries.length).toBe(1);
   });
 
+  it("retries transient 429 embedding errors and succeeds", async () => {
+    const { deps } = createDeps();
+    let calls = 0;
+    const flakyDeps = {
+      ...deps,
+      embedder: {
+        async embedPassage(text: string) {
+          calls++;
+          if (calls === 1) throw new Error("Request failed with status 429: rate limit exceeded");
+          return [text.length, 1, 0];
+        },
+      },
+    };
+    const outcome = await persistPivotCandidate(flakyDeps as never, makeCandidate());
+    expect(outcome.disposition).toBe("stored");
+    expect(calls).toBe(2);
+  });
+
+  it("fails closed when the embedder returns an empty vector (store never validates shape)", async () => {
+    const { deps, storedEntries } = createDeps();
+    const emptyDeps = {
+      ...deps,
+      embedder: {
+        async embedPassage() {
+          return [] as number[];
+        },
+      },
+    };
+    await expect(persistPivotCandidate(emptyDeps as never, makeCandidate())).rejects.toThrow(/empty vector/);
+    expect(storedEntries.length).toBe(0);
+  });
+
   it("rejects noise via rule-based admission with a null memoryId and an audit line", async () => {
     const { deps, storedEntries, auditLines } = createDeps();
     const outcome = await persistPivotCandidate(
