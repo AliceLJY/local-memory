@@ -209,8 +209,26 @@ function emit(
       }
     }
   }
-  writeFileSync(outPath, lines.join("\n") + "\n");
-  console.log(`allowlist written: ${outPath}`);
+  // 按物理批拆文件：runner 逐批消费且校验「行 batchId ≡ 传入 batchId」，
+  // 混批单文件会让 p2 的 runner 撞见 p1 行直接 die。reject 行单独留档不进 runner。
+  const byBatch = new Map<string, string[]>();
+  const rejectedLines: string[] = [];
+  for (const line of lines) {
+    const row = JSON.parse(line) as { decision: string; batchId: string };
+    if (row.decision === "approve") {
+      const list = byBatch.get(row.batchId) ?? [];
+      list.push(line);
+      byBatch.set(row.batchId, list);
+    } else {
+      rejectedLines.push(line);
+    }
+  }
+  const base = outPath.replace(/\.jsonl$/, "");
+  for (const [bid, blines] of byBatch) {
+    writeFileSync(`${base}-${bid.split("-").pop()}.jsonl`, blines.join("\n") + "\n");
+  }
+  writeFileSync(`${base}-rejected.jsonl`, rejectedLines.join("\n") + (rejectedLines.length ? "\n" : ""));
+  console.log(`allowlist written: ${base}-p*.jsonl (${byBatch.size} physical batches) + ${base}-rejected.jsonl`);
   console.log(`rows ${lines.length} | approve ${approved} | reject ${rejected} | physical batches ${physIdx} (≤${MAX_PHYSICAL_BATCH} approve rows each)`);
 }
 
