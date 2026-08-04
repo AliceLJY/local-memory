@@ -492,6 +492,25 @@ describe("pivot-distill sampling and validation", () => {
     expect(result.candidates[0].evidence).toEqual(["已记录原因"]);
   });
 
+  it("drops a candidate whose stored form degrades below read-back rules", () => {
+    // "助手：好" passes raw substantive checks but stores as a single char
+    // after label stripping — the stored-form gate must reject it, and with
+    // no surviving candidate the response fails as a whole.
+    expect(() => validateJudgeResponse(JSON.stringify({
+      hasPivot: true,
+      candidates: [{
+        kind: "decision",
+        text: "Alice 决定不再采用旧路线，因为它会让同一数据形成两个真相源。",
+        anchor: "这条路以后不要再走",
+        key: "拒绝双真相源",
+        evidence: ["助手：好"],
+      }],
+    }), buildStratifiedSample([
+      { role: "user", text: "这条路以后不要再走" },
+      { role: "assistant", text: "好" },
+    ], 500), session())).toThrow("requires at least one valid candidate");
+  });
+
   it("rejects a candidate when no evidence survives grounding", () => {
     expect(() => validateJudgeResponse(JSON.stringify({
       hasPivot: true,

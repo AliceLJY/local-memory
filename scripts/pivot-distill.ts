@@ -1342,7 +1342,7 @@ export function validateJudgeResponse(
     if (redactForExternalModel(canonicalKey).redacted > 0) {
       throw new Error("canonical key contained sensitive material after normalization");
     }
-    candidates.push({
+    const built: JudgeCandidate = {
       kind,
       text: redactForExternalModel(item.text.trim()).text,
       anchor: redactForExternalModel(anchor).text,
@@ -1356,7 +1356,16 @@ export function validateJudgeResponse(
         `harness:${session.harness}`,
         `raw:${session.rawHarness}`,
       ],
-    });
+    };
+    // The checks above ran on the model's raw output, but stripping labels and
+    // redaction reshape what actually gets stored (e.g. "助手：好" stores as a
+    // single character; distinct quotes can collide after transformation).
+    // Validate the exact stored form with the same predicate resume/compile
+    // uses, so a written candidate can never be rejected on read-back.
+    if (!validStoredCandidate(built, sample, session)) {
+      throw new Error("candidate stored form failed read-back validation");
+    }
+    candidates.push(built);
     } catch (error) {
       droppedCandidates.push((error as Error).message);
     }
@@ -1985,8 +1994,8 @@ export function redactedResidue(text: string): number {
 
 function validStoredCandidate(
   value: unknown,
-  sample: FrozenSample,
-  session: SessionMeta,
+  sample: Pick<FrozenSample, "groundingTurns">,
+  session: Pick<SessionMeta, "sessionId" | "date" | "harness" | "rawHarness">,
 ): value is JudgeCandidate {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const candidateKeys = Object.keys(value as Record<string, unknown>).sort();
