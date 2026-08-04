@@ -1337,6 +1337,11 @@ export function validateJudgeResponse(
     if (redactedKey.redacted > 0) throw new Error("candidate key contained sensitive material");
     const canonicalKey = normalizeCanonicalKey(`pivot-${kind}-${redactedKey.text}`);
     if (!canonicalKey) throw new Error("canonical key normalized to empty");
+    // Mirror of the read-back check: normalization (underscore→hyphen) can
+    // reshape a clean key, so validate the final canonical form too.
+    if (redactForExternalModel(canonicalKey).redacted > 0) {
+      throw new Error("canonical key contained sensitive material after normalization");
+    }
     candidates.push({
       kind,
       text: redactForExternalModel(item.text.trim()).text,

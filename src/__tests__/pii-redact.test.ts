@@ -17,6 +17,25 @@ describe("redactSecrets", () => {
     expect(r.redacted).toBe(1);
   });
 
+  it("does not scrub the sk tail of hyphenated slugs (task-, risk-)", () => {
+    for (const slug of [
+      "pivot-decision-task-assignment-worker-stability-fix",
+      "pivot-judgment-shift-risk-gated-review-decision-process",
+      "note about task-ant-colony-simulation-experiment-log",
+    ]) {
+      const r = redactSecrets(slug);
+      expect(r.redacted).toBe(0);
+      expect(r.text).toBe(slug);
+    }
+  });
+
+  it("still scrubs sk- keys that start their own token", () => {
+    const quoted = redactSecrets('key="sk-AbCdEfGhIjKlMnOpQrStUvWx1234"');
+    expect(quoted.redacted).toBe(1);
+    const lineStart = redactSecrets("sk-AbCdEfGhIjKlMnOpQrStUvWx1234 trailing");
+    expect(lineStart.redacted).toBe(1);
+  });
+
   it("scrubs GitHub tokens", () => {
     const r = redactSecrets("push with ghp_ABCDEFGHIJKLMNOPQRSTUV1234567890");
     expect(r.text).toContain("[REDACTED:github_token]");

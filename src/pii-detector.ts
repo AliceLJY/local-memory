@@ -116,7 +116,10 @@ const PII_RULES: PIIRule[] = [
   {
     type: "anthropic_key",
     severity: "high",
-    pattern: /sk-ant-[A-Za-z0-9_\-]{10,}/g,
+    // Negative lookbehind: real keys start their own token; without it the
+    // "sk" tail of ordinary words (task-, risk-) plus a hyphenated slug
+    // matches (e.g. "task-ant..." would scrub from "sk-ant...").
+    pattern: /(?<![A-Za-z0-9])sk-ant-[A-Za-z0-9_\-]{10,}/g,
     redact: true,
   },
   {
@@ -173,7 +176,9 @@ const PII_RULES: PIIRule[] = [
   {
     type: "api_key",
     severity: "high",
-    pattern: /(?:sk-[A-Za-z0-9_\-]{20,}|["']?(?:api[_-]?key|token|secret)["']?\s*[=:]\s*["']?[A-Za-z0-9_\-]{20,})/gi,
+    // (?<![A-Za-z0-9]) keeps the "sk" tail of hyphenated slugs (task-assignment,
+    // risk-gated) from matching as an sk- key; real keys start their own token.
+    pattern: /(?:(?<![A-Za-z0-9])sk-[A-Za-z0-9_\-]{20,}|["']?(?:api[_-]?key|token|secret)["']?\s*[=:]\s*["']?[A-Za-z0-9_\-]{20,})/gi,
     redact: true,
     keepPrefix: /^["']?(?:api[_-]?key|token|secret)["']?\s*[=:]\s*["']?/i,
   },
