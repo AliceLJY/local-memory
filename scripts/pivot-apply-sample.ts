@@ -139,12 +139,19 @@ function pickBatch(pool: FullCandidate[], kind: string, round: number): FullCand
   return [...chosen.values()];
 }
 
-/** key 词根粗聚类：canonicalKey 去掉 pivot-/kind 前缀后的首词。 */
+/** key 词根粗聚类：canonicalKey 去掉 pivot-/kind 前缀后的首个有效词
+ *  （首词 <3 字符或为否定/虚词时并入次词——r1 批「no」簇教训）。 */
+const CLUSTER_STOPWORDS = new Set(["no", "not", "use", "the", "for", "new", "all"]);
 function clusterLabel(c: FullCandidate): string {
   const k = c.canonicalKey
     .replace(/^pivot-/, "")
     .replace(/^(preference-rule|preference|judgment-shift|decision|case[s]?)-/, "");
-  const head = k.split("-")[0] || "其他";
+  const parts = k.split("-").filter(Boolean);
+  if (parts.length === 0) return "其他";
+  const head = parts[0];
+  if ((head.length < 3 && !/[一-鿿]/.test(head)) || CLUSTER_STOPWORDS.has(head.toLowerCase())) {
+    return parts.length > 1 ? `${head}-${parts[1]}` : head;
+  }
   return head;
 }
 

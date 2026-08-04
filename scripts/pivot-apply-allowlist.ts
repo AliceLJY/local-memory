@@ -17,9 +17,11 @@
  * 用法：
  *   bun scripts/pivot-apply-allowlist.ts judge  <sample.json> <decisions.json>
  *     —— 只算放行判定，打印哨兵/整批统计，不产出文件
- *   bun scripts/pivot-apply-allowlist.ts emit   <sample.json> <decisions.json> <draft.jsonl> <kind> <batchId> <out.jsonl>
+ *   bun scripts/pivot-apply-allowlist.ts emit   <sample.json> <decisions.json> <draft.jsonl> <kind> <batchId> <out.jsonl> [extra-reject.json]
  *     —— 判定通过后给该 kind 干净池生成 reviewed-allowlist（物理批拆分由 runner 的 ≤300 校验倒逼，
- *        本脚本按 <batchId>-p<N> 自动编物理批号）
+ *        本脚本按 <batchId>-p<N> 自动编物理批号）。
+ *     extra-reject.json（可选）：{ mismatchCandidateHashes: [完整hash…] } —— anchor 一致性闸的
+ *     错配清单，这些条目即使不在抽样里也单条 reject（延期二轮修锚点）。
  */
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync, readdirSync, existsSync } from "node:fs";
@@ -68,7 +70,13 @@ function decisionFor(row: SampleRow, decisions: Record<string, string>): Decisio
 
 function judge(samplePath: string, decisionsPath: string): { pass: boolean; rejectedHashes: Set<string> } {
   const sample = JSON.parse(readFileSync(samplePath, "utf8")) as SampleRow[];
-  const decisions = JSON.parse(readFileSync(decisionsPath, "utf8")) as Record<string, string>;
+  const raw = JSON.parse(readFileSync(decisionsPath, "utf8")) as Record<string, unknown>;
+  // waivers: {"<displayIndex>": "<为什么这条哨兵非 keep 不 FAIL 整批——必须是 Alice 批准的偏离说明>"}
+  // 该条仍不计入 keep、仍进 reject；waiver 只豁免「哨兵全 keep」这一层，且逐条打印记录在案。
+  const waivers = (raw.waivers ?? {}) as Record<string, string>;
+  const decisions = Object.fromEntries(
+    Object.entries(raw).filter(([, v]) => typeof v === "string"),
+  ) as Record<string, string>;
   let keep = 0;
   const rejectedHashes = new Set<string>();
   const sentinelFails: string[] = [];
@@ -78,7 +86,12 @@ function judge(samplePath: string, decisionsPath: string): { pass: boolean; reje
     else {
       rejectedHashes.add(row.candidateHash);
       const isSentinel = row.sentinel.some((s) => s !== "random");
-      if (isSentinel) sentinelFails.push(`#${row.displayIndex ?? "?"} [${row.sentinel.join(",")}] -> ${d}`);
+      const waiver = row.displayIndex != null ? waivers[String(row.displayIndex)] : undefined;
+      if (isSentinel && waiver) {
+        console.log(`sentinel waived: #${row.displayIndex} [${row.sentinel.join(",")}] -> ${d} | reason: ${waiver}`);
+      } else if (isSentinel) {
+        sentinelFails.push(`#${row.displayIndex ?? "?"} [${row.sentinel.join(",")}] -> ${d}`);
+      }
     }
   }
   const batchOk = keep >= KEEP_MIN;
@@ -98,11 +111,21 @@ function emit(
   kind: string,
   batchIdBase: string,
   outPath: string,
+  extraRejectPath?: string,
 ): void {
   const { pass, rejectedHashes } = judge(samplePath, decisionsPath);
   if (!pass) {
     console.error("refusing to emit an allowlist for a failed batch");
     process.exit(2);
+  }
+  const anchorMismatch = new Set<string>();
+  if (extraRejectPath) {
+    const extra = JSON.parse(readFileSync(extraRejectPath, "utf8")) as { mismatchCandidateHashes?: string[] };
+    for (const h of extra.mismatchCandidateHashes ?? []) {
+      anchorMismatch.add(h);
+      rejectedHashes.add(h);
+    }
+    console.log(`extra reject (anchor-mismatch): ${anchorMismatch.size}`);
   }
   const draft = readFileSync(draftPath, "utf8")
     .trim()
@@ -169,7 +192,9 @@ function emit(
         candidateHash: row.candidateHash,
         decision: isRejected ? "reject" : "approve",
         reason: isRejected
-          ? `alice-review r1: not-keep in sample (${batchIdBase})`
+          ? anchorMismatch.has(row.candidateHash)
+            ? `anchor-mismatch: deferred to round 2 for anchor repair (${batchIdBase}, executor review 20260805)`
+            : `alice-review r1: not-keep in sample (${batchIdBase})`
           : `alice-review r1: batch released, sentinel+${KEEP_MIN}/30 passed (${batchIdBase}, rules v2)`,
         payloadHash,
         batchId,
@@ -193,8 +218,8 @@ const args = process.argv.slice(2);
 if (args[0] === "judge" && args[1] && args[2]) {
   judge(args[1], args[2]);
 } else if (args[0] === "emit" && args.length >= 7) {
-  emit(args[1], args[2], args[3], args[4], args[5], args[6]);
+  emit(args[1], args[2], args[3], args[4], args[5], args[6], args[7]);
 } else {
-  console.error("usage: judge <sample.json> <decisions.json> | emit <sample.json> <decisions.json> <draft.jsonl> <kind> <batchIdBase> <out.jsonl>");
+  console.error("usage: judge <sample.json> <decisions.json> | emit <sample.json> <decisions.json> <draft.jsonl> <kind> <batchIdBase> <out.jsonl> [extra-reject.json]");
   process.exit(1);
 }
