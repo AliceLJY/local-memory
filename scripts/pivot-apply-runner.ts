@@ -28,7 +28,7 @@ import * as lancedb from "@lancedb/lancedb";
 import { createAuditLogger } from "../src/audit-log.js";
 import { ConflictCandidateStore } from "../src/conflict-store.js";
 import { persistPivotBatch, PIVOT_SCOPE } from "../src/pivot-apply.js";
-import { createComponents, loadConfig } from "../src/runtime-config.js";
+import { createComponents, loadConfig, resolveDbPath } from "../src/runtime-config.js";
 import { SUPERVISED_TASKS } from "./pivot-distill-supervisor.js";
 import { createHash } from "node:crypto";
 
@@ -240,8 +240,7 @@ async function main(): Promise<void> {
 
   const config = dbPathArg ? { ...loadConfig(), dbPath: resolve(dbPathArg) } : loadConfig();
   const { store, embedder } = createComponents(config);
-  const dbPathResolved = dbPathArg ? resolve(dbPathArg) : resolve(process.env.HOME ?? "", "Projects/recallnest/data/lancedb");
-  await precheckLiveKeys(dbPathResolved, batch);
+  await precheckLiveKeys(resolveDbPath(config), batch);
 
   const conflictStore = new ConflictCandidateStore();
   const auditLogger = createAuditLogger();

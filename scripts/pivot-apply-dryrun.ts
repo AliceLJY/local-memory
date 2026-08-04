@@ -14,7 +14,7 @@
  *
  * 用法：bun scripts/pivot-apply-dryrun.ts <replica-lancedb-dir> <workdir> [--phase=main|crash-batch|post-restore-batch]
  */
-import { mkdirSync } from "node:fs";
+import { mkdirSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
 
 import * as lancedb from "@lancedb/lancedb";
@@ -28,7 +28,7 @@ import {
   persistPivotBatch,
   persistPivotCandidate,
 } from "../src/pivot-apply.js";
-import { loadConfig, createComponents } from "../src/runtime-config.js";
+import { loadConfig, createComponents, resolveDbPath } from "../src/runtime-config.js";
 
 const REPORT_ID = "00b609834309b7b44d1e36fc7c93169e083abb66487073bfd64d8c5bafc337fa";
 const hash = (seed: string) => seed.repeat(64).slice(0, 64);
@@ -71,7 +71,17 @@ async function main(): Promise<void> {
     | "post-restore-batch";
 
   const replica = resolve(replicaPath);
-  if (replica === resolve(process.env.HOME ?? "", "Projects/recallnest/data/lancedb")) {
+  // realpath both sides: the configured dbPath reaches production through a
+  // symlink (~/recallnest/data/lancedb -> ~/Projects/recallnest/data/lancedb),
+  // so a plain string compare would only refuse one of the two spellings.
+  const realOrSelf = (p: string): string => {
+    try {
+      return realpathSync(p);
+    } catch {
+      return p;
+    }
+  };
+  if (realOrSelf(replica) === realOrSelf(resolveDbPath(loadConfig()))) {
     console.error("REFUSING to run a dry-run against the production database path");
     process.exit(1);
   }
