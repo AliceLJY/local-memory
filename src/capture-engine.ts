@@ -89,7 +89,7 @@ export interface PersistMemoryDeps {
   noisePrototypeBank?: NoisePrototypeBank | null;
 }
 
-interface DurableWriteInput {
+export interface DurableWriteInput {
   text: string;
   vector: number[];
   category: DurableMemoryCategory;
@@ -149,7 +149,7 @@ function mergeTags(...groups: string[][]): string[] {
   return merged.slice(0, 8);
 }
 
-function buildStructuredMetadata(params: {
+export function buildStructuredMetadata(params: {
   source: string;
   tags: string[];
   capture: string;
@@ -454,7 +454,7 @@ async function findCanonicalMatches(
   });
 }
 
-async function writeDurableEntry(
+export async function writeDurableEntry(
   deps: PersistMemoryDeps,
   params: DurableWriteInput,
 ): Promise<{
