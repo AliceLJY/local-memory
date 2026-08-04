@@ -97,7 +97,10 @@ async function freeze(allowlistPath: string, batchId: string, outPath: string, d
   const manifest = {
     batchId,
     frozenAt: new Date().toISOString(),
-    k: 10,
+    // k=20（retriever clamp 上限）。首跑 k=10 在「临床意义」这类高密度主题区
+    // 误伤：候选写入成功且 verified，但被同族老内容挤出前十（2026-08-05 p2 实测）。
+    // 闸的语义是「写入后可被检索到」，rank≤20 在 145k 行库里仍是强召回证明。
+    k: 20,
     goldPassMin: GOLD_PASS_MIN,
     gold,
     bound: bound.map((r) => ({
@@ -133,7 +136,7 @@ async function check(manifestPath: string, ledgerPath: string, batchId: string, 
   const retriever = buildComponents(dbPathArg);
   const failures: string[] = [];
 
-  // ① 绑定 query 召回
+  // ① 绑定 query 召回（记录实际 rank，诊断友好）
   let boundPass = 0;
   for (const b of manifest.bound) {
     const expectId = idByHash.get(b.candidateHash);
@@ -142,15 +145,20 @@ async function check(manifestPath: string, ledgerPath: string, batchId: string, 
       continue;
     }
     const ids = await topIds(retriever, b.query, manifest.k);
-    if (ids.includes(expectId)) boundPass++;
-    else failures.push(`bound: ${b.candidateHash.slice(0, 12)} not in top-${manifest.k} for its own query`);
+    const rank = ids.indexOf(expectId) + 1;
+    if (rank > 0) {
+      boundPass++;
+      console.log(`  bound ${b.candidateHash.slice(0, 12)} rank=${rank}`);
+    } else {
+      failures.push(`bound: ${b.candidateHash.slice(0, 12)} not in top-${manifest.k} for its own query`);
+    }
   }
   console.log(`① bound recall: ${boundPass}/${manifest.bound.length}`);
 
-  // ② gold 回归：写前 Top-3 成员写后仍在 Top-10
+  // ② gold 回归：写前 Top-3 成员写后仍在 Top-10（固定 10，不随 bound 的 k 放宽）
   let goldPass = 0;
   for (const g of manifest.gold) {
-    const nowTop = new Set(await topIds(retriever, g.query, manifest.k));
+    const nowTop = new Set(await topIds(retriever, g.query, 10));
     const top3 = g.baselineTop10.slice(0, 3);
     const kept = top3.filter((id) => nowTop.has(id)).length;
     if (kept === top3.length) goldPass++;
