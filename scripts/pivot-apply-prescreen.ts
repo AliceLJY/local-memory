@@ -44,8 +44,19 @@ const R1_ENVELOPE_PATTERNS: ReadonlyArray<{ id: string; re: RegExp }> = [
   { id: "bullet-list", re: /^\s*[-*]\s.+[\r\n]+\s*[-*]\s/m },
   { id: "handoff-path", re: /\/(?:private\/tmp|tmp)\/[^\s'"]+|scratchpad\/[^\s'"]+/ },
   { id: "read-brief-directive", re: /^请?(?:完整|先)?读\s|^Review the material/im },
+  // v2 校准补（FN 修复）：指令式派活开场 / 输出规格指令 / 系统标记 / 英文祈使文书开场
+  { id: "output-spec", re: /^只?输出\s*[:：]|不要别的文本|直接传给|不要改写、|^给下面|^Then report|report findings with/im },
+  { id: "system-marker", re: /^<turn_aborted>|^<system|^\[system/i },
+  { id: "en-imperative-open", re: /^(Need|Answer|State|Verify|Summarize|Implement|Fix|Draft)\s+(a|an|the|two|three|\d|quick|all)\b/ },
+  { id: "cn-answer-directive", re: /^回答下面|逐条回答[:：]?|要具体、可执行/m },
 ];
-const R1_LONG_THRESHOLD = 200;
+// v2 校准：口语开场豁免——numbered-steps/bullet-list 命中但 anchor 以第一人称
+// 口语开场的，是 Alice 说话带编号的习惯（「我想问你两件事：1…2…」），不是任务文书。
+const R1_COLLOQUIAL_EXEMPT = /^(好[，,、的]|嗯|哦|唉|我想|我们不|你先|你帮我|请你|帮我|告诉我|继续|其实|就是说)/;
+const R1_EXEMPTABLE = new Set(["numbered-steps", "bullet-list"]);
+// v2 校准：纯长度规则删除（holdout 实测 40 条长 anchor 里 13 条是 Alice 长口语，
+// 误杀 33%；宁漏勿杀——漏放的还有抽验哨兵和三选一兜底，误杀无救济）。
+const R1_LONG_THRESHOLD = Number.POSITIVE_INFINITY;
 
 // R2 创作项目清单 v1（确定性 session 元数据；清单本身随首批抽验呈 Alice）
 const R2_PROJECT_PATTERNS: ReadonlyArray<{ id: string; re: RegExp }> = [
@@ -142,7 +153,11 @@ function loadAllCandidates(): LoadedCandidate[] {
 }
 
 function r1EnvelopeHits(anchor: string): string[] {
-  return R1_ENVELOPE_PATTERNS.filter((p) => p.re.test(anchor)).map((p) => p.id);
+  const hits = R1_ENVELOPE_PATTERNS.filter((p) => p.re.test(anchor)).map((p) => p.id);
+  if (hits.length > 0 && hits.every((h) => R1_EXEMPTABLE.has(h)) && R1_COLLOQUIAL_EXEMPT.test(anchor.trim())) {
+    return [];
+  }
+  return hits;
 }
 
 function marksFor(
