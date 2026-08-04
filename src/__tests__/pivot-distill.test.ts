@@ -28,6 +28,7 @@ import {
   OMISSION_MARKER,
   parseCliOptions,
   parserKindFor,
+  redactedResidue,
   PIPELINE_VERSION,
   PIVOT_MODEL,
   pivotRequestProfileHash,
@@ -426,6 +427,15 @@ describe("pivot-distill sampling and validation", () => {
       "harness:codex",
       "raw:codex",
     ]);
+  });
+
+  it("redactedResidue ignores placeholder shapes but catches real residue", () => {
+    // A placeholder's own word shape must not re-match the assignment rule.
+    expect(redactedResidue("session_id='[REDACTED:sensitive_assignment]'")).toBe(0);
+    // Placeholder junction with surviving context must not re-match email/uri.
+    expect(redactedResidue("clone https://[REDACTED:uri_credentials]@gitlab.com/user/repo.git")).toBe(0);
+    // Genuine residue outside placeholders still counts.
+    expect(redactedResidue("[REDACTED:email] and mail me at someone@example.com")).toBeGreaterThan(0);
   });
 
   it("grounds anchors and evidence that copy the rendered role labels", () => {

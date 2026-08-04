@@ -1975,6 +1975,14 @@ export function loadFrozenBundle(
   return { root, descriptor, entries };
 }
 
+// Redaction is not idempotent: a placeholder's own word shape ([REDACTED:
+// sensitive_assignment] is 20+ token chars) or its junction with surviving
+// context ([REDACTED:x]@host) can re-match a rule. Strip known placeholders
+// before re-scanning so only genuine residue counts.
+export function redactedResidue(text: string): number {
+  return redactForExternalModel(text.replace(/\[REDACTED:[a-z_]+\]/g, " ")).redacted;
+}
+
 function validStoredCandidate(
   value: unknown,
   sample: FrozenSample,
@@ -2025,9 +2033,9 @@ function validStoredCandidate(
     `raw:${session.rawHarness}`,
   ];
   return Array.isArray(candidate.tags) && JSON.stringify(candidate.tags) === JSON.stringify(expectedTags) &&
-    redactForExternalModel(candidate.text).redacted === 0 &&
-    redactForExternalModel(candidate.anchor).redacted === 0 &&
-    candidate.evidence.every((quote) => redactForExternalModel(quote).redacted === 0);
+    redactedResidue(candidate.text) === 0 &&
+    redactedResidue(candidate.anchor) === 0 &&
+    candidate.evidence.every((quote) => redactedResidue(quote) === 0);
 }
 
 function validStoredUsage(value: unknown): value is DetailedChatUsage {
