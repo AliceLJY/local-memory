@@ -15,10 +15,11 @@ TRANSCRIPT_SRC = {"cc", "codex", "kimi", "gemini", "antigravity"}
 
 
 def rows_of(path):
+    # 空文件/坏 JSON（如网络抖动写出 0 字节）→ 返回 None 显式标缺，调用方负责展示
     try:
         j = json.load(open(path, encoding="utf-8"))
     except Exception:
-        return None, []
+        return None
     out = []
     for r in j.get("results", []):
         try:
@@ -52,21 +53,29 @@ def main():
     print("-" * 84)
     tot = {c: [0, 0, 0] for c in CONFIGS}   # [evidence, total, 回退次数]
 
+    missing = 0
     for n in qs:
-        q = (data["off"].get(n) or ("", []))[0][:24]
+        q = next((e[0] for c in CONFIGS if (e := data[c].get(n)) is not None), f"q{n}")[:24]
         cells = []
         for c in CONFIGS:
-            _, rows = data[c].get(n, ("", []))
+            entry = data[c].get(n)
+            if entry is None:
+                missing += 1
+                cells.append(f"{'MISSING':>13}"); continue
+            _, rows = entry
             if not rows:
                 cells.append(f"{'--':>13}"); continue
             ev = sum(1 for r in rows if r["ev"])
             tot[c][0] += ev; tot[c][1] += len(rows)
             # 与 off 相比条数没减少 且 仍有 evidence → 判定为触发了回退
-            off_rows = (data["off"].get(n) or ("", []))[1]
+            off_entry = data["off"].get(n)
+            off_rows = off_entry[1] if off_entry else []
             if c != "off" and ev > 0 and len(rows) >= len(off_rows):
                 tot[c][2] += 1
             cells.append(f"{ev:>2}/{len(rows):<2}碎片{'':>5}")
         print(f"{q:<26} " + " ".join(cells))
+    if missing:
+        print(f"⚠️ {missing} 个数据文件缺失或损坏（0 字节/坏 JSON），对应格显示 MISSING，未计入占比——先补跑再下结论")
 
     print("-" * 84)
     print(f"{'合计 evidence 占比':<26} " +
@@ -77,8 +86,12 @@ def main():
     # 逐条说明：min3 相对 off 掉了什么
     print("\n=== min3 相对 off 掉出的条目（逐条判性质）===")
     for n in qs:
-        _, a = data["off"].get(n, ("", []))
-        q, b = data["min3"].get(n, ("", []))
+        a_entry = data["off"].get(n)
+        b_entry = data["min3"].get(n)
+        if not a_entry or not b_entry:
+            continue
+        _, a = a_entry
+        q, b = b_entry
         if not a or not b:
             continue
         gone = [r for r in a if r["text"] not in {x["text"] for x in b}]
