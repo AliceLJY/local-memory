@@ -108,6 +108,14 @@ async function freeze(allowlistPath: string, batchId: string, outPath: string, d
       query: (r.textPreview as string).slice(0, 60),
     })),
     negativeProbes: [...NEGATIVE_PROBES],
+    // probe baseline：真空区判据用。批行进 top-3 但没挤出任何 baseline 成员
+    // （= 填的是本就空/弱的位）不算侵入——r2-admit-p1 实测「微信 支付 报销 发票」
+    // 主题真空，批行 cosine 仅 0.406 也进了 top-3，绝对占位判据在真空区必误伤。
+    probeBaselines: await (async () => {
+      const out: Record<string, string[]> = {};
+      for (const q of NEGATIVE_PROBES) out[q] = await topIds(retriever, q, 3);
+      return out;
+    })(),
   };
   writeFileSync(outPath, JSON.stringify(manifest, null, 1));
   console.log(`manifest frozen: ${outPath} (gold ${gold.length}, bound ${manifest.bound.length}, probes ${NEGATIVE_PROBES.length})`);
@@ -166,13 +174,18 @@ async function check(manifestPath: string, ledgerPath: string, batchId: string, 
   }
   console.log(`② gold regression: ${goldPass}/${manifest.gold.length} (min ${manifest.goldPassMin})`);
 
-  // ③ 负向探针：Top-3 零侵入
+  // ③ 负向探针：批行不得把 baseline 成员挤出 Top-3（占空位不算侵入，见 freeze 注释）
+  const probeBaselines = (manifest as { probeBaselines?: Record<string, string[]> }).probeBaselines;
   let probeClean = 0;
   for (const q of manifest.negativeProbes) {
     const top3 = await topIds(retriever, q, 3);
     const intruders = top3.filter((id) => batchIds.has(id));
-    if (intruders.length === 0) probeClean++;
-    else failures.push(`probe: "${q}" has ${intruders.length} batch row(s) in top-3`);
+    const baseline = probeBaselines?.[q];
+    const displaced = baseline ? baseline.filter((id) => !top3.includes(id)) : null;
+    // 旧 manifest 无 baseline → 沿用绝对占位判据（兼容）；有 baseline → 挤出成员才算失守
+    const dirty = baseline ? intruders.length > 0 && (displaced?.length ?? 0) > 0 : intruders.length > 0;
+    if (!dirty) probeClean++;
+    else failures.push(`probe: "${q}" has ${intruders.length} batch row(s) in top-3, displacing ${displaced?.length ?? "?"} baseline member(s)`);
   }
   console.log(`③ negative probes clean: ${probeClean}/${manifest.negativeProbes.length}`);
 
