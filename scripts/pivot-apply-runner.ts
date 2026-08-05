@@ -50,6 +50,8 @@ interface AllowlistRow {
   /** 批B修锚：替换原始候选的 anchor（candidateHash 仍指向原始候选保审计链；
    *  payloadHash 由 emit 按替换后内容计算，下方校验自动锁死一致性） */
   anchorOverride?: string;
+  /** 批B代理锚标记：追加进候选 tags（如 "anchor:proxy"）。同 override 的哈希链约束 */
+  tagsAppend?: string[];
 }
 
 function canonicalJson(value: unknown): string {
@@ -136,7 +138,7 @@ function rebuildCandidates(rows: AllowlistRow[], batchId: string): RebuiltCandid
         evidence: match.evidence as string[],
         proposedScope: match.proposedScope as string,
         proposedCategory: match.proposedCategory as string,
-        tags: match.tags as string[],
+        tags: [...(match.tags as string[]), ...(row.tagsAppend ?? [])],
         sessionId: row.sessionId,
         reportId: row.reportId,
         candidateHash: row.candidateHash,
