@@ -47,6 +47,9 @@ interface AllowlistRow {
   batchId: string;
   kind: string;
   importance?: number;
+  /** 批B修锚：替换原始候选的 anchor（candidateHash 仍指向原始候选保审计链；
+   *  payloadHash 由 emit 按替换后内容计算，下方校验自动锁死一致性） */
+  anchorOverride?: string;
 }
 
 function canonicalJson(value: unknown): string {
@@ -128,7 +131,7 @@ function rebuildCandidates(rows: AllowlistRow[], batchId: string): RebuiltCandid
       out.push({
         kind: match.kind as string,
         text: match.text as string,
-        anchor: match.anchor as string,
+        anchor: row.anchorOverride ?? (match.anchor as string),
         canonicalKey: match.canonicalKey as string,
         evidence: match.evidence as string[],
         proposedScope: match.proposedScope as string,
