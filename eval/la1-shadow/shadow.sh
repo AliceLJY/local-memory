@@ -9,10 +9,10 @@
 # 注意：管线含 access-count / hotness / frequency 三个流行度信号，重复查询会
 # 抬高被查条目的分数。故本脚本只比较「占比 / 回退 / 条数」，不跨配置比较分数绝对值。
 #
-# 用法: bash shadow.sh [输出目录]   默认 ~/Desktop/la1-shadow
+# 用法: bash shadow.sh [输出目录]   默认 eval/la1-shadow/runs/<日期>（评估数据跟工具住一起，不散桌面）
 
 set -uo pipefail
-OUT="${1:-$HOME/Desktop/la1-shadow}"
+OUT="${1:-$HOME/recallnest/eval/la1-shadow/runs/$(date +%Y%m%d-%H%M)}"
 RN="$HOME/recallnest"
 mkdir -p "$OUT"
 
