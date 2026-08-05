@@ -96,19 +96,26 @@ if (mode === "preview") {
 } else if (mode === "baseline" && argPath) {
   const rows = await loadAll();
   const fp = survivorFingerprint(rows);
-  writeFileSync(argPath, JSON.stringify({ at: new Date().toISOString(), total: rows.length, survivors: Object.keys(fp).length, fp }));
-  console.log(`baseline written: ${argPath} (${Object.keys(fp).length} survivors of ${rows.length} rows)`);
+  const survivorRowCount = rows.filter((r) => !isDeletable(r)).length;
+  // fp 以 id 为 key 天然去重；survivorRows 是行数口径。两个数都存——
+  // 2026-08-05 首跑被这 10 行 dup-id 的口径差拒过（fail-closed 正确开火），
+  // 正规修法是 cleanup-duplicate-ids 先行，此处双口径防御未来残留。
+  if (survivorRowCount !== Object.keys(fp).length) {
+    console.error(`WARN: survivor rows ${survivorRowCount} != unique ids ${Object.keys(fp).length} — duplicate-id rows present; run scripts/cleanup-duplicate-ids.ts first.`);
+  }
+  writeFileSync(argPath, JSON.stringify({ at: new Date().toISOString(), total: rows.length, survivors: Object.keys(fp).length, survivorRows: survivorRowCount, fp }));
+  console.log(`baseline written: ${argPath} (${Object.keys(fp).length} unique survivors / ${survivorRowCount} rows of ${rows.length} total)`);
 } else if (mode === "execute" && argPath) {
-  const baseline = JSON.parse(readFileSync(argPath, "utf8")) as { at: string; total: number; survivors: number };
+  const baseline = JSON.parse(readFileSync(argPath, "utf8")) as { at: string; total: number; survivors: number; survivorRows?: number };
   const rows = await loadAll();
   if (rows.length !== baseline.total) {
     console.error(`REFUSING: row count ${rows.length} != baseline total ${baseline.total} — the DB moved since baseline; redo baseline inside the stop-write window.`);
     process.exit(1);
   }
   const del = rows.filter(isDeletable);
-  const expected = rows.length - baseline.survivors;
+  const expected = rows.length - (baseline.survivorRows ?? baseline.survivors);
   if (del.length !== expected) {
-    console.error(`REFUSING: delete-set ${del.length} != expected ${expected} (baseline survivors ${baseline.survivors})`);
+    console.error(`REFUSING: delete-set ${del.length} != expected ${expected} (baseline survivor rows ${baseline.survivorRows ?? baseline.survivors})`);
     process.exit(1);
   }
   console.log(`deleting ${del.length} rows in id batches…`);
