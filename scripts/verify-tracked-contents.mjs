@@ -15,8 +15,11 @@ if (listing.status !== 0) {
 const detectors = [
   ["private-key-block", /-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----/g],
   ["xai-key", /xai-[A-Za-z0-9_-]{40,}/g],
-  ["anthropic-key", /sk-ant-[A-Za-z0-9_-]{30,}/g],
-  ["openai-or-qwen-key", /sk-(?:proj-)?[A-Za-z0-9_-]{32,}/g],
+  // (?<![A-Za-z0-9-]) 左词边界：task-ant-colony… / risk-gated… 这类 slug 内嵌的
+  // sk- 片段不是 key（与 redactSecrets 5c024cc 同源的词边界问题——函数修了，
+  // 这里当时漏修，从 2026-08-04 起把 CI 连红了一天半）。真 key 独立出现照常命中。
+  ["anthropic-key", /(?<![A-Za-z0-9-])sk-ant-[A-Za-z0-9_-]{30,}/g],
+  ["openai-or-qwen-key", /(?<![A-Za-z0-9-])sk-(?:proj-)?[A-Za-z0-9_-]{32,}/g],
   ["jina-key", /jina_[A-Za-z0-9_-]{20,}/g],
   ["aws-access-key", /AKIA[0-9A-Z]{16}/g],
   ["github-token", /gh[pousr]_[A-Za-z0-9]{36,}/g],
