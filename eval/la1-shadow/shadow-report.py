@@ -6,6 +6,13 @@
   - 对照行不掉：durable 条目不能因为过滤反而丢失
   - 逐条说明掉出的性质：掉的是碎片还是结论
 """
+
+# ⚠️ **口径声明（2026-08-06 追加，Alice 拍板选「标注」而非改脚本）**
+# 本文件引用的 la1-shadow evidence／碎片占比，**其分类口径与生产不一致**：分析脚本 `eval/la1-shadow/shadow-report.py:29` 判 evidence 层用 `scope 前缀 OR metadata.source`，而生产 `retriever.ts:1782` 的 `isEvidenceLayer` 是 **`boundary.layer` 优先、scope 仅作 fallback、完全不读 source**。两者不是同一个分类器。
+# **这些比例仅供内部趋势参考，不可作为与生产行为等价的结论。**
+# **实测影响（2026-08-06，拿 `eval/la1-shadow/runs/20260805-2218/` 那 80 个 query JSON 两套口径离线重算）**：最大偏差 **0.9 个百分点**（off 配置 0 分歧；min2/min3/min4 各差 0.9pp，全部由同一条记录造成）。**偏差方向固定：现口径只会高估 evidence／低估 durable，不会反向。** 另有全库扫描交叉验证：14,572 条中仅 1 条分歧（0.01%）。
+# **一个不可救的边界**：2026-08-01 那批（删碎片前，evidence 占比 90.8%／78.4%／84.7%／84.6%）的原始 JSON 已随 `~/Desktop/la1-shadow-v2/` 清理，**无法用新口径重算**——它与 case `4cb4853e` 的「33.12%」同病（口径 + 底库双重失效），只能标注，救不回来。
+
 import json, glob, os, re, sys
 
 OUT = sys.argv[1] if len(sys.argv) > 1 else os.path.expanduser("~/Desktop/la1-shadow")
