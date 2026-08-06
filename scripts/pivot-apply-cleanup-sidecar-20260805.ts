@@ -1,8 +1,9 @@
 // 二轮收尾连带清理：① 0d60b0ef NaN 脏行删除 ② fabf6b15 悬空 supersededBy 清指针
 // 在 supervisor 窗口 + 快照后运行。
 import * as lancedb from "@lancedb/lancedb";
+import { resolveDbPath } from "../src/runtime-config.js";
 
-const db = await lancedb.connect(process.env.HOME + "/recallnest/data/lancedb");
+const db = await lancedb.connect(resolveDbPath());
 const t = await db.openTable("memories");
 
 const nan = await t.query().where("id LIKE '0d60b0ef%'").select(["id", "scope"]).toArray();
