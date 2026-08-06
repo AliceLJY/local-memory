@@ -241,7 +241,16 @@ export const DEFAULT_RETRIEVAL_CONFIG: RetrievalConfig = {
   filterNoise: true,
   rerankModel: "jina-reranker-v3",
   rerankEndpoint: "https://api.jina.ai/v1/rerank",
-  lengthNormAnchor: 500,
+  // 2026-08-06：500 → 800。不是拍的——writing profile 早就在用 800
+  // （retrieval-profiles.ts），这里只是把一个已在生产跑着的值推广到 default。
+  // 实测（eval/ghost-scan.ts，14,949 条 active 全库快照）：结构性幽灵
+  // 775 → 245（5.18% → 1.64%），救回 530 条，中位长度 1,356 字符那批正落在
+  // 打折最重的区间。挤占效应见 eval/lengthnorm-shadow.ts：20 条真实 query
+  // 里 14 条 top-6 完全不变，6 条掉出在 limit 放大到 20 后全部复现
+  // ——即没有任何条目被删掉，只是挤出窗口，而那 6 条的重排来自
+  // applySourceDiversity + MMR（候选数 ≤ limit 时它根本不轮转，
+  // anchor 放大让更多候选过阈值才把这个既有行为激活），与本参数无关。
+  lengthNormAnchor: 800,
   hardMinScore: 0.35,
   timeDecayHalfLifeDays: 60,
   hotnessWeight: 0,
