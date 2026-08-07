@@ -159,10 +159,16 @@ export function createComponents(config: LocalMemoryConfig, profileName?: string
 
   const embedder = createEmbedder(embeddingConfig);
   const store = new MemoryStore({ dbPath, vectorDim: embedder.dimensions });
-  const baseRetrievalConfig = {
+  const mergedRetrievalConfig = {
     ...DEFAULT_RETRIEVAL_CONFIG,
     ...(config.retrieval || {}),
   };
+  // rerankApiKey 与 embedding.apiKey 同款支持 ${ENV_VAR} 引用。此前 retrieval 段是整体
+  // 展开、不过 resolveEnv，导致这个字段只能写明文——等于逼配置文件存凭证，是 rerank
+  // 一直没被启用的障碍之一。
+  const baseRetrievalConfig = mergedRetrievalConfig.rerankApiKey
+    ? { ...mergedRetrievalConfig, rerankApiKey: resolveEnv(mergedRetrievalConfig.rerankApiKey) }
+    : mergedRetrievalConfig;
   const { profile, config: retrieverConfig } = applyRetrievalProfile(baseRetrievalConfig, profileName);
   const retriever = createRetriever(store, embedder, retrieverConfig);
 
