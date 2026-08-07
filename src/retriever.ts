@@ -798,6 +798,16 @@ export class MemoryRetriever {
 
     let results: RetrievalResult[];
 
+    // 分派前必须先让 store 完成惰性初始化，否则下面读到的 hasFtsSupport 是初始化前的
+    // false，hybrid 模式的**首次**检索会静默落回 vector 路径（同一实例第二次才正常）。
+    // 该缺陷自 c10607a 初始版本就在，长期未暴露有两个原因：生产 mode 一直是 "vector"，
+    // 第一个条件短路、根本读不到第二个；而 eval 的 createFreshEvalComponentsFactory 每
+    // case 新建组件，每个 case 都停在"首次"，于是 eval 从未测到过 hybrid 路径。
+    // 注：supplementExactTokenWithBm25 那里的顺序依赖是被意识到的（见其注释"hasFtsSupport
+    // 在 vectorOnly 触发 store init 后为真"），漏的只是这个分派点。
+    // `?.` 是必需的：测试大量使用鸭子类型的 fake store，它们没有 ready()。
+    await this.store.ready?.();
+
     // For vector-only mode, use legacy behavior
     if (this.config.mode === "vector" || !this.store.hasFtsSupport) {
       results = await this.vectorOnlyRetrieval(query, safeLimit, scopeFilter, category, includeArchived, trace);

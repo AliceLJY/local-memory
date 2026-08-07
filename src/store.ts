@@ -1234,6 +1234,19 @@ export class MemoryStore implements MemoryStorePort {
     return deleteCount;
   }
 
+  /**
+   * Force lazy initialization to complete.
+   *
+   * `hasFtsSupport` is meaningless before init: `ftsIndexCreated` starts false and
+   * only flips once `doInitialize()` has attempted to build the FTS index. Any caller
+   * that *branches* on `hasFtsSupport` must await this first, or it will read the
+   * pre-init false and take the wrong branch. Cheap to call repeatedly —
+   * `ensureInitialized()` returns immediately once the table exists.
+   */
+  async ready(): Promise<void> {
+    await this.ensureInitialized();
+  }
+
   get hasFtsSupport(): boolean {
     return this.ftsIndexCreated;
   }
