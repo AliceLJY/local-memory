@@ -1,7 +1,7 @@
 # Memory Partner Protocol
 
 > How to be an excellent memory partner using RecallNest.
-> This is a behavior protocol for LLMs (Claude Code, Codex, Gemini CLI), not an API reference.
+> This is a behavior protocol for LLMs (Claude Code, Codex, Kimi, Antigravity, Gemini CLI — any MCP client), not an API reference.
 
 ---
 

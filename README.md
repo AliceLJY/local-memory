@@ -2,9 +2,9 @@
 
 # RecallNest
 
-**Shared Memory Layer for Claude Code, Codex, and Gemini CLI**
+**Shared Memory Layer for Any MCP Client — Claude Code, Codex, Kimi, Antigravity, Gemini CLI**
 
-*One memory. Three terminals. Context that survives across windows.*
+*One memory. Every terminal. Context that survives across windows.*
 
 A local-first memory system backed by LanceDB that turns scattered conversation history into reusable knowledge — shared across your coding agents, recalled automatically.
 
@@ -24,7 +24,7 @@ A local-first memory system backed by LanceDB that turns scattered conversation 
 
 ## Why RecallNest?
 
-Coding agents forget everything between windows. Your context — project configs, debugging decisions, entity mappings — is scattered across Claude Code, Codex, and Gemini CLI with no shared memory.
+Coding agents forget everything between windows. Your context — project configs, debugging decisions, entity mappings — is scattered across Claude Code, Codex, Kimi, Antigravity — and every other terminal you open — with no shared memory.
 
 RecallNest solves this: **a single LanceDB-backed memory layer that your coding agents read and write**. Context stored in one window is auto-recalled in another. Sessions checkpoint on exit and resume on start. Memory decays, evolves, and self-organizes — not just raw log storage.
 
@@ -139,7 +139,7 @@ bun run src/ui-server.ts
 | Capability | Description |
 |---|---|
 | **CC Plugin** | Install in Claude Code with one command — no manual config |
-| **Shared Index** | One LanceDB store for Claude Code, Codex, and Gemini CLI |
+| **Shared Index** | One LanceDB store shared by every terminal that speaks MCP |
 | **Dual Interface** | MCP (stdio) for CLI tools + HTTP API for custom agents |
 | **One-Click Setup** | Integration scripts install MCP access and continuity rules |
 
@@ -299,7 +299,7 @@ v2.2 hardened retrieval quality; v2.3 opens RecallNest to external data sources 
 
 RecallNest serves two interfaces:
 
-- **MCP** — for Claude Code, Gemini CLI, and Codex (native tool access)
+- **MCP** — for any MCP client: Claude Code, Codex, Kimi, Antigravity, Gemini CLI (native tool access)
 - **HTTP API** — for custom agents, SDK-based apps, and any HTTP client
 
 ### Agent framework examples
@@ -474,7 +474,7 @@ RecallNest is actively maintained. All major architecture phases are complete �
 RecallNest started as a fork of [memory-lancedb-pro](https://github.com/CortexReach/memory-lancedb-pro) and shares its core ideas around hybrid retrieval, decay modeling, and memory-as-engineering-system. The key difference:
 
 - **memory-lancedb-pro** is an OpenClaw plugin — it adds long-term memory to a single OpenClaw agent.
-- **RecallNest** is a standalone memory layer — it serves Claude Code, Codex, and Gemini CLI simultaneously through MCP + HTTP API, with session continuity, structured assets, and conflict management built in.
+- **RecallNest** is a standalone memory layer — it serves any MCP client (Claude Code, Codex, Kimi, Antigravity, Gemini CLI) simultaneously through MCP + HTTP API, with session continuity, structured assets, and conflict management built in.
 
 ## Credit
 

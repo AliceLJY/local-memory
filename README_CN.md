@@ -2,11 +2,11 @@
 
 # RecallNest
 
-**面向 Claude Code、Codex、Gemini CLI 的共享记忆层**
+**面向任意 MCP 客户端的共享记忆层 —— Claude Code、Codex、Kimi、Antigravity、Gemini CLI**
 
-*一套记忆，三个终端，上下文跨窗口延续。*
+*一套记忆，每个终端，上下文跨窗口延续。*
 
-基于 LanceDB 的本地优先记忆系统，把散落在三个终端的对话历史沉淀为可复用知识，跨终端共享，自动召回。
+基于 LanceDB 的本地优先记忆系统，把散落在各个终端的对话历史沉淀为可复用知识，跨终端共享，自动召回。
 
 [![GitHub](https://img.shields.io/github/stars/AliceLJY/recallnest?style=social)](https://github.com/AliceLJY/recallnest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
@@ -24,7 +24,7 @@
 
 ## 为什么需要 RecallNest？
 
-编程 Agent 每开一个窗口就失忆。项目配置、调试决策、实体映射——散落在 Claude Code、Codex、Gemini CLI 三个终端里，互相不通。
+编程 Agent 每开一个窗口就失忆。项目配置、调试决策、实体映射——散落在 Claude Code、Codex、Kimi、Antigravity 以及你打开的每一个终端里，互相不通。
 
 RecallNest 的解法：**一个 LanceDB 驱动的记忆层，供你的编程 Agent 共读共写**。一个窗口存入的上下文，另一个窗口自动召回。会话退出时 checkpoint，启动时 resume。记忆会衰减、演化、自组织——不是简单的日志堆积。
 
@@ -139,7 +139,7 @@ bun run src/ui-server.ts
 | 能力 | 说明 |
 |---|---|
 | **CC Plugin** | 一行命令装入 Claude Code，无需手动配置 MCP |
-| **共享索引** | Claude Code、Codex、Gemini CLI 共用同一个 LanceDB 存储 |
+| **共享索引** | 所有支持 MCP 的终端共用同一个 LanceDB 存储 |
 | **双通道接入** | MCP（stdio）给 CLI 工具 + HTTP API 给自定义 Agent |
 | **一键接入** | 集成脚本同时安装 MCP 和 continuity 规则 |
 
@@ -298,7 +298,7 @@ v2.2 强化了检索质量；v2.3 通过标准 Connector 框架和运维健康�
 
 RecallNest 提供两种接口：
 
-- **MCP** —— 给 Claude Code、Gemini CLI、Codex 使用（原生工具访问）
+- **MCP** —— 给任意 MCP 客户端使用：Claude Code、Codex、Kimi、Antigravity、Gemini CLI（原生工具访问）
 - **HTTP API** —— 给自定义 Agent、SDK 应用和任何 HTTP 客户端使用
 
 ### Agent 框架示例
@@ -473,7 +473,7 @@ RecallNest 持续维护中。所有主要架构阶段已完成——完整路线
 RecallNest 起源于 [memory-lancedb-pro](https://github.com/CortexReach/memory-lancedb-pro) 的 fork，共享混合检索、衰减建模、记忆即系统的核心理念。关键区别：
 
 - **memory-lancedb-pro** 是 OpenClaw 插件——为单个 OpenClaw Agent 添加长期记忆。
-- **RecallNest** 是独立记忆层——通过 MCP + HTTP API 同时服务 Claude Code、Codex、Gemini CLI，内建会话连续性、结构化资产和冲突管理。
+- **RecallNest** 是独立记忆层——通过 MCP + HTTP API 同时服务任意 MCP 客户端（Claude Code、Codex、Kimi、Antigravity、Gemini CLI），内建会话连续性、结构化资产和冲突管理。
 
 ## 致谢
 
