@@ -8,6 +8,8 @@ import { buildSessionCheckpointRecord, normalizeCheckpointScope } from "./sessio
 import type { ResumeContextResponse, SessionCheckpointRecord } from "./session-schema.js";
 import { composeResumeContext } from "./context-composer.js";
 import { cleanText } from "./context-composer-text.js";
+import { estimateTokens } from "./context-collapse-renderer.js";
+import { TraceCollector } from "./retrieval-trace.js";
 import { createComponents, loadConfig, loadDotEnv, type LocalMemoryConfig } from "./runtime-config.js";
 import { logInfo } from "./stderr-log.js";
 import { buildWorkflowObservationRecord } from "./workflow-observation-engine.js";
@@ -80,6 +82,30 @@ export interface CanaryEvalCase {
   notes?: string;
 }
 
+/**
+ * Per-case cost accounting for the retrieval pipeline — the X axis of the
+ * Pareto curve (see hippo-wiki [[帕累托效率曲线]]).
+ *
+ * Scope: self-comparison across runs (did a retrieval change make it slower or
+ * fatter?). NOT for cross-system comparison — `contextTokens` comes from an
+ * estimator, not a real tokenizer, and this suite is not LoCoMo, so the numbers
+ * are not commensurable with competitors' published token counts.
+ */
+export interface EvalCostMetrics {
+  /** End-to-end retrieve() wall time. */
+  totalMs: number;
+  /** Number of memories returned. */
+  resultCount: number;
+  /** Estimated tokens of returned memory text — the context a caller would spend. */
+  contextTokens: number;
+  /** Duration of the rerank stage, or null when the pipeline ran no rerank.
+   *  Left as a raw fact rather than an inferred "api calls" count: a local
+   *  lightweight rerank and a remote cross-encoder both produce a stage here. */
+  rerankMs: number | null;
+  /** Three slowest stages, for locating the bottleneck. */
+  slowestStages: Array<{ name: string; durationMs: number }>;
+}
+
 export interface CanaryCaseReport {
   mode: "canary";
   name: string;
@@ -98,6 +124,8 @@ export interface CanaryCaseReport {
   topIds: string[];
   topSnippet: string;
   notes?: string;
+  /** Attached by the runner after scoring; absent when scored standalone. */
+  cost?: EvalCostMetrics;
 }
 
 export interface RetrievalCaseReport {
@@ -115,6 +143,8 @@ export interface RetrievalCaseReport {
   topScopes: string[];
   topSnippet: string;
   notes?: string;
+  /** Attached by the runner after scoring; absent when scored standalone. */
+  cost?: EvalCostMetrics;
 }
 
 export interface ContinuityCaseReport {
@@ -573,11 +603,12 @@ function markdownRetrievalReport(reports: RetrievalCaseReport[]): string {
     `- Cases: ${reports.length}`,
     `- Passed: ${passed}/${reports.length}`,
     `- Average score: ${formatPercent(average)}`,
+    ...costSummaryLines(summarizeCost(reports), reports.length),
     "",
-    "| Case | Profile | Score | Pass | Hits | Top scopes |",
-    "|------|---------|-------|------|------|------------|",
+    "| Case | Profile | Score | Pass | Hits | ms | ~tok | Top scopes |",
+    "|------|---------|-------|------|------|----|------|------------|",
     ...reports.map((item) =>
-      `| ${item.name} | ${item.profile} | ${(item.score * 100).toFixed(0)}% | ${item.passed ? "yes" : "no"} | ${item.hitCount} | ${item.topScopes.join(", ") || "-"} |`,
+      `| ${item.name} | ${item.profile} | ${(item.score * 100).toFixed(0)}% | ${item.passed ? "yes" : "no"} | ${item.hitCount} | ${item.cost?.totalMs ?? "-"} | ${item.cost?.contextTokens ?? "-"} | ${item.topScopes.join(", ") || "-"} |`,
     ),
     "",
     "## Case Notes",
@@ -596,6 +627,7 @@ function markdownRetrievalReport(reports: RetrievalCaseReport[]): string {
     lines.push(`- Matched all: ${item.matchedAll.join(", ") || "-"}`);
     lines.push(`- Matched scopes: ${item.matchedScopes.join(", ") || "-"}`);
     lines.push(`- Forbidden matches: ${item.forbiddenMatches.join(", ") || "-"}`);
+    if (item.cost) lines.push(`- Cost: ${formatCost(item.cost)}`);
     if (item.notes) lines.push(`- Notes: ${item.notes}`);
     lines.push("");
   }
@@ -617,11 +649,12 @@ function markdownCanaryReport(reports: CanaryCaseReport[]): string {
     `- Average score: ${formatPercent(average)}`,
     `- Top1 hit: ${top1}/${reports.length}`,
     `- Top3 hit: ${top3}/${reports.length}`,
+    ...costSummaryLines(summarizeCost(reports), reports.length),
     "",
-    "| Case | Profile | Score | Pass | Top1 | Top3 | Order | Forbid |",
-    "|------|---------|-------|------|------|------|-------|--------|",
+    "| Case | Profile | Score | Pass | Top1 | Top3 | Order | Forbid | ms | ~tok |",
+    "|------|---------|-------|------|------|------|-------|--------|----|------|",
     ...reports.map((item) =>
-      `| ${item.name} | ${item.profile} | ${(item.score * 100).toFixed(0)}% | ${item.passed ? "yes" : "no"} | ${item.top1Hit ? "yes" : "-"} | ${item.top3Hit ? "yes" : "-"} | ${item.orderOk === null ? "-" : item.orderOk ? "ok" : "bad"} | ${item.forbiddenIdMatches.length + item.forbiddenMatches.length || "-"} |`,
+      `| ${item.name} | ${item.profile} | ${(item.score * 100).toFixed(0)}% | ${item.passed ? "yes" : "no"} | ${item.top1Hit ? "yes" : "-"} | ${item.top3Hit ? "yes" : "-"} | ${item.orderOk === null ? "-" : item.orderOk ? "ok" : "bad"} | ${item.forbiddenIdMatches.length + item.forbiddenMatches.length || "-"} | ${item.cost?.totalMs ?? "-"} | ${item.cost?.contextTokens ?? "-"} |`,
     ),
     "",
     "## Case Notes",
@@ -640,6 +673,7 @@ function markdownCanaryReport(reports: CanaryCaseReport[]): string {
     lines.push(`- Forbidden term matches: ${item.forbiddenMatches.join(", ") || "-"}`);
     lines.push(`- Top ids: ${item.topIds.join(", ") || "-"}`);
     lines.push(`- Top snippet: ${item.topSnippet}`);
+    if (item.cost) lines.push(`- Cost: ${formatCost(item.cost)}`);
     if (item.notes) lines.push(`- Notes: ${item.notes}`);
     lines.push("");
   }
@@ -694,6 +728,88 @@ function markdownContinuityReport(reports: ContinuityCaseReport[]): string {
   return lines.join("\n");
 }
 
+/**
+ * Turn a finished TraceCollector plus the returned memories into cost metrics.
+ *
+ * The `mode` argument to finalize() only populates a display field on the trace
+ * object; this function consumes stages / totalMs only, so it is not inferred.
+ */
+function collectCostMetrics(
+  trace: TraceCollector,
+  query: string,
+  results: Array<{ entry: { text: string } }>,
+): EvalCostMetrics {
+  const finalized = trace.finalize(query, "hybrid");
+  const rerankStage = finalized.stages.find((stage) => stage.name === "rerank");
+  const slowestStages = [...finalized.stages]
+    .sort((a, b) => b.durationMs - a.durationMs)
+    .slice(0, 3)
+    .map((stage) => ({ name: stage.name, durationMs: stage.durationMs }));
+
+  return {
+    totalMs: finalized.totalMs,
+    resultCount: results.length,
+    contextTokens: results.reduce((sum, item) => sum + estimateTokens(item.entry.text), 0),
+    rerankMs: rerankStage ? rerankStage.durationMs : null,
+    slowestStages,
+  };
+}
+
+/** Aggregate cost across cases. Cases without cost data are skipped, and the
+ *  count of those that did carry it is returned so the report can be honest
+ *  about coverage rather than silently averaging over fewer cases. */
+function summarizeCost(reports: Array<{ cost?: EvalCostMetrics }>): {
+  measured: number;
+  totalMs: number;
+  avgMs: number;
+  totalTokens: number;
+  avgTokens: number;
+} | null {
+  const withCost = reports.map((item) => item.cost).filter((cost): cost is EvalCostMetrics => Boolean(cost));
+  if (withCost.length === 0) return null;
+
+  const totalMs = withCost.reduce((sum, cost) => sum + cost.totalMs, 0);
+  const totalTokens = withCost.reduce((sum, cost) => sum + cost.contextTokens, 0);
+  return {
+    measured: withCost.length,
+    totalMs,
+    avgMs: Math.round(totalMs / withCost.length),
+    totalTokens,
+    avgTokens: Math.round(totalTokens / withCost.length),
+  };
+}
+
+/** Aggregate cost lines for a report header. Returns [] when no case carried
+ *  cost data, so reports produced before this instrumentation still render. */
+function costSummaryLines(
+  summary: ReturnType<typeof summarizeCost>,
+  caseCount: number,
+): string[] {
+  if (!summary) return [];
+  const coverage = summary.measured === caseCount
+    ? ""
+    : ` (measured on ${summary.measured}/${caseCount} cases)`;
+  return [
+    `- Retrieval latency: ${summary.avgMs} ms avg, ${summary.totalMs} ms total${coverage}`,
+    `- Context tokens: ~${summary.avgTokens} avg, ~${summary.totalTokens} total`
+      + ` (estimated, not tokenizer-measured — compare across runs, not against other systems)`,
+  ];
+}
+
+/** One-line per-case cost breakdown. */
+function formatCost(cost: EvalCostMetrics): string {
+  const parts = [
+    `${cost.totalMs}ms`,
+    `~${cost.contextTokens} tok`,
+    `${cost.resultCount} results`,
+    cost.rerankMs === null ? "no rerank stage" : `rerank ${cost.rerankMs}ms`,
+  ];
+  const slowest = cost.slowestStages
+    .map((stage) => `${stage.name} ${stage.durationMs}ms`)
+    .join(", ");
+  return `${parts.join(" / ")}${slowest ? ` | slowest: ${slowest}` : ""}`;
+}
+
 export async function runRetrievalEval(
   cases: RetrievalEvalCase[],
   deps: {
@@ -711,13 +827,16 @@ export async function runRetrievalEval(
     const profileName = evalCase.profile || "default";
     const { retriever, accessTracker } = createEvalComponentsForCase(profileName);
     try {
+      const trace = new TraceCollector();
       const results = await retriever.retrieve({
         query: evalCase.query,
         limit: evalCase.limit || 5,
         scopeFilter: evalCase.scope ? [evalCase.scope] : undefined,
         source: "auto-recall",
+        trace,
       });
       const report = scoreRetrievalCase(evalCase, results);
+      report.cost = collectCostMetrics(trace, evalCase.query, results);
       reports.push(report);
       if (cases.length > 1) {
         logInfo(
@@ -749,13 +868,16 @@ export async function runCanaryEval(
     const profileName = evalCase.profile || "default";
     const { retriever, accessTracker } = createEvalComponentsForCase(profileName);
     try {
+      const trace = new TraceCollector();
       const results = await retriever.retrieve({
         query: evalCase.query,
         limit: evalCase.limit || 8,
         scopeFilter: evalCase.scope ? [evalCase.scope] : undefined,
         source: "auto-recall",
+        trace,
       });
       const report = scoreCanaryCase(evalCase, results);
+      report.cost = collectCostMetrics(trace, evalCase.query, results);
       reports.push(report);
       if (cases.length > 1) {
         logInfo(
