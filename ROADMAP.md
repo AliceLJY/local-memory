@@ -1,10 +1,10 @@
 # RecallNest Roadmap
 
-> Vision: a shared memory layer for Claude Code, Codex, and Gemini CLI that gets more useful over time.
+> Vision: a shared memory layer for any MCP client that gets more useful over time.
 
 RecallNest is no longer best described as "local transcript search." The real target is stricter:
 
-- one memory layer shared by the three terminals
+- one memory layer shared by every terminal you open
 - stable context that survives across windows
 - memory that becomes more reusable, not just larger
 
@@ -28,7 +28,7 @@ What matters first is this: opening another window should not erase stable conte
 ### Already Done
 
 - Shared local LanceDB index
-- MCP server for Claude Code, Gemini CLI, and Codex (41 tools in 3 tiers)
+- MCP server for any MCP client — Claude Code, Codex, Kimi, Antigravity, Gemini CLI (43 tools in 3 tiers)
 - HTTP API for custom agents (21 endpoints)
 - Ingestion from existing transcripts and memory files
 - Hybrid retrieval: vector + BM25 + reranking + 4 retrieval profiles
@@ -128,7 +128,7 @@ Delivered:
 Remaining work:
 
 - ⬜ isolate eval from live checkpoint drift
-- ⬜ keep measuring instruction-driven startup continuity across the three terminals
+- ⬜ keep measuring instruction-driven startup continuity across the terminals in use
 
 ## Phase 4: High-Signal Memory Capture
 
@@ -245,7 +245,7 @@ Dependencies: none (all independent of each other, can be done in any order)
 ## Principles
 
 - Local-first: all memory stays on your machine
-- Three-terminal first: Claude Code, Codex, and Gemini CLI are the immediate focus
+- Terminals in daily use come first: Claude Code, Codex, Kimi and Antigravity today; any MCP client works
 - Continuity over transcript hoarding: useful memory matters more than raw volume
 - Agent-agnostic at the interface layer: HTTP API and MCP remain the public surface
 - Measured evolution: use evals before tuning retrieval or memory policies
