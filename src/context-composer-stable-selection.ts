@@ -162,7 +162,13 @@ function formatStableResult(category: StableCategory, result: RetrievalResult): 
   // F1: Tag low-confidence memories in resume_context output
   const conf = getConfidence(result.entry);
   const tag = conf < 0.5 ? " [低置信]" : "";
-  return cleanText(`${STABLE_CATEGORY_LABELS[category]}: ${text}${tag}`, 230);
+  // 220 是 stableContext 的 schema 上限（session-schema.ts:61），不是随手写的数：
+  // 这里曾是 230，比上限大 10，而 interleaveUnique（context-composer-stable.ts:199-206）
+  // 不再截一次 —— 于是任何 221~230 字符的行都会让 composeResumeContext 末尾的
+  // ResumeContextResponseSchema.parse（context-composer.ts:541）抛
+  // "stableContext must be at most 220 characters"，整个 resume_context 调用失败。
+  // 改这个数之前先看 schema，两边必须一起动。
+  return cleanText(`${STABLE_CATEGORY_LABELS[category]}: ${text}${tag}`, 220);
 }
 
 export function selectStableResults(
