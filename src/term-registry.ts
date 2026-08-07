@@ -272,12 +272,24 @@ export const TASK_RESULT_SPECIFICITY_GROUPS = [
       "managed continuity rules",
       "global instruction file",
     ],
+    // ⚠️ 上面的 resultTerms 是**一次历史事件的专名**（2026 年那轮三端连续性触发验证），
+    // 不是端清单 —— 端接入时不要往里加端名：resultTerms 是「谁被这个组认领」，
+    // 加了 "kimi" 等于断言"任何提到 kimi 的记忆都是那次三端验证的结论"，
+    // 会让大批 kimi 记忆在无关任务下被这个组滤掉。同款判断见 932ec37：
+    // ROADMAP 里 `✅ managed continuity rules installed by setup` 那处也按"历史"原样保留。
+    //
+    // taskTerms 是「什么问法下这条历史仍然相关」，所以只补她真实的问法：
+    // 表里原有 "three-terminal" / "三终端"，但她写的是"三端"/"四端"（"三端"不是"三终端"的子串，
+    // 今天真的匹配不上）。**同样不补端名** —— 补了会让「kimi 挂了」这种无关任务
+    // 也解除过滤、把这条三端历史塞进 context；真正相关的问法已被 触发/接入/规则 覆盖。
     taskTerms: [
       "claude code",
       "codex",
       "gemini cli",
       "three-terminal",
       "三终端",
+      "三端",
+      "四端",
       "trigger",
       "触发",
       "setup",
@@ -462,6 +474,18 @@ export const TASK_RESULT_SPECIFICITY_GROUPS = [
   },
 ];
 
+// 「某个端的验收 / 独立验证视角」这一簇。判据（context-composer-stable-selection.ts:154-157）：
+//   resultTerms 命中记忆正文 && taskTerms 全不命中任务  →  丢弃这条记忆
+// 两个字段方向相反，接入新端时**不要两边对称地加**：
+//   · taskTerms 加词 = 放宽豁免，召回变多 —— 端接入时要补的是这一侧
+//   · resultTerms 加词 = 扩大被滤对象，召回变少 —— 这里**有意不补端名**：
+//     概念词（smoke / integration / 验收 / 验证视角 / 独立验证 / sidecar）本就是端无关的，
+//     已经覆盖了"kimi 的验收视角"这类记忆；而裸词是子串匹配，补进去会把"顺带提了一句 kimi"
+//     的无关偏好整条变成可滤对象，爆炸半径远大于收益。
+//     实证：现有的裸词 "codex" 已经在误认领 —— 记忆 b8731a81（讲规则该放 home 级还是项目级）
+//     只因正文里有 `.codex/AGENTS.md` 这个**路径片段**就被本组claim，
+//     于是"四端的触发规则都装好了吗"这一问反而把最对题的那条滤掉了（shadow 实测）。
+//     再往 resultTerms 加端名 = 把这个已知缺陷复制三份。
 export const PREFERENCE_SPECIFICITY_GROUPS = [
   {
     resultTerms: [
@@ -480,6 +504,17 @@ export const PREFERENCE_SPECIFICITY_GROUPS = [
       "claude code",
       "codex",
       "gemini cli",
+      // 在栈四端 = Claude Code / Codex / Kimi / AGY。AGY 是一个端，
+      // "antigravity" 与 "agy" 是它的两类写法（scope 前缀写 antigravity:，
+      // 她口头和 MEMORY.md 里写 agy），两个都要，不是两个端。
+      "kimi",
+      "antigravity",
+      "agy",
+      // 问端拓扑本身（不点名某一端）时也该解除：shadow 实测
+      // "四端的触发规则都装好了吗"会把 b8731a81（规则该放 home 级还是项目级，
+      // 正文写着"shared-behaviors.md 放三端通用底线"）这条最对题的记忆滤掉。
+      "三端",
+      "四端",
       "smoke",
       "integration",
       "验收",
