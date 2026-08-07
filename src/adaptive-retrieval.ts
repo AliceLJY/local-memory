@@ -55,8 +55,19 @@ export function shouldSkipRetrieval(query: string, minLength?: number): boolean 
 
   const effectiveMinLength = minLength ?? (hasCJK ? 2 : 15);
 
+  // 【本地分叉点 · 2026-08-08 · 勿在同步上游时覆盖回去】
+  // 单 token（不含空格）= 实体查找意图，与问号一样豁免长度闸。
+  // 上游的 ASCII 阈值 15 是按「英文自然语句」定的（挡 "hello there" 这类闲聊），
+  // 但项目名/工具名几乎都短于 15：cobbler=7 / slidesmith=10 / hippo-wiki=10 / recallnest=10，
+  // 于是「甩一个名字过去」这种最自然的查法一律返回空——库里明明有。
+  // 红绿实测：`cobbler` → No results；`cobbler?` → 100% 命中 12 条，只差一个问号豁免。
+  // 中文不受影响（阈值 2），所以该缺陷只在英文实体名上暴露，一直没被发现。
+  // 安全性：本条排在 SKIP_PATTERNS 之后，hi / ok / ping / test / ls / git 等单词仍被挡住。
+  const isSingleToken = !/\s/.test(trimmed);
+
   // Short non-question messages are skipped; questions (? ？) are always worth checking
   if (trimmed.length < effectiveMinLength &&
+      !isSingleToken &&
       !trimmed.includes('?') && !trimmed.includes('？')) {
     return true;
   }
