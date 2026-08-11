@@ -66,8 +66,24 @@ export interface IngestBoundaryResolution {
 // 其会话碎片既不会被降权，也会被 layer admission 当成 durable 结论放行。
 // （kimi / antigravity 就漏了：kimi 2026-07-19 进栈、antigravity 07-29 进栈，
 //   直到 08-01 才发现库里的 `kimi:` scope 一直被当结论对待。）
-const TRANSCRIPT_SOURCES = new Set(["cc", "codex", "gemini", "kimi", "antigravity"]);
-const TRANSCRIPT_SCOPE_PREFIXES = ["cc:", "codex:", "gemini:", "kimi:", "antigravity:"];
+//
+// minis（2026-08-12 加，iPhone 上的 Minis agent，经 iCloud 文件信箱回流对话记录）：
+// 这一次是**接入前先补**，不是事后发现——补的动机值得记下来，因为 Minis 比前面几端更危险。
+// 它的 CLI 把 agent 自己的工具调用回传也标成 `type:"user"` / `role:"user"`（实测一场对话
+// 137 条里 69 条 user，其中仅 11 条是真人发言，另外 58 条是 `[Tool result: ...]`）。
+// 所以漏掉它不只是"碎片被当结论"，而是**把 shell 输出提炼成用户说过的话**——
+// 例如 `ssh: connect to host ... timed out` 会变成一条"用户说过"的记忆。
+// 导出侧已在上游过滤（只导真人对话），这里是第二道闸：即使某次导出没过滤干净，
+// 走 ingest 的内容也会被正确降权到 evidence 层，而不是当成 durable 结论。
+const TRANSCRIPT_SOURCES = new Set(["cc", "codex", "gemini", "kimi", "antigravity", "minis"]);
+const TRANSCRIPT_SCOPE_PREFIXES = [
+  "cc:",
+  "codex:",
+  "gemini:",
+  "kimi:",
+  "antigravity:",
+  "minis:",
+];
 
 export function getConflictPolicyForCategory(category: DurableMemoryCategory): MemoryConflictPolicy {
   return category === "events" || category === "cases"

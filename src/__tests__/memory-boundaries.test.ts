@@ -26,6 +26,38 @@ describe("memory boundaries", () => {
     expect(resolved.boundary.downgradedFrom).toBe("profile");
   });
 
+  // 端清单回归：memory-boundaries.ts 的 TRANSCRIPT_SOURCES / TRANSCRIPT_SCOPE_PREFIXES
+  // 历史上漏过两次（kimi 2026-07-19 进栈、antigravity 07-29 进栈，都到 08-01 才发现）。
+  // 根因不是"忘了改"，是**没有断言**——纯判断步骤没有测试撑着就会被跳过。
+  // ⚠️ 接入新端时：先在下面的清单里加一行让测试变红，再去改常量把它变绿。
+  it.each([
+    ["cc", "cc:abc123"],
+    ["codex", "codex:abc123"],
+    ["gemini", "gemini:abc123"],
+    ["kimi", "kimi:abc123"],
+    ["antigravity", "antigravity:abc123"],
+    ["minis", "minis:abc123"],
+  ])("downgrades transcript profile facts for end %s", (source, scope) => {
+    const resolved = resolveIngestBoundary({ source, scope, category: "profile" });
+
+    expect(resolved.boundary.layer).toBe("evidence");
+    expect(resolved.boundary.authority).toBe("transcript-ingest");
+    expect(resolved.category).toBe("events");
+  });
+
+  // 反向断言：确认上面那组不是同义反复（如果任何 source 都被降权，那组测试就永远绿、
+  // 等于没测）。一个不在清单里的来源必须**不**被当成 transcript。
+  it("does not downgrade sources outside the transcript end list", () => {
+    const resolved = resolveIngestBoundary({
+      source: "manual",
+      scope: "memory:pivot",
+      category: "profile",
+    });
+
+    expect(resolved.boundary.layer).not.toBe("evidence");
+    expect(resolved.category).toBe("profile");
+  });
+
   it("keeps transcript cases searchable but marks them as evidence", () => {
     const resolved = resolveIngestBoundary({
       source: "codex",
