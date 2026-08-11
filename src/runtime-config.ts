@@ -8,6 +8,7 @@ import { createEmbedder, getVectorDimensions, type EmbeddingConfig } from "./emb
 import { createRetriever, type RetrievalConfig, DEFAULT_RETRIEVAL_CONFIG } from "./retriever.js";
 import { applyRetrievalProfile } from "./retrieval-profiles.js";
 import { AccessTracker } from "./access-tracker.js";
+import { createAuditLogger } from "./audit-log.js";
 import { FrequencyTracker } from "./frequency-tracker.js";
 import { createLLMClient, type LLMClient, type LLMConfig } from "./llm-client.js";
 import { logInfo } from "./stderr-log.js";
@@ -183,6 +184,23 @@ export function createComponents(config: LocalMemoryConfig, profileName?: string
     filePath: join(dataDir, "frequency-stats.json"),
   });
   retriever.setFrequencyTracker(frequencyTracker);
+
+  // F-1: 补接 audit logger，让 retrieve 操作真的被记录。
+  //
+  // 2026-08-12 修复：`setAuditLogger`（retriever.ts:749）自定义以来**全仓零调用者**，
+  // 而 retriever.ts:897 的 `this.auditLogger?.log({ operation: "retrieve", ... })`
+  // 早就写好了 —— 可选链让它永远静默 no-op。结果是 audit-log.ts 文件头注释声称
+  // "record every store/update/delete/retrieve operation"、AuditOperation 类型里
+  // 也列着 "retrieve"，而生产 audit.jsonl 里 2841 条记录**零条 retrieve**。
+  //
+  // 同族的 setAccessTracker / setFrequencyTracker 就在上面两行，都接了，唯独这个漏了。
+  // 与同日修的 dream 末尾 resetWriteCount 漏传 scope 完全同型：接线漏一处、运行时
+  // 不报错、静默失效 —— 差别只在那个是漏参数、这个是漏调用。
+  //
+  // simplified: audit.jsonl 无轮转机制（修复时 644K / 2841 行，约 230 字节一行）。
+  // 接上 retrieve 后增速会明显上升，因为检索远比写入频繁。
+  // 升级触发条件：文件超过约 50MB 时加按月轮转，别等到它拖慢 append。
+  retriever.setAuditLogger(createAuditLogger(join(dataDir, "audit.jsonl")));
 
   // Create LLM client if configured (optional, graceful)
   let llm: LLMClient | null = null;
