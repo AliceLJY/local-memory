@@ -7,7 +7,7 @@ import { isDerivedInsight } from "../consolidation-engine.js";
 import type { MemoryEntry, MemoryStore } from "../store.js";
 import type { LLMClient } from "../llm-client.js";
 import type { Embedder } from "../embedder.js";
-import { resetWriteCount } from "../activity-counter.js";
+import { resetWriteCount, incrementWriteCount, getWriteCount, listScopesAboveThreshold } from "../activity-counter.js";
 
 // Isolate the activity-counter (default path = <dataDir>/activity-stats.json) to a temp
 // dir so these tests never read/write the repo's data/activity-stats.json that the
@@ -296,6 +296,42 @@ describe("runDream", () => {
     expect(typeof result.stats.patternsExtracted).toBe("number");
     expect(typeof result.stats.mergedCount).toBe("number");
     expect(typeof result.stats.archivedCount).toBe("number");
+  });
+
+  // 2026-08-12 回归：dream 完整跑完后必须清掉该 scope 的写计数，否则它永远留在
+  // listScopesAboveThreshold 的队列里 —— 每轮从头重扫同一批最老的 scope，
+  // 6h 预算耗尽后排在后面的永远轮不到（生产日志：已处理 167/563，剩余 396 跳过）。
+  // 根因：dream-pipeline.ts 末尾 resetWriteCount() 漏传 scope，运行时 delete stats.scopes[undefined]，
+  // 目标计数纹丝不动；早退路径 (:226) 传对了。源于 d269159（2026-07-02 per-scope 写计数重构）漏改一处，
+  // 该 commit message 自己写着「reset 在末尾清该 scope」——意图对、实现漏，活了 41 天。
+  // 由 codex + kimi 双路独立冷读查出（2026-08-12），互相隔离、收敛到同一行。
+  it("清空已处理 scope 的写计数，使它退出 dream 队列", async () => {
+    const statsPath = join(mkdtempSync(join(tmpdir(), "dream-reset-")), "activity-stats.json");
+    const statsCfg = { statsPath };
+
+    incrementWriteCount("project:test", 12, statsCfg);
+    expect(getWriteCount("project:test", statsCfg)).toBe(12);
+    expect(listScopesAboveThreshold(10, statsCfg)).toEqual(["project:test"]);
+
+    const entries = [
+      makeEntry({ id: "a", vector: [0.9, 0.1, 0, 0, 0] }),
+      makeEntry({ id: "b", vector: [0.88, 0.12, 0, 0, 0] }),
+      makeEntry({ id: "c", vector: [0.92, 0.08, 0, 0, 0] }),
+    ];
+    const result = await runDream({
+      store: createMockStore(entries),
+      llm: createMockLLM(),
+      embedder: createMockEmbedder(),
+      scope: "project:test",
+      activityStatsPath: statsPath,
+    });
+
+    // 走的是完整路径（不是 too-few-entries 早退），早退路径本来就传对了参数
+    expect(result.ran).toBe(true);
+    expect(result.reason).toBeUndefined();
+
+    expect(getWriteCount("project:test", statsCfg)).toBe(0);
+    expect(listScopesAboveThreshold(10, statsCfg)).toEqual([]);
   });
 
   it("excludes its own derivatives from the gather, so insights are not re-consolidated", async () => {

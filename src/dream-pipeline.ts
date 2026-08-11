@@ -297,8 +297,24 @@ async function runDreamInner(params: {
       : `skipped — ${gcResult.reason}`,
   });
 
-  // Reset activity counter after successful dream
-  resetWriteCount();
+  // Reset activity counter after successful dream.
+  //
+  // 只在 consolidate 真跑过时才清：锁被占时（onBusy: "skip"）这个 scope 并没有被真正
+  // 处理完，计数必须留着等下一轮，否则它会被当成"已处理"而丢掉本轮积累的写入。
+  //
+  // 2026-08-12 修复：此处原为无参 `resetWriteCount()`，而签名 (activity-counter.ts:110)
+  // 要求 scope 必填 —— 运行时不报错，只是静默执行 `delete stats.scopes[undefined]`，
+  // 目标 scope 的计数纹丝不动。后果：成功处理的 scope 永远不出队，达标数只增不减
+  // （生产实测 85 → 107 → 135 → 563 → 572），每轮从队首重扫同一批最老的 scope，
+  // 6h 预算耗尽后排在后面的永远轮不到（日志：已处理 167/563，剩余 396 本轮跳过）。
+  // 早退路径 (:226) 一直是对的。源于 d269159（2026-07-02 per-scope 写计数重构）漏改一处，
+  // 该 commit message 自己写着「reset 在末尾清该 scope（含 dream 自写→防永动）」——
+  // 意图正确、实现漏了一个参数，活了 41 天。codex + kimi 双路独立冷读同时查出。
+  //
+  // 注意：清对之后，listScopesAboveThreshold 的 FIFO 自组织才真正开始工作 ——
+  // 处理完的 scope 被 delete、下次攒够写入重新插入时排到队尾，被跳过的带原计数留在
+  // 队首下轮优先。所以这里不需要额外的游标 / checkpoint 文件。
+  if (consolidateOutcome.ran) resetWriteCount(scope, statsCfg);
 
   return { ran: true, phases, stats };
 }

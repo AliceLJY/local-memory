@@ -71,6 +71,8 @@ describe("runDream cross-process lock", () => {
   it("skips its consolidation phase when the scope's consolidate lock is held", async () => {
     const scope = "project:dream-consolidate-test";
     holdLock(`consolidate-${scope}`); // simulate a standalone consolidate_memories running
+    // 2026-08-12：预置写计数，用于在末尾断言「锁被占 = 没真正处理 = 计数必须留着」。
+    incrementWriteCount(scope, 15, { statsPath: DREAM_STATS });
 
     const activeMeta = JSON.stringify({
       evolution: { status: "active", version: 1, accessCount: 0, lastAccessedAt: null, validFrom: Date.now(), validUntil: null },
@@ -103,6 +105,13 @@ describe("runDream cross-process lock", () => {
     expect(result.ran).toBe(true);
     const consolidatePhase = result.phases.find((p) => p.phase === "consolidate");
     expect(consolidatePhase?.detail).toContain("skipped");
+
+    // 2026-08-12 防「修过头」：末尾的 reset 必须是 `if (consolidateOutcome.ran)` 条件式。
+    // 锁被占时这个 scope 并没有被真正处理完，若无条件清计数，它会被当成「已处理」而
+    // 丢掉本轮积累的写入，下次要重新攒够阈值才轮得到 —— 是比原 bug 更隐蔽的数据损失。
+    // 注意本条不是必红测试：修复前的无参 resetWriteCount() 什么也不清，同样是绿。
+    // 它守的是修复的形状，不是修复的存在（存在性由 dream-pipeline.test.ts 那条守）。
+    expect(getWriteCount(scope, { statsPath: DREAM_STATS })).toBe(15);
   });
 
   it("resets the scope's write counter after a run (no perpetual self-triggering)", async () => {
@@ -114,6 +123,12 @@ describe("runDream cross-process lock", () => {
 
     const store = {
       stats: async () => ({ totalCount: 5, scopeCounts: {}, categoryCounts: {} }),
+      // ⚠️ 2026-08-12 标注：这里 list 返回空数组，走的是 **completed_early 早退路径**，
+      // 而早退路径 (dream-pipeline.ts:226) 的 resetWriteCount(scope, statsCfg) 一直是对的。
+      // 本条测试因此从未覆盖「完整跑完」那条路径 —— 而 bug 恰恰在那条路径上（:301 漏传 scope）。
+      // 测试名 "resets the scope's write counter after a run" 读起来像覆盖了 reset 全部行为，
+      // 实际只覆盖了两条路径中正确的那一条，于是 bug 在有测试的情况下活了 41 天。
+      // 完整路径的覆盖已补在 dream-pipeline.test.ts「清空已处理 scope 的写计数」一条。
       list: async () => [], // no active entries → completed_early path (still resets)
       listPage: async () => [],
       update: async () => null,

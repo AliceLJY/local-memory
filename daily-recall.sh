@@ -83,9 +83,15 @@ fi
 
 echo "  distill 完成，$(echo "$DISTILL_OUTPUT" | wc -l | tr -d ' ') 行" | tee -a "$LOG_FILE"
 
-# CC-6: Release lock on success + HP-3: Reset activity counter
+# CC-6: Release lock on success
 bun -e "try { require('./src/distill-lock.ts').releaseLock(); } catch {}" 2>/dev/null || true
-bun -e "try { require('./src/activity-counter.ts').resetWriteCount(); } catch {}" 2>/dev/null || true
+# HP-3 的 resetWriteCount() 调用已于 2026-08-12 删除：
+#   - 它是无参调用，而签名 (activity-counter.ts:110) 要求 scope 必填 —— 运行时执行的是
+#     delete stats.scopes[undefined]，从来什么都没清；且被 try/catch + 2>/dev/null + || true
+#     四重静默包着，失败也无声。是"看起来在工作"的死代码。
+#   - 本脚本跑的是 --all-scopes（见上面 distill/export 两行），在 d269159 之后的 per-scope
+#     计数模型下根本没有单一 scope 可传，无法就地修正。
+#   - 写计数的重置职责现由 dream 逐 scope 承担 (dream-pipeline.ts:226 早退 / :301 完整路径)。
 
 # ── 写入输出文件 ──────────────────────────────────────────────
 cat > "$OUTPUT_FILE" << EOF
