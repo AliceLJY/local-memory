@@ -64,6 +64,23 @@ for attempt in 1 2 3; do
     DREAM_EXIT=${PIPESTATUS[0]}
 
     STATUS_LINE=$(grep -aoE '\[\[DREAM_STATUS\]\] (ok|blocked|skip)' "$DREAM_OUT" 2>/dev/null | tail -1)
+    METRICS_LINE=$(grep -a '\[\[DREAM_METRICS\]\]' "$DREAM_OUT" 2>/dev/null | tail -1)
+
+    # 2026-08-12 存在性闸：报了 ok 就必须同时报出产出计量。
+    #
+    # 防的不是「今天没产出」（合法的 noop 照样是 ok），而是「断言本身不在了」——
+    # 某次重构把 METRICS 那行删掉 / 改名，而 status 照常报 ok，于是整套产出监控
+    # 无声消失，跟它要治的 2716 次零 insight 是同一个病。
+    #
+    # 它不需要任何阈值，只问「这行在不在」，因此不会随数据分布漂移而误伤 ——
+    # 同 hippo-wiki 装订器的空壳闸（只认 0 字节，不猜"过小"）。
+    # 失败方向是安全的：改名而忘了同步这里，会天天红，不会静默绿。
+    if [ "$STATUS_LINE" = "[[DREAM_STATUS]] ok" ] && [ -z "$METRICS_LINE" ]; then
+        echo "  [错误] STATUS=ok 但没有 [[DREAM_METRICS]] 行 —— 产出断言缺失，按失败处理" | tee -a "$LOG_FILE"
+        STATUS_LINE="[[DREAM_STATUS]] blocked"
+        DREAM_EXIT=1
+    fi
+    [ -n "$METRICS_LINE" ] && echo "  $METRICS_LINE" | tee -a "$LOG_FILE"
 
     if [ "$STATUS_LINE" = "[[DREAM_STATUS]] ok" ] || [ "$STATUS_LINE" = "[[DREAM_STATUS]] skip" ]; then
         break

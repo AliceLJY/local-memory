@@ -2,7 +2,10 @@ import { describe, expect, it, beforeEach, beforeAll, afterAll } from "bun:test"
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runDream, formatDreamResult, type DreamResult } from "../dream-pipeline.js";
+import {
+  runDream, formatDreamResult, assertDreamSweepHealth, classifyDreamOutput, countDreamEffects,
+  type DreamResult,
+} from "../dream-pipeline.js";
 import { isDerivedInsight } from "../consolidation-engine.js";
 import type { MemoryEntry, MemoryStore } from "../store.js";
 import type { LLMClient } from "../llm-client.js";
@@ -387,6 +390,129 @@ describe("runDream", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// P1（2026-08-12）：产出断言 —— 让 ok 只表示「确有副作用」
+// ---------------------------------------------------------------------------
+
+describe("dream 产出断言", () => {
+  beforeEach(() => {
+    resetWriteCount("project:test");
+  });
+
+  // 必红端到端：精确复现 2026-07-23 第二真凶的形状（store.list() 恒返回假空向量，
+  // getVectors 回填也拿不到东西 → 84/84 全被 clusterAndConsolidate 的
+  // `vector?.length > 0` 滤光 → semantic 簇恒 0 → LLM 从未被调 → 2716 次零 insight）。
+  // 在加 output 之前，这个场景返回的是一个看起来完全正常的成功结果 ——
+  // 这条测试就是把「跑完了」和「做成了」分开的那道断言。
+  it("向量管线断裂时不报成功，而是 noop + vector_pipeline_empty", async () => {
+    const entries = [
+      makeEntry({ id: "a", vector: [0.9, 0.1, 0, 0, 0] }),
+      makeEntry({ id: "b", vector: [0.88, 0.12, 0, 0, 0] }),
+      makeEntry({ id: "c", vector: [0.92, 0.08, 0, 0, 0] }),
+    ];
+    const healthy = createMockStore(entries);
+    // 唯一的改动：getVectors 返回空 Map（向量管线断裂），其余一切正常
+    const broken = { ...healthy, getVectors: async () => new Map<string, number[]>() };
+
+    const result = await runDream({
+      store: broken as unknown as MemoryStore,
+      llm: createMockLLM(),
+      embedder: createMockEmbedder(),
+      scope: "project:test",
+      force: true,
+    });
+
+    expect(result.ran).toBe(true);              // 没崩 —— 这正是它以前能蒙混过关的原因
+    expect(result.stats.consolidatableCount).toBeGreaterThan(0);
+    expect(result.stats.semanticVectorFed).toBe(0);
+    // 注意断的是 degraded 而不是 kind：3a 确定性去重不需要向量，它照样合并、照样
+    // 产出副作用，effects > 0 会把 kind 顶成 produced —— 这条测试第一次跑时正是这样
+    // 红的，暴露出「一条路径的产出会掩盖另一条路径的断裂」，degraded 字段因此单列。
+    expect(result.output.degraded).toBe("vector_pipeline_empty");
+    expect(formatDreamResult(result)).toContain("DEGRADED");
+  });
+
+  it("向量管线正常时，同一批数据报 produced", async () => {
+    const entries = [
+      makeEntry({ id: "a", vector: [0.9, 0.1, 0, 0, 0] }),
+      makeEntry({ id: "b", vector: [0.88, 0.12, 0, 0, 0] }),
+      makeEntry({ id: "c", vector: [0.92, 0.08, 0, 0, 0] }),
+    ];
+    const result = await runDream({
+      store: createMockStore(entries),
+      llm: createMockLLM(),
+      embedder: createMockEmbedder(),
+      scope: "project:test",
+      force: true,
+    });
+
+    expect(result.stats.semanticVectorFed).toBe(result.stats.consolidatableCount);
+    expect(result.output.effectsWritten).toBeGreaterThan(0);
+    expect(result.output.kind).toBe("produced");
+    expect(result.output.degraded).toBeUndefined();
+  });
+});
+
+describe("assertDreamSweepHealth", () => {
+  it("没配 LLM = 结构性故障（3b 整段不跑，insight 恒为 0）", () => {
+    expect(assertDreamSweepHealth({ llmPresent: false, consolidatable: 10, vectorFed: 10 }))
+      .toEqual({ healthy: false, reason: "no_llm_configured" });
+  });
+
+  it("有素材可聚却一条带向量的都没有 = 向量管线断了", () => {
+    expect(assertDreamSweepHealth({ llmPresent: true, consolidatable: 84, vectorFed: 0 }))
+      .toEqual({ healthy: false, reason: "vector_pipeline_empty" });
+  });
+
+  it("素材本来就是 0 时不算故障（合法空转，不是断裂）", () => {
+    expect(assertDreamSweepHealth({ llmPresent: true, consolidatable: 0, vectorFed: 0 }))
+      .toEqual({ healthy: true });
+  });
+
+  it("不拿 insight 数量做判据 —— 那会是第三个阈值陷阱", () => {
+    // 有素材、向量齐、LLM 在位，但一条 insight 都没产出：数据真不成簇时这是合法的，
+    // 必须判 healthy。若这里返回 unhealthy，就等于偷偷设了「insight ≥ 1」的下限。
+    expect(assertDreamSweepHealth({ llmPresent: true, consolidatable: 40, vectorFed: 40 }))
+      .toEqual({ healthy: true });
+  });
+});
+
+describe("classifyDreamOutput", () => {
+  const healthy = { healthy: true } as const;
+
+  it("硬不变量：produced <=> effects > 0", () => {
+    expect(classifyDreamOutput({ consolidateRan: true, effects: 3, health: healthy }).kind).toBe("produced");
+    expect(classifyDreamOutput({ consolidateRan: true, effects: 0, health: healthy }).kind).toBe("noop");
+  });
+
+  it("健康的零产出叫 no_qualified_work（合法，不是失败）", () => {
+    expect(classifyDreamOutput({ consolidateRan: true, effects: 0, health: healthy }))
+      .toEqual({ kind: "noop", reason: "no_qualified_work", effectsWritten: 0 });
+  });
+
+  it("不健康的零产出带出具体故障原因", () => {
+    expect(classifyDreamOutput({
+      consolidateRan: true, effects: 0,
+      health: { healthy: false, reason: "vector_pipeline_empty" },
+    }).reason).toBe("vector_pipeline_empty");
+  });
+
+  it("有产出也可以是 degraded —— 3a 的产出不许掩盖 3b 的断裂", () => {
+    const out = classifyDreamOutput({
+      consolidateRan: true, effects: 5,
+      health: { healthy: false, reason: "vector_pipeline_empty" },
+    });
+    expect(out.kind).toBe("produced");            // 确实写入了东西，不撒谎
+    expect(out.degraded).toBe("vector_pipeline_empty");  // 但语义路径整段断了
+  });
+
+  it("必经阶段没跑 = partial，不能混进 noop", () => {
+    // partial 同时是「不要清写计数」的信号：这个 scope 并没有被真正处理完。
+    expect(classifyDreamOutput({ consolidateRan: false, effects: 0, health: healthy }))
+      .toEqual({ kind: "partial", reason: "consolidate_lock_held", effectsWritten: 0 });
+  });
+});
+
 describe("isDerivedInsight", () => {
   it("flags cluster insights and cross-memory patterns", () => {
     expect(isDerivedInsight(JSON.stringify({ cluster_insight: true }))).toBe(true);
@@ -410,8 +536,9 @@ describe("formatDreamResult", () => {
     const result: DreamResult = {
       ran: false,
       reason: "insufficient_writes (3/10)",
+      output: { kind: "skipped", reason: "insufficient_writes", effectsWritten: 0 },
       phases: [{ phase: "orient", detail: "50 memories, 3 writes" }],
-      stats: { totalMemories: 50, activeMemories: 0, writesSinceLastDream: 3, clustersFound: 0, dedupeClustersFound: 0, semanticClustersFound: 0, insightsGenerated: 0, patternsExtracted: 0, mergedCount: 0, archivedCount: 0 },
+      stats: { totalMemories: 50, activeMemories: 0, writesSinceLastDream: 3, clustersFound: 0, dedupeClustersFound: 0, semanticClustersFound: 0, insightsGenerated: 0, patternsExtracted: 0, mergedCount: 0, archivedCount: 0, relationsAdded: 0, consolidatableCount: 0, semanticVectorFed: 0 },
     };
     const output = formatDreamResult(result);
     expect(output).toContain("skipped");
@@ -427,7 +554,8 @@ describe("formatDreamResult", () => {
         { phase: "consolidate", detail: "3 clusters, 1 merged, 2 insights, 1 pattern" },
         { phase: "prune", detail: "5 entries archived" },
       ],
-      stats: { totalMemories: 100, activeMemories: 80, writesSinceLastDream: 15, clustersFound: 3, dedupeClustersFound: 2, semanticClustersFound: 1, insightsGenerated: 2, patternsExtracted: 1, mergedCount: 1, archivedCount: 5 },
+      output: { kind: "produced", effectsWritten: 9 },
+      stats: { totalMemories: 100, activeMemories: 80, writesSinceLastDream: 15, clustersFound: 3, dedupeClustersFound: 2, semanticClustersFound: 1, insightsGenerated: 2, patternsExtracted: 1, mergedCount: 1, archivedCount: 5, relationsAdded: 0, consolidatableCount: 80, semanticVectorFed: 80 },
     };
     const output = formatDreamResult(result);
     expect(output).toContain("Dream completed");
@@ -446,9 +574,11 @@ describe("formatDreamResult", () => {
     const base = {
       ran: true as const,
       phases: [],
+      output: { kind: "produced" as const, effectsWritten: 1 },
       stats: {
         totalMemories: 40, activeMemories: 40, writesSinceLastDream: 40,
         insightsGenerated: 0, patternsExtracted: 0, mergedCount: 1, archivedCount: 0,
+        relationsAdded: 0, consolidatableCount: 40, semanticVectorFed: 40,
       },
     };
 

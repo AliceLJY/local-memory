@@ -1630,6 +1630,12 @@ program
       let fatalFailures = 0;
       let transientFailures = 0;
       let processed = 0;
+      // 2026-08-12 产出计量：`[[DREAM_STATUS]] ok` 只证明「没崩」，不证明「产出了东西」。
+      // 2026-07-23 查出的语义阈值卡在真实 p99 之上，就是这样静默跑了 2716 次零 insight
+      // 而无人察觉 —— 当时日志里每一轮都是 ok。
+      const tally = { produced: 0, noop: 0, partial: 0, skipped: 0 };
+      let effectsTotal = 0;
+      const degradedScopes: string[] = [];
       for (const scope of scopes) {
         if (Date.now() > deadline) {
           console.warn(
@@ -1641,6 +1647,9 @@ program
         processed++;
         try {
           const result = await runDream({ store, llm, embedder, scope, force: Boolean(options.force), activityStatsPath, kgStore });
+          tally[result.output.kind]++;
+          effectsTotal += result.output.effectsWritten;
+          if (result.output.degraded) degradedScopes.push(`${scope}=${result.output.degraded}`);
           console.log(`[scope=${scope}] ${formatDreamResult(result)}`);
         } catch (err) {
           // 单 scope 失败不阻断其他 scope。
@@ -1658,10 +1667,25 @@ program
       // 旧语义是「任一 scope 抛异常即 blocked」，在 475 个 scope 的规模下等于「有一个撞上
       // store-write 锁就整轮红」，而整轮红会让 shell 脚本重试 → 重跑全量。改为：代码/数据
       // 缺陷一票否决，环境性失败要成规模才算整轮失败。比例按已处理数算，不按总数。
-      const blocked = shouldBlockDreamRun({ totalScopes: processed, fatalFailures, transientFailures });
+      // 结构性降级一票否决：它不是「今天数据不成簇」（那是合法的 noop），而是某条路径
+      // 整段断了 —— 向量管线空、或压根没配 LLM。判据只认确定性零值，不含任何阈值，
+      // 所以不会因为数据分布变化而误伤（详见 assertDreamSweepHealth 的注释）。
+      const structurallyBroken = degradedScopes.length > 0;
+      if (structurallyBroken) {
+        console.error(`[dream] ⚠ 结构性降级 ${degradedScopes.length} 个 scope：${degradedScopes.join(", ")}`);
+      }
+      const blocked = shouldBlockDreamRun({ totalScopes: processed, fatalFailures, transientFailures })
+        || structurallyBroken;
       if (fatalFailures > 0 || transientFailures > 0) {
         console.log(`[dream] 失败统计：fatal=${fatalFailures} transient=${transientFailures}（已处理 ${processed}）`);
       }
+      // 这一行是 dream-consolidation.sh 存在性闸的锚点：STATUS=ok 却没有它 = 判失败。
+      // 它防的是「断言本身被某次重构悄悄删掉」—— 一个不需要调参的自检。
+      console.log(
+        `[[DREAM_METRICS]] produced=${tally.produced} noop=${tally.noop} partial=${tally.partial} `
+        + `skipped=${tally.skipped} degraded=${degradedScopes.length} effects=${effectsTotal} `
+        + `processed=${processed}/${scopes.length}`,
+      );
       console.log(blocked ? "[[DREAM_STATUS]] blocked" : "[[DREAM_STATUS]] ok");
       process.exit(blocked ? 1 : 0);
     }

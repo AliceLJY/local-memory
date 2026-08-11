@@ -86,10 +86,54 @@ export interface DreamPhaseResult {
   detail: string;
 }
 
+/**
+ * 一轮 dream 的产出归类（2026-08-12 加）。
+ *
+ * 存在的理由：在此之前 dream 只报 `status=ok`，而 ok 只证明「没崩」，不证明
+ * 「产出了东西」。后台阶段的失败形态是「什么都没发生」，它和「跑完了但确实没
+ * 东西可做」在日志里长得一模一样 —— 2026-07-23 查出的语义阈值卡在 p99 之上，
+ * 就是这样静默跑了 2716 次零 insight 而无人察觉。
+ *
+ * 刻意**不**做的事：不设「insight 数 ≥ N」这类闸门。数据真不成簇时零产出是
+ * 合法的，给它设下限等于造第三个阈值陷阱（前两个是 0.75 语义阈值和 0.35
+ * novelty 门，都因为阈值落在真实数据分布之外而静默归零）。这里只区分
+ * 「确有副作用」和「合法空转」，两者都不需要任何可调参数。
+ */
+export type DreamOutputKind =
+  /** 至少写入了一个真实的生命周期副作用（合并/关联/insight/pattern/归档） */
+  | "produced"
+  /** 四阶段完整跑过，但确实没有值得写入的结果 —— 合法状态，不是失败 */
+  | "noop"
+  /** 必经阶段没跑（如 consolidate 锁被占），本轮结论不完整 */
+  | "partial"
+  /** 压根没进管线（写计数不足 / dream 锁被占） */
+  | "skipped";
+
+export interface DreamOutput {
+  kind: DreamOutputKind;
+  /** 为什么不是 produced；produced 时省略 */
+  reason?: string;
+  /** 本轮真实写入的副作用总数。硬不变量：kind === "produced" <=> effectsWritten > 0 */
+  effectsWritten: number;
+  /**
+   * 结构性健康降级 —— **与 kind 正交，不要合并**。
+   *
+   * 2026-08-12 实测教训：3a 确定性去重不需要向量，3b 语义聚类需要。向量管线整段
+   * 断裂时 3a 照样合并、照样产出副作用，于是 effects > 0 把 kind 顶成了 produced，
+   * **一条路径的产出掩盖了另一条路径的完全断裂**。这是"跑完了 ≠ 做成了"的变体：
+   * 部分做成了，比全都没做更容易蒙混过关。
+   *
+   * 所以健康必须单列：produced 也可以是 degraded 的。
+   */
+  degraded?: "no_llm_configured" | "vector_pipeline_empty";
+}
+
 export interface DreamResult {
   ran: boolean;
   reason?: string;
   phases: DreamPhaseResult[];
+  /** 本轮到底产出了什么（2026-08-12 加，见 DreamOutputKind 注释） */
+  output: DreamOutput;
   stats: {
     totalMemories: number;
     activeMemories: number;
@@ -104,6 +148,16 @@ export interface DreamResult {
     patternsExtracted: number;
     mergedCount: number;
     archivedCount: number;
+    /** 3a 去重路径新建的关联数。此前引擎返回了但被 dream 丢弃，导致「只加了关联」
+     *  的一轮会被误判成零产出。 */
+    relationsAdded: number;
+    /** gather 之后可参与合并的条目数（已排除 dream 自己的派生 insight）。 */
+    consolidatableCount: number;
+    /** 真正带着非空向量喂进 3b 语义聚类的条目数。
+     *  它与 consolidatableCount 的落差就是向量管线的健康读数：
+     *  consolidatable > 0 而 vectorFed === 0 是结构性故障、不可能是合法的
+     *  ——2026-07-23 那次 store.list() 恒返回假空向量、84/84 全被滤光，就是这个形状。 */
+    semanticVectorFed: number;
   };
 }
 
@@ -140,6 +194,9 @@ async function runDreamInner(params: {
     patternsExtracted: 0,
     mergedCount: 0,
     archivedCount: 0,
+    relationsAdded: 0,
+    consolidatableCount: 0,
+    semanticVectorFed: 0,
   };
 
   // =========================================================================
@@ -155,6 +212,7 @@ async function runDreamInner(params: {
     return {
       ran: false,
       reason: `insufficient_writes (${writeCount}/${config.minWritesForDream})`,
+      output: { kind: "skipped", reason: "insufficient_writes", effectsWritten: 0 },
       phases: [{
         phase: "orient",
         detail: `${stats.totalMemories} memories, ${writeCount} writes since last dream — below threshold`,
@@ -212,6 +270,7 @@ async function runDreamInner(params: {
     } catch { /* observation snapshot must never block dream */ }
   }
 
+  stats.consolidatableCount = consolidatable.length;
   const derivedCount = active.length - consolidatable.length;
   phases.push({
     phase: "gather",
@@ -224,7 +283,14 @@ async function runDreamInner(params: {
     phases.push({ phase: "consolidate", detail: "skipped — too few active entries" });
     phases.push({ phase: "prune", detail: "skipped — too few entries for GC" });
     resetWriteCount(scope, statsCfg);
-    return { ran: true, reason: "completed_early", phases, stats };
+    return {
+      ran: true,
+      reason: "completed_early",
+      // 素材不足是合法的空转，不是失败 —— 这正是「不设 insight 数下限」的理由所在。
+      output: { kind: "noop", reason: "too_few_active_entries", effectsWritten: 0 },
+      phases,
+      stats,
+    };
   }
 
   // =========================================================================
@@ -246,6 +312,7 @@ async function runDreamInner(params: {
     stats.dedupeClustersFound += consolidation.clustersFound;
     stats.clustersFound += consolidation.clustersFound;
     stats.mergedCount += consolidation.mergedCount;
+    stats.relationsAdded += consolidation.relationsAdded;
 
     // 3b: LLM-driven cluster consolidation (insights + patterns) — requires LLM
     if (llm) {
@@ -255,6 +322,9 @@ async function runDreamInner(params: {
       // promote_scan 同款坑 07-21 已修，dream 这条漏了）。
       const vectorMap = await store.getVectors(consolidatable.map(e => e.id));
       const withVectors = consolidatable.map(e => ({ ...e, vector: vectorMap.get(e.id) ?? [] }));
+      // 回填之后仍为空 = 向量管线断了（见 semanticVectorFed 字段注释）。这里只记数，
+      // 判定留给 assertDreamSweepHealth，保持本函数无分支。
+      stats.semanticVectorFed = withVectors.filter(e => e.vector.length > 0).length;
       const clusterResult = await clusterAndConsolidate({
         entries: withVectors,
         embedder,
@@ -316,7 +386,18 @@ async function runDreamInner(params: {
   // 队首下轮优先。所以这里不需要额外的游标 / checkpoint 文件。
   if (consolidateOutcome.ran) resetWriteCount(scope, statsCfg);
 
-  return { ran: true, phases, stats };
+  const health = assertDreamSweepHealth({
+    llmPresent: llm != null,
+    consolidatable: stats.consolidatableCount,
+    vectorFed: stats.semanticVectorFed,
+  });
+  const output = classifyDreamOutput({
+    consolidateRan: consolidateOutcome.ran,
+    effects: countDreamEffects(stats),
+    health,
+  });
+
+  return { ran: true, output, phases, stats };
 }
 
 /**
@@ -348,6 +429,7 @@ export async function runDream(params: {
   return {
     ran: false,
     reason: "locked_by_another_process",
+    output: { kind: "skipped", reason: "dream_lock_held", effectsWritten: 0 },
     phases: [{ phase: "orient", detail: `another process holds the dream lock for scope ${params.scope}` }],
     stats: {
       totalMemories: 0,
@@ -360,7 +442,84 @@ export async function runDream(params: {
       patternsExtracted: 0,
       mergedCount: 0,
       archivedCount: 0,
+      relationsAdded: 0,
+      consolidatableCount: 0,
+      semanticVectorFed: 0,
     },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Output classification (2026-08-12)
+// ---------------------------------------------------------------------------
+
+export interface DreamHealthVerdict {
+  healthy: boolean;
+  /** 不健康时的机器可读原因；健康时省略 */
+  reason?: "no_llm_configured" | "vector_pipeline_empty";
+}
+
+/**
+ * 结构性健康断言 —— **只认两种确定性零值**，零歧义、免调参、误伤面≈0。
+ *
+ * 为什么是这两个而不是「insight 数 < N」：这个库已经被阈值坑过两次
+ * （0.75 语义聚类阈值卡在真实 p99 之上；0.35 novelty 门把最相关的命中全排除），
+ * 共同形状都是**断言条件依赖数据分布**，分布一偏就静默归零。下面两条都不依赖
+ * 任何分布，它们描述的是结构断裂，不是数据稀疏：
+ *
+ * 1. `llmPresent === false` —— 没配 LLM 时 3b 整段不跑，insight 恒为 0。
+ *    这是确定性的配置缺陷，不是「今天数据不成簇」。
+ * 2. `consolidatable > 0 但 vectorFed === 0` —— 有素材可聚，却一条带向量的都没有。
+ *    dream 在调用前刚做完 getVectors 回填，回填后还全空只有一种解释：向量管线断了。
+ *    这正是 2026-07-23 第二真凶（store.list() 恒返回假空向量）的复发通道。
+ *
+ * 刻意留在门外的：`maxPairSim < threshold`（能结构性判定「阈值又落在分布之上」）
+ * 只适合当观察字段，不适合当闸门 —— 数据真分散时它会天天告警，而告警疲劳比没有
+ * 告警更糟。
+ */
+export function assertDreamSweepHealth(input: {
+  llmPresent: boolean;
+  consolidatable: number;
+  vectorFed: number;
+}): DreamHealthVerdict {
+  if (!input.llmPresent) return { healthy: false, reason: "no_llm_configured" };
+  if (input.consolidatable > 0 && input.vectorFed === 0) {
+    return { healthy: false, reason: "vector_pipeline_empty" };
+  }
+  return { healthy: true };
+}
+
+/** 本轮真实写入的生命周期副作用总数。五项都是「库里确实多/少了东西」，
+ *  不含任何只读统计 —— 这是 produced/noop 之分的唯一依据。 */
+export function countDreamEffects(stats: DreamResult["stats"]): number {
+  return stats.mergedCount
+    + stats.relationsAdded
+    + stats.insightsGenerated
+    + stats.patternsExtracted
+    + stats.archivedCount;
+}
+
+/** 把一轮 dream 归类。硬不变量：`kind === "produced"` <=> `effectsWritten > 0`。 */
+export function classifyDreamOutput(input: {
+  consolidateRan: boolean;
+  effects: number;
+  health: DreamHealthVerdict;
+}): DreamOutput {
+  // 必经阶段没跑完，本轮结论不完整 —— 不能算 noop（那会掩盖「没跑」和「跑了没东西」的区别），
+  // 也不能算 produced。partial 同时是「不要清写计数」的信号。
+  // degraded 独立于 kind 计算：结构断裂不该被另一条路径的产出掩盖（见 DreamOutput.degraded）。
+  const degraded = input.health.healthy ? undefined : input.health.reason;
+
+  if (!input.consolidateRan) {
+    return { kind: "partial", reason: "consolidate_lock_held", effectsWritten: input.effects, degraded };
+  }
+  if (input.effects > 0) return { kind: "produced", effectsWritten: input.effects, degraded };
+  return {
+    kind: "noop",
+    // 健康的零产出叫 no_qualified_work（合法）；不健康的零产出直接把故障原因摆在 reason 上。
+    reason: degraded ?? "no_qualified_work",
+    effectsWritten: 0,
+    degraded,
   };
 }
 
@@ -443,7 +602,9 @@ export function formatDreamResult(result: DreamResult): string {
   }
 
   const lines = [
-    "Dream completed",
+    // 只有真写入了副作用才说 completed；合法空转说 noop，必经阶段没跑说 partial。
+    // 「跑完了」和「做成了」从这里开始就不再是同一句话。
+    result.output.kind === "produced" ? "Dream completed" : `Dream ${result.output.kind}`,
     "",
     ...result.phases.map(p => `[${p.phase}] ${p.detail}`),
     "",
@@ -454,7 +615,20 @@ export function formatDreamResult(result: DreamResult): string {
     `  Insights: ${result.stats.insightsGenerated}`,
     `  Patterns: ${result.stats.patternsExtracted}`,
     `  Merged: ${result.stats.mergedCount}`,
+    `  Relations: ${result.stats.relationsAdded}`,
     `  Archived: ${result.stats.archivedCount}`,
+    // 漏斗读数：consolidatable → vector-fed → semantic 簇 → insight。
+    // 哪一级掉到 0，断在哪一级就一目了然，不用再去猜。
+    `  Funnel: ${result.stats.consolidatableCount} consolidatable -> `
+      + `${result.stats.semanticVectorFed} vector-fed -> `
+      + `${result.stats.semanticClustersFound} semantic-clusters -> `
+      + `${result.stats.insightsGenerated} insights`,
+    `  Output: ${result.output.kind}`
+      + (result.output.reason ? ` (${result.output.reason})` : "")
+      + ` — ${result.output.effectsWritten} effects written`,
+    ...(result.output.degraded
+      ? [`  ⚠ DEGRADED: ${result.output.degraded} — 有产出不代表没断，见上面的 Funnel`]
+      : []),
   ];
 
   return lines.join("\n");
