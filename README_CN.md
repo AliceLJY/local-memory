@@ -40,6 +40,8 @@ RecallNest 的解法：**一个 LanceDB 驱动的记忆层，供你的编程 Age
 
 RecallNest 随 Claude Code 自动启动，无需手动配置 MCP。
 
+> Claude Code 插件与 npm 包共用同一个发布版本，并随版本发布同步更新。
+>
 > **前置要求：** [Bun](https://bun.sh)（推荐）或 Node.js 18+。首次启动自动安装依赖。
 
 ### 方式 B：npm 安装

@@ -40,6 +40,8 @@ RecallNest solves this: **a single LanceDB-backed memory layer that your coding 
 
 RecallNest starts automatically with Claude Code. No manual MCP config needed.
 
+> The Claude Code plugin and npm package share one release version and are updated together.
+>
 > **Requires:** [Bun](https://bun.sh) (recommended) or Node.js 18+. Dependencies install on first start.
 
 ### Option B: npm install

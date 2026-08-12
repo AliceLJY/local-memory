@@ -214,3 +214,16 @@ describe("MCP registry contract", () => {
     expect(headerCount("full")).toBe(fullCount);
   });
 });
+
+describe("Release metadata contract", () => {
+  it("keeps the Claude Code marketplace version aligned with package.json", () => {
+    const root = join(import.meta.dir, "..", "..");
+    const packageMetadata = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+    const marketplaceMetadata = JSON.parse(
+      readFileSync(join(root, ".claude-plugin", "marketplace.json"), "utf8"),
+    );
+
+    expect(marketplaceMetadata.plugins).toHaveLength(1);
+    expect(marketplaceMetadata.plugins[0].version).toBe(packageMetadata.version);
+  });
+});

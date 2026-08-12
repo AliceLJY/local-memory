@@ -1,6 +1,6 @@
 # RecallNest Memory Plugin
 
-RecallNest is a local-first shared memory layer backed by LanceDB. It stores and recalls context across sessions, terminals, and agents (Claude Code, Codex, Gemini CLI).
+RecallNest is a local-first shared memory layer backed by LanceDB. It stores and recalls context across sessions, terminals, and MCP clients, including Claude Code, Codex, Kimi, and AGY.
 
 **Prerequisite**: Requires [Bun](https://bun.sh) runtime. On first start, dependencies install automatically.
 
