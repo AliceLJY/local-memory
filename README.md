@@ -13,7 +13,7 @@ A local-first memory system backed by LanceDB that turns scattered conversation 
 [![Runtime](https://img.shields.io/badge/Runtime-Bun_|_Node.js_18+-f9f1e1?logo=bun)](https://bun.sh)
 [![LanceDB](https://img.shields.io/badge/LanceDB-Vector+FTS-orange)](https://lancedb.com)
 [![MCP](https://img.shields.io/badge/MCP-43_tools-blue)](https://modelcontextprotocol.io)
-[![Tests](https://img.shields.io/badge/Tests-1742_pass-brightgreen)](https://github.com/AliceLJY/recallnest)
+[![CI](https://github.com/AliceLJY/recallnest/actions/workflows/ci.yml/badge.svg)](https://github.com/AliceLJY/recallnest/actions/workflows/ci.yml)
 [![CC Plugin](https://img.shields.io/badge/Claude_Code-Plugin-blueviolet)](https://github.com/AliceLJY/recallnest)
 
 **English** | [简体中文](README_CN.md) | [Roadmap](ROADMAP.md)
@@ -40,9 +40,11 @@ RecallNest solves this: **a single LanceDB-backed memory layer that your coding 
 
 RecallNest starts automatically with Claude Code. No manual MCP config needed.
 
+Claude Code prompts for a Jina API key during installation. The key is stored through Claude Code's sensitive plugin configuration, while the generated config and LanceDB database live in the plugin's persistent data directory rather than the versioned plugin cache.
+
 > The Claude Code plugin and npm package share one release version and are updated together.
 >
-> **Requires:** [Bun](https://bun.sh) (recommended) or Node.js 18+. Dependencies install on first start.
+> **Requires:** [Bun](https://bun.sh). Dependencies install on first start.
 
 ### Option B: npm install
 
@@ -191,6 +193,26 @@ bun run src/ui-server.ts
 | **Export Graph** | Export interactive HTML knowledge graph visualization |
 | **Batch Operations** | Store up to 20 memories in a single call with dedup |
 | **Connector Framework** | Standard connector-v1 format for external data sources with example adapters |
+
+---
+
+## New in v2.6: Reliable Cross-Process Memory and Distribution
+
+v2.6 turns the development since v2.5.4 into a release-ready upgrade:
+
+- **Cross-process visibility** — LanceDB now checks for external commits on every read by default, so resident MCP/API/UI processes see writes from CLI ingestion without a restart. Set `RECALLNEST_READ_CONSISTENCY_INTERVAL=<seconds>` for bounded staleness or `off` for the legacy unchecked behavior.
+- **Safer memory evolution** — belief changes preserve the old row as `superseded`; procedural memories avoid time decay; cold-start and length-normalization behavior no longer suppress short entity queries or stable memories.
+- **More reliable consolidation** — `dream` now distinguishes failure classes, honors wall-clock budgets, refills vectors before semantic clustering, and asserts that successful runs actually produced work.
+- **Broader conversation coverage** — Kimi, AGY/Antigravity, and minis sources are recognized across ingestion, scope boundaries, and term resolution.
+- **One public version** — npm metadata, CLI `--version`, MCP handshakes, HTTP health responses, and the Claude Code marketplace all follow the `2.6.0` release contract.
+- **Installable Claude Code plugin** — installation now registers the 43-tool MCP server and continuity skill, asks for the Jina key through sensitive plugin configuration, and keeps config plus LanceDB data in Claude Code's persistent plugin data directory.
+
+### Upgrading from v2.5.4
+
+- Existing LanceDB data is opened in place. Legacy tables missing newer fields are migrated automatically, including empty tables.
+- Plugin data survives plugin updates because it is stored outside the versioned cache. A manual clone continues to use its existing `config.json` and database path.
+- Retrieval auditing now includes read operations. `audit.jsonl` has no automatic rotation yet; consider archiving it if it approaches 50 MB.
+- `RECALLNEST_LAYER_ADMISSION` remains opt-in (`observe` or `on`); the default is `off`.
 
 ---
 
@@ -354,6 +376,7 @@ Examples live in [`integrations/examples/`](integrations/examples/):
 | `store_skill` | Store an executable skill with trigger conditions and verification |
 | `retrieve_skill` | Retrieve matching executable skills by semantic similarity |
 | `scan_skill_promotions` | Scan cases/patterns for promotion candidates to skills |
+| `manage_alias` | Add, remove, list, or explain user query aliases for BM25 retrieval |
 | `list_tools` | Discover available tools by tier (core/advanced/full) |
 | `batch_store` | Store up to 20 memories in a single call with dedup |
 | `distill_session` | Distill a conversation into structured knowledge via 3-layer pipeline |

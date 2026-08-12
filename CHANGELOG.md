@@ -1,5 +1,41 @@
 # Changelog
 
+## v2.6.0 — Cross-process consistency and reliable distribution (2026-08-13)
+
+### Added
+
+- Claude Code marketplace installation now registers the RecallNest MCP server and continuity skill instead of shipping metadata only. Jina credentials use sensitive plugin configuration; generated config and LanceDB data live under `${CLAUDE_PLUGIN_DATA}` and survive plugin updates.
+- Kimi, AGY/Antigravity, and minis transcript sources are recognized across ingestion, memory-boundary policy, and term resolution.
+- Retrieval audit logging is connected to the live retriever, and the opt-in layer-admission shadow/enforcement pipeline is available through `RECALLNEST_LAYER_ADMISSION=observe|on`.
+
+### Changed
+
+- `package.json` is now the single version source for CLI output, MCP server metadata, HTTP health responses, npm metadata, and the Claude Code marketplace. All public surfaces report `2.6.0`.
+- LanceDB uses strong cross-process read consistency by default. `RECALLNEST_READ_CONSISTENCY_INTERVAL=<seconds>` selects bounded staleness; `off` restores the legacy unchecked handle behavior.
+- Belief changes preserve prior rows as `superseded`; procedural memories avoid time decay; cold-start scoring, length normalization, and short single-token queries have safer retrieval behavior.
+- `dream` adds failure classification, wall-clock budgeting, vector refill before clustering, and output assertions so a successful status means useful work was produced.
+- `@modelcontextprotocol/sdk` is updated to 1.30.0, with both npm and Bun lockfiles aligned.
+
+### Fixed
+
+- Empty legacy LanceDB tables now receive schema migrations before their first new write.
+- Long-lived retrievers now see writes committed by CLI ingest and other processes without a restart.
+- Runtime and maintenance scripts resolve the configured database path consistently instead of silently opening a second database.
+- Local HTTP access is constrained to the intended loopback boundary, and tracked credential scans cover release contents without printing secret values.
+
+### Upgrade notes
+
+- v2.5.4 databases open in place; no export/import step is required. The schema migration also covers empty tables.
+- Plugin users need Bun and will be prompted for a Jina API key on first install. Existing manual-clone installations keep their current configuration and data path.
+- Retrievals now add audit rows. `audit.jsonl` has no automatic rotation; archive it when it approaches 50 MB.
+- Layer admission remains off by default. Use `observe` before enabling enforcement on an existing memory corpus.
+
+### Verification
+
+- 2,145 tests pass across 152 files.
+- A database written by the remote v2.5.4 release was opened, read, and extended by v2.6.0 in an isolated upgrade smoke test.
+- An isolated Claude Code installation connected to the plugin MCP server with all 43 tools; packed npm installs reported `2.6.0` from both `recallnest` and the legacy `local-memory` alias.
+
 ## v2.5.4 — npm 发布边界修复 (2026-07-17)
 
 - package.json 改为严格 files 白名单，只发布运行所需源码、示例配置、UI、集成脚本和必要文档。

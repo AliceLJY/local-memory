@@ -7,6 +7,7 @@ import { resetWriteCount } from "../activity-counter.js";
 import { resetGcTimestamp } from "../auto-gc.js";
 import { runDream } from "../dream-pipeline.js";
 import { MemoryStore } from "../store.js";
+import { PACKAGE_VERSION } from "../version.js";
 
 // Isolate the activity-counter default path away from the repo's data/activity-stats.json.
 let __origDataDir: string | undefined;
@@ -216,7 +217,7 @@ describe("MCP registry contract", () => {
 });
 
 describe("Release metadata contract", () => {
-  it("keeps the Claude Code marketplace version aligned with package.json", () => {
+  it("keeps every public version surface aligned with package.json", () => {
     const root = join(import.meta.dir, "..", "..");
     const packageMetadata = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
     const marketplaceMetadata = JSON.parse(
@@ -224,6 +225,38 @@ describe("Release metadata contract", () => {
     );
 
     expect(marketplaceMetadata.plugins).toHaveLength(1);
+    expect(PACKAGE_VERSION).toBe(packageMetadata.version);
     expect(marketplaceMetadata.plugins[0].version).toBe(packageMetadata.version);
+
+    for (const file of ["cli.ts", "mcp-server.ts", "api-server.ts"]) {
+      const source = readFileSync(join(root, "src", file), "utf8");
+      expect(source).toContain("PACKAGE_VERSION");
+      expect(source).not.toMatch(/version:\s*["'](?:1\.0\.0|1\.4\.0)["']/);
+    }
+  });
+
+  it("ships a self-contained Claude Code plugin without project MCP overrides", () => {
+    const root = join(import.meta.dir, "..", "..");
+    const marketplaceMetadata = JSON.parse(
+      readFileSync(join(root, ".claude-plugin", "marketplace.json"), "utf8"),
+    );
+    const plugin = marketplaceMetadata.plugins[0];
+    const projectMcp = JSON.parse(readFileSync(join(root, ".mcp.json"), "utf8"));
+
+    expect(plugin.strict).toBe(false);
+    expect(plugin.skills).toContain("./.claude-plugin/recallnest-skill");
+    expect(plugin.mcpServers.recallnest.args).toContain(
+      "${CLAUDE_PLUGIN_ROOT}/scripts/start-server.sh",
+    );
+    expect(plugin.mcpServers.recallnest.env.LOCAL_MEMORY_CONFIG).toBe(
+      "${CLAUDE_PLUGIN_DATA}/config.json",
+    );
+    expect(plugin.mcpServers.recallnest.env.RECALLNEST_MCP_TIER).toBe("full");
+    expect(plugin.userConfig.jina_api_key).toMatchObject({
+      type: "string",
+      sensitive: true,
+      required: true,
+    });
+    expect(projectMcp.mcpServers).toEqual({});
   });
 });

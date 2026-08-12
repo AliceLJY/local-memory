@@ -33,6 +33,7 @@ import { registerCoreTools } from "./mcp-tools-core.js";
 import { registerAdvancedTools } from "./mcp-tools-advanced.js";
 import { registerGovernanceTools } from "./mcp-tools-governance.js";
 import type { ToolRegistryDeps } from "./mcp-tool-deps.js";
+import { PACKAGE_VERSION } from "./version.js";
 
 // ============================================================================
 // Tier Configuration
@@ -152,7 +153,7 @@ function ensureComponents(): Promise<void> {
 
 const server = new McpServer({
   name: "recallnest",
-  version: "1.4.0",
+  version: PACKAGE_VERSION,
 });
 
 // ============================================================================

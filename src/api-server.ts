@@ -29,6 +29,7 @@ import { buildRetrievalContext, resolveScopeSelection } from "./scope-policy.js"
 import { runMemoryLint } from "./memory-lint.js";
 import { enforceLocalHttpRequestPolicy, LOCAL_HTTP_HOSTNAME } from "./http-request-policy.js";
 import * as envConfig from "./env-config.js";
+import { PACKAGE_VERSION } from "./version.js";
 
 const config = (loadDotEnv(), loadConfig());
 const getComponents = createComponentResolver(config);
@@ -626,7 +627,7 @@ async function handleHealth(): Promise<Response> {
     const stats = await store.stats();
     return jsonResponse({
       status: "ok",
-      version: "1.0.0",
+      version: PACKAGE_VERSION,
       totalMemories: stats.totalCount,
       timestamp: new Date().toISOString(),
     });

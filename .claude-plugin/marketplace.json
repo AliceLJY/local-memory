@@ -4,14 +4,39 @@
     "name": "Alice Jin Ye"
   },
   "metadata": {
-    "description": "RecallNest — shared memory layer for Claude Code, Codex, Kimi, and AGY",
-    "homepage": "https://github.com/AliceLJY/recallnest"
+    "description": "RecallNest — shared memory layer for Claude Code, Codex, Kimi, and AGY"
   },
   "plugins": [
     {
       "name": "recallnest",
-      "version": "2.5.4",
+      "version": "2.6.0",
       "source": "./",
+      "strict": false,
+      "skills": [
+        "./.claude-plugin/recallnest-skill"
+      ],
+      "mcpServers": {
+        "recallnest": {
+          "command": "bash",
+          "args": [
+            "${CLAUDE_PLUGIN_ROOT}/scripts/start-server.sh"
+          ],
+          "env": {
+            "JINA_API_KEY": "${user_config.jina_api_key}",
+            "LOCAL_MEMORY_CONFIG": "${CLAUDE_PLUGIN_DATA}/config.json",
+            "RECALLNEST_MCP_TIER": "full"
+          }
+        }
+      },
+      "userConfig": {
+        "jina_api_key": {
+          "type": "string",
+          "title": "Jina API key",
+          "description": "API key used for RecallNest embeddings and reranking",
+          "sensitive": true,
+          "required": true
+        }
+      },
       "description": "Local-first memory system: store, search, and recall context across sessions and terminals. Powered by LanceDB with hybrid retrieval."
     }
   ]

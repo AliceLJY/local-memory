@@ -1,3 +1,8 @@
+---
+name: recallnest
+description: Recover cross-session context with RecallNest, search durable memory before repeat exploration, store durable decisions and lessons, and checkpoint unfinished work.
+---
+
 # Memory Partner Protocol
 
 > How to be an excellent memory partner using RecallNest.
@@ -247,4 +252,4 @@ WEEKLY CHECKUP:   memory_stats -> memory_lint -> dream (if needed)
 
 ---
 
-*RecallNest: 39 tools, 6 categories, one goal — nothing worth remembering should be forgotten.*
+*RecallNest: 43 tools, 6 categories, one goal — nothing worth remembering should be forgotten.*

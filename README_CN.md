@@ -13,7 +13,7 @@
 [![Runtime](https://img.shields.io/badge/Runtime-Bun_|_Node.js_18+-f9f1e1?logo=bun)](https://bun.sh)
 [![LanceDB](https://img.shields.io/badge/LanceDB-Vector+FTS-orange)](https://lancedb.com)
 [![MCP](https://img.shields.io/badge/MCP-43_tools-blue)](https://modelcontextprotocol.io)
-[![Tests](https://img.shields.io/badge/Tests-1573_pass-brightgreen)](https://github.com/AliceLJY/recallnest)
+[![CI](https://github.com/AliceLJY/recallnest/actions/workflows/ci.yml/badge.svg)](https://github.com/AliceLJY/recallnest/actions/workflows/ci.yml)
 [![CC Plugin](https://img.shields.io/badge/Claude_Code-Plugin-blueviolet)](https://github.com/AliceLJY/recallnest)
 
 [English](README.md) | **简体中文** | [Roadmap](ROADMAP.md)
@@ -40,9 +40,11 @@ RecallNest 的解法：**一个 LanceDB 驱动的记忆层，供你的编程 Age
 
 RecallNest 随 Claude Code 自动启动，无需手动配置 MCP。
 
+安装时 Claude Code 会提示填写 Jina API key。密钥由 Claude Code 的敏感插件配置保存；自动生成的配置和 LanceDB 数据库则放在插件持久数据目录，不会混进按版本更新的插件缓存。
+
 > Claude Code 插件与 npm 包共用同一个发布版本，并随版本发布同步更新。
 >
-> **前置要求：** [Bun](https://bun.sh)（推荐）或 Node.js 18+。首次启动自动安装依赖。
+> **前置要求：** [Bun](https://bun.sh)。首次启动自动安装依赖。
 
 ### 方式 B：npm 安装
 
@@ -194,6 +196,26 @@ bun run src/ui-server.ts
 
 ---
 
+## v2.6 新增：跨进程一致性与可靠分发
+
+v2.6 把 v2.5.4 以来的开发整理成一版可升级、可安装、版本口径一致的正式候选：
+
+- **跨进程即时可见** —— LanceDB 默认每次读取都检查外部提交，常驻 MCP/API/UI 无需重启即可看见 CLI ingest 写入。可用 `RECALLNEST_READ_CONSISTENCY_INTERVAL=<秒>` 设置允许的延迟窗口，或设为 `off` 恢复旧版不检查行为。
+- **更安全的记忆演化** —— 信念变化不再原地覆盖，旧记录保留为 `superseded`；程序性记忆免于时间衰减；冷启动和长度归一化不再压低短实体查询与稳定记忆。
+- **更可靠的整合管线** —— `dream` 增加失败分型、总时长预算、聚类前向量回填，以及“成功必须真的产出结果”的断言。
+- **更完整的对话来源** —— Kimi、AGY/Antigravity 和 minis 已同步纳入 ingest、scope 边界与术语识别。
+- **一个公开版本号** —— npm 元数据、CLI `--version`、MCP 握手、HTTP 健康接口和 Claude Code marketplace 统一遵守 `2.6.0` 发布契约。
+- **真正可安装的 Claude Code 插件** —— 安装后自动注册 43 个 MCP 工具与连续性 skill，通过敏感插件配置接收 Jina key，并把配置与 LanceDB 数据放进 Claude Code 的持久插件数据目录。
+
+### 从 v2.5.4 升级
+
+- 现有 LanceDB 数据原地打开；缺少新字段的旧表会自动迁移，空表也覆盖。
+- 插件数据位于版本缓存之外，更新插件不会清空；手动 clone 仍沿用现有 `config.json` 与数据库路径。
+- 检索操作现已写入审计日志。`audit.jsonl` 暂无自动轮转，接近 50 MB 时建议人工归档。
+- `RECALLNEST_LAYER_ADMISSION` 仍是显式开启项（`observe` 或 `on`），默认 `off`。
+
+---
+
 ## v2.1 新增：记忆哲学驱动的架构升级
 
 v2.0 建立了完整的记忆操作平台；v2.1 加入了记忆哲学驱动的记忆行为。
@@ -255,7 +277,7 @@ v2.2 强化了检索质量；v2.3 通过标准 Connector 框架和运维健康�
 │                      集成层                               │
 │  ┌─────────────────────┐  ┌────────────────────────────┐ │
 │  │  MCP Server         │  │  HTTP API Server           │ │
-│  │  42 个工具           │  │  21 个端点                  │ │
+│  │  43 个工具           │  │  21 个端点                  │ │
 │  └─────────┬───────────┘  └──────────┬─────────────────┘ │
 └────────────┼─────────────────────────┼───────────────────┘
              └──────────┬──────────────┘
@@ -316,7 +338,7 @@ RecallNest 提供两种接口：
 ---
 
 <details>
-<summary><strong>MCP 工具（42 个）</strong></summary>
+<summary><strong>MCP 工具（43 个）</strong></summary>
 
 | 工具 | 说明 |
 |------|------|
@@ -353,6 +375,7 @@ RecallNest 提供两种接口：
 | `store_skill` | 存储可执行技能 |
 | `retrieve_skill` | 按语义相似度检索技能 |
 | `scan_skill_promotions` | 扫描可升级为技能的候选 |
+| `manage_alias` | 新增、删除、列出或解释 BM25 用户查询别名 |
 | `list_tools` | 按层级发现工具（core/advanced/full） |
 | `batch_store` | 批量存储最多 20 条记忆 |
 | `distill_session` | 三层管线蒸馏对话为结构化知识 |

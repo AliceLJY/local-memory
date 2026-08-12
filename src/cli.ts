@@ -15,6 +15,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
 
 import { metaDir } from "./compat.js";
+import { PACKAGE_VERSION } from "./version.js";
 import type { RetrievalResult } from "./retriever.js";
 import { applyRetrievalProfile, listRetrievalProfiles } from "./retrieval-profiles.js";
 import { distillResults, formatExplainResults, formatSearchResults, selectBriefSeedResults, summarizeResults } from "./memory-output.js";
@@ -154,7 +155,7 @@ const program = new Command();
 program
   .name("recallnest")
   .description("本地优先 AI 对话记忆搜索与蒸馏层")
-  .version("1.4.0");
+  .version(PACKAGE_VERSION);
 
 async function runRetrievalView(
   view: "search" | "explain" | "distill",
