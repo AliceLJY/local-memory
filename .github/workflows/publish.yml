@@ -1,0 +1,323 @@
+name: Publish to npm
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish the selected tag; false only validates and packs'
+        required: true
+        default: false
+        type: boolean
+
+# Every job opts in to only the permissions it needs.
+permissions: {}
+
+# Never cancel a publish that may already have reached npm.
+concurrency:
+  group: recallnest-npm-publish
+  queue: max
+
+env:
+  NODE_VERSION: '24.19.0'
+  BUN_VERSION: '1.3.14'
+  NPM_REGISTRY: 'https://registry.npmjs.org'
+
+jobs:
+  verify:
+    name: Verify immutable release input
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      commit: ${{ steps.release.outputs.commit }}
+    steps:
+      - name: Check out the selected commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          package-manager-cache: false
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Check Trusted Publishing runtime versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const { execFileSync } = require('node:child_process');
+
+          function atLeast(actual, minimum) {
+            const a = actual.split('.').map(Number);
+            const b = minimum.split('.').map(Number);
+            for (let index = 0; index < Math.max(a.length, b.length); index += 1) {
+              const left = a[index] || 0;
+              const right = b[index] || 0;
+              if (left !== right) return left > right;
+            }
+            return true;
+          }
+
+          const npmVersion = execFileSync('npm', ['--version'], { encoding: 'utf8' }).trim();
+          if (!atLeast(process.versions.node, '22.14.0')) {
+            throw new Error(`Node ${process.versions.node} is below the npm Trusted Publishing minimum 22.14.0`);
+          }
+          if (!atLeast(npmVersion, '11.5.1')) {
+            throw new Error(`npm ${npmVersion} is below the Trusted Publishing minimum 11.5.1`);
+          }
+          console.log(`Node ${process.versions.node}; npm ${npmVersion}`);
+          NODE
+          printf 'Bun %s\n' "$(bun --version)"
+
+      - name: Validate repository, version, tag, and main ancestry
+        id: release
+        shell: bash
+        env:
+          REQUIRE_TAG: ${{ github.event_name == 'push' || inputs.publish == true }}
+        run: |
+          set -euo pipefail
+
+          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
+          MARKETPLACE_VERSION="$(node -p "require('./.claude-plugin/marketplace.json').plugins[0].version")"
+          EXPECTED_TAG="v${PACKAGE_VERSION}"
+
+          if [[ ! "${PACKAGE_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Only stable SemVer package versions are publishable: ${PACKAGE_VERSION}"
+            exit 1
+          fi
+
+          if [[ "${MARKETPLACE_VERSION}" != "${PACKAGE_VERSION}" ]]; then
+            echo "::error::package.json and .claude-plugin/marketplace.json versions differ"
+            exit 1
+          fi
+
+          node <<'NODE'
+          const pkg = require('./package.json');
+          const expected = `git+https://github.com/${process.env.GITHUB_REPOSITORY}.git`;
+          if (pkg.repository?.url !== expected) {
+            throw new Error(`repository.url must be exactly ${expected}; got ${pkg.repository?.url || '<missing>'}`);
+          }
+          NODE
+          if [[ "${REQUIRE_TAG}" == "true" ]]; then
+            if [[ "${GITHUB_REF_TYPE}" != "tag" || "${GITHUB_REF_NAME}" != "${EXPECTED_TAG}" ]]; then
+              echo "::error::Publishing requires exact tag ${EXPECTED_TAG}; got ${GITHUB_REF}"
+              exit 1
+            fi
+
+            TAG_COMMIT="$(git rev-parse "${GITHUB_REF}^{commit}")"
+            HEAD_COMMIT="$(git rev-parse HEAD)"
+            if [[ "${TAG_COMMIT}" != "${HEAD_COMMIT}" ]]; then
+              echo "::error::Checked-out commit does not match the selected tag"
+              exit 1
+            fi
+
+            git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+            if ! git merge-base --is-ancestor "${HEAD_COMMIT}" refs/remotes/origin/main; then
+              echo "::error::The release tag commit is not reachable from origin/main"
+              exit 1
+            fi
+          else
+            HEAD_COMMIT="$(git rev-parse HEAD)"
+          fi
+
+          echo "version=${PACKAGE_VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "commit=${HEAD_COMMIT}" >> "${GITHUB_OUTPUT}"
+
+      - name: Install the committed Bun dependency graph
+        run: bun install --frozen-lockfile
+
+      - name: Set up the CI config
+        run: cp config.json.example config.json
+
+      - name: Doctor (CI mode)
+        run: bun run src/cli.ts doctor --ci
+
+      - name: Run the full test suite
+        run: bun test
+
+      - name: Scan tracked provider credentials
+        run: npm run test:tracked
+
+      - name: Verify npm package contents
+        run: npm run test:package
+
+      - name: TypeScript import and transpile check
+        run: bun build src/cli.ts --target bun --outdir /tmp/ts-check
+
+      - name: Preview package contents
+        run: npm pack --dry-run --ignore-scripts
+
+  publish:
+    name: Publish verified tag to npm
+    needs: verify
+    if: ${{ github.event_name == 'push' || inputs.publish == true }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: npm-publish
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Check out the same immutable commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node.js and the public npm registry
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          registry-url: ${{ env.NPM_REGISTRY }}
+          package-manager-cache: false
+
+      - name: Reconfirm the approved tag input
+        shell: bash
+        env:
+          VERIFIED_VERSION: ${{ needs.verify.outputs.version }}
+          VERIFIED_COMMIT: ${{ needs.verify.outputs.commit }}
+        run: |
+          set -euo pipefail
+
+          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
+          HEAD_COMMIT="$(git rev-parse HEAD)"
+          EXPECTED_TAG="v${PACKAGE_VERSION}"
+
+          [[ "${GITHUB_REF_TYPE}" == "tag" ]]
+          [[ "${GITHUB_REF_NAME}" == "${EXPECTED_TAG}" ]]
+          [[ "${PACKAGE_VERSION}" == "${VERIFIED_VERSION}" ]]
+          [[ "${HEAD_COMMIT}" == "${VERIFIED_COMMIT}" ]]
+
+      - name: Refuse a duplicate or non-increasing registry version
+        env:
+          EXPECTED_VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          node <<'NODE'
+          (async () => {
+            const pkg = require('./package.json');
+            const version = process.env.EXPECTED_VERSION;
+            const packageUrl = `https://registry.npmjs.org/${encodeURIComponent(pkg.name)}`;
+            const versionUrl = `${packageUrl}/${encodeURIComponent(version)}`;
+            const [versionResponse, packumentResponse] = await Promise.all([
+              fetch(versionUrl, { redirect: 'error' }),
+              fetch(packageUrl, { redirect: 'error' }),
+            ]);
+
+            if (versionResponse.ok) {
+              throw new Error(`${pkg.name}@${version} already exists; refusing a second publish`);
+            }
+            if (versionResponse.status !== 404) {
+              throw new Error(`Registry version preflight failed closed with HTTP ${versionResponse.status}`);
+            }
+
+            if (!packumentResponse.ok) {
+              throw new Error(`Registry package preflight failed closed with HTTP ${packumentResponse.status}`);
+            }
+            const packument = await packumentResponse.json();
+            const latest = packument['dist-tags']?.latest;
+            if (!latest) throw new Error('The registry has no latest dist-tag; refusing an ambiguous publish');
+
+            const parseStable = (value) => {
+              const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(value);
+              if (!match) throw new Error(`Expected stable SemVer, got ${value}`);
+              return match.slice(1).map(BigInt);
+            };
+            const candidateParts = parseStable(version);
+            const latestParts = parseStable(latest);
+            let comparison = 0;
+            for (let index = 0; index < candidateParts.length; index += 1) {
+              if (candidateParts[index] > latestParts[index]) {
+                comparison = 1;
+                break;
+              }
+              if (candidateParts[index] < latestParts[index]) {
+                comparison = -1;
+                break;
+              }
+            }
+            if (comparison <= 0) {
+              throw new Error(`${pkg.name}@${version} must be newer than current latest ${latest}`);
+            }
+
+            console.log(`${pkg.name}@${version} is not visible and is newer than latest ${latest}`);
+          })().catch((error) => {
+            console.error(error);
+            process.exit(1);
+          });
+          NODE
+
+      # All repository scripts ran in the verify job, before the protected
+      # environment released an OIDC token. This flag prevents lifecycle code
+      # from executing again inside the token-bearing job.
+      - name: Publish with npm Trusted Publishing and provenance
+        run: npm publish --registry https://registry.npmjs.org --provenance --access public --tag latest --ignore-scripts
+
+      - name: Verify the accepted registry version
+        env:
+          EXPECTED_VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          node <<'NODE'
+          (async () => {
+            const pkg = require('./package.json');
+            const version = process.env.EXPECTED_VERSION;
+            const packageUrl = `https://registry.npmjs.org/${encodeURIComponent(pkg.name)}`;
+            const versionUrl = `${packageUrl}/${encodeURIComponent(version)}`;
+
+            const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+            let metadata;
+            let latest;
+            for (let attempt = 1; attempt <= 10; attempt += 1) {
+              const [versionResponse, packumentResponse] = await Promise.all([
+                fetch(versionUrl, { redirect: 'error' }),
+                fetch(packageUrl, { redirect: 'error' }),
+              ]);
+
+              if (versionResponse.ok) {
+                metadata = await versionResponse.json();
+              } else if (versionResponse.status !== 404) {
+                throw new Error(`Registry version verification returned HTTP ${versionResponse.status}`);
+              }
+
+              if (packumentResponse.ok) {
+                const packument = await packumentResponse.json();
+                latest = packument['dist-tags']?.latest;
+              } else if (packumentResponse.status !== 404) {
+                throw new Error(`Package metadata returned HTTP ${packumentResponse.status}`);
+              }
+
+              if (metadata && latest === version) break;
+              console.log(`Registry metadata is not fully visible yet (attempt ${attempt}/10)`);
+              await wait(3000);
+            }
+
+            if (!metadata) throw new Error(`${pkg.name}@${version} was not visible after publication`);
+            if (metadata.version !== version) throw new Error('Registry version metadata does not match');
+            if (latest !== version) {
+              throw new Error(`latest points to ${latest || '<missing>'}, not ${version}`);
+            }
+
+            console.log(`Verified public registry metadata for ${pkg.name}@${version}`);
+            if (metadata.gitHead) {
+              console.log(`Diagnostic registry gitHead: ${metadata.gitHead}`);
+            } else {
+              console.log('Diagnostic registry gitHead is absent; provenance is the authoritative source-commit evidence');
+            }
+          })().catch((error) => {
+            console.error(error);
+            process.exit(1);
+          });
+          NODE

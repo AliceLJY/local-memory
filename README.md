@@ -492,6 +492,8 @@ RecallNest auto-detects babel-memory at startup — no configuration needed. Wit
 
 RecallNest is actively maintained. All major architecture phases are complete — see the full [Roadmap](ROADMAP.md) for current priorities and future plans.
 
+Maintainers: see [Publishing RecallNest](https://github.com/AliceLJY/recallnest/blob/main/docs/releasing.md) for the npm Trusted Publishing, validation, and recovery process.
+
 ---
 
 ## Relationship to memory-lancedb-pro
