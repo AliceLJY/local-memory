@@ -3,6 +3,8 @@ data/*
 !data/alias-map.example.json
 logs/
 .env
+.env.*
+!.env.example
 *.log
 config.json
 .agent/
