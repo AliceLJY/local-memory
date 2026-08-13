@@ -9,7 +9,7 @@
   "plugins": [
     {
       "name": "recallnest",
-      "version": "2.6.0",
+      "version": "2.6.1",
       "source": "./",
       "strict": false,
       "skills": [
