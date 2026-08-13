@@ -22,6 +22,7 @@
 - Long-lived retrievers now see writes committed by CLI ingest and other processes without a restart.
 - Runtime and maintenance scripts resolve the configured database path consistently instead of silently opening a second database.
 - Local HTTP access is constrained to the intended loopback boundary, and tracked credential scans cover release contents without printing secret values.
+- Per-cluster LLM timeouts no longer abort an entire `dream` scope; failures are counted, single-scope runs emit the same metrics contract as automatic runs, and the launch wrapper no longer fails after successful work because of an undefined log-file variable.
 
 ### Upgrade notes
 
@@ -32,7 +33,7 @@
 
 ### Verification
 
-- 2,145 tests pass across 152 files.
+- 2,152 tests pass across 152 files.
 - A database written by the remote v2.5.4 release was opened, read, and extended by v2.6.0 in an isolated upgrade smoke test.
 - An isolated Claude Code installation connected to the plugin MCP server with all 43 tools; packed npm installs reported `2.6.0` from both `recallnest` and the legacy `local-memory` alias.
 
