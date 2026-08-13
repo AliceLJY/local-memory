@@ -75,12 +75,21 @@ for attempt in 1 2 3; do
     # 它不需要任何阈值，只问「这行在不在」，因此不会随数据分布漂移而误伤 ——
     # 同 hippo-wiki 装订器的空壳闸（只认 0 字节，不猜"过小"）。
     # 失败方向是安全的：改名而忘了同步这里，会天天红，不会静默绿。
+    #
+    # 2026-08-13 修复：下面两行原为 `| tee -a "$LOG_FILE"`，而 LOG_FILE 这个变量
+    # 本脚本从未定义（只有 LOG_DIR）。`tee -a ""` 报 "No such file or directory" 并
+    # 返回非 0，配合第 7 行的 `set -e` 直接把脚本打死在这里 —— 于是 08-11 起每一轮
+    # dream 都拿不到收尾：没有「完成 status=ok」行、没写 .last-dream-run（停在 08-10）、
+    # launchd 收到非 0 退出码，而 dream 本身其实跑成功了。典型的假红 + 记账断档。
+    # 修法是直接 echo：stdout/stderr 本来就被 plist 重定向进同一个日志文件
+    # （StandardOutPath = StandardErrorPath = dream-consolidation-launchd.log），
+    # tee 到"日志文件"是重复写，本来就多余。
     if [ "$STATUS_LINE" = "[[DREAM_STATUS]] ok" ] && [ -z "$METRICS_LINE" ]; then
-        echo "  [错误] STATUS=ok 但没有 [[DREAM_METRICS]] 行 —— 产出断言缺失，按失败处理" | tee -a "$LOG_FILE"
+        echo "  [错误] STATUS=ok 但没有 [[DREAM_METRICS]] 行 —— 产出断言缺失，按失败处理"
         STATUS_LINE="[[DREAM_STATUS]] blocked"
         DREAM_EXIT=1
     fi
-    [ -n "$METRICS_LINE" ] && echo "  $METRICS_LINE" | tee -a "$LOG_FILE"
+    [ -n "$METRICS_LINE" ] && echo "  $METRICS_LINE"
 
     if [ "$STATUS_LINE" = "[[DREAM_STATUS]] ok" ] || [ "$STATUS_LINE" = "[[DREAM_STATUS]] skip" ]; then
         break

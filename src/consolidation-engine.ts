@@ -25,6 +25,7 @@ import { isActiveMemory, parseEvolution, buildSupersedeMetadata, buildConsolidat
 import { cosineSimilarity } from "./multi-vector.js";
 import type { LLMClient } from "./llm-client.js";
 import type { Embedder } from "./embedder.js";
+import { logWarn } from "./stderr-log.js";
 
 // ---------------------------------------------------------------------------
 // Config & Types
@@ -364,6 +365,14 @@ export interface ClusterConsolidationResult {
   entriesLinked: number;
   /** CC-9: Set when consecutive low-yield rounds trigger early termination */
   earlyStop?: "diminishing_returns";
+  /**
+   * 本轮被吸收的 LLM 调用失败数（超时 / 网络 / 熔断抛出）。
+   *
+   * 计出来是为了让「吸收」不等于「静默」：吸收前，单个 cluster 撞 15s 超时会把整个
+   * scope 的 dream 炸掉（2026-08-09 memory 轮次连挂两次的根因）；吸收后若不计数，
+   * 「LLM 全程不可用」和「今天没料可炼」会长得一模一样。
+   */
+  llmFailures: number;
 }
 
 /**
@@ -408,6 +417,7 @@ export async function clusterAndConsolidate(params: {
     insightsGenerated: 0,
     patternsExtracted: 0,
     entriesLinked: 0,
+    llmFailures: 0,
   };
 
   // Filter to active entries with vectors
@@ -472,8 +482,26 @@ export async function clusterAndConsolidate(params: {
     }
 
     // Generate insight via LLM from cluster member texts
+    //
+    // 单个 cluster 的 LLM 失败不该炸掉整个 scope。llm-client 的 chat() 在 catch 里是
+    // `throw err`（记完熔断计数后原样抛），所以 15s AbortController 超时会一路冒到
+    // runDream 之外 —— 2026-08-09 memory 轮次连挂两次正是这条路径：memory 是最大
+    // scope、cluster 最多，撞上一次超时的概率接近 1，且两次挂的位置不同（不是某对
+    // 内容有毒，是这一阶段本来就没有防护）。隔壁 llm-consolidation.ts:68 的同类调用
+    // 一直有 try/catch，本处缺的是同一层保护。
+    //
+    // 吸收成 null 而不是新开一条分支：generateL0 返回 null（熔断打开 / 空响应）本来
+    // 就是合法路径，下面 `if (!insight)` 已经按「零产出轮次」处理。失败另计 llmFailures，
+    // 避免吸收变静默。
     const combinedText = cluster.map(m => m.text).join("\n---\n");
-    const insight = await llm.generateL0(combinedText);
+    let insight: string | null;
+    try {
+      insight = await llm.generateL0(combinedText);
+    } catch (err) {
+      result.llmFailures++;
+      logWarn(`[WARN] cluster insight LLM 调用失败，本簇跳过: ${err instanceof Error ? err.message : String(err)}`);
+      insight = null;
+    }
 
     if (!insight) {
       // CC-9: No insight produced — this is a zero-yield round
@@ -546,7 +574,15 @@ export async function clusterAndConsolidate(params: {
 
     // HP-5: Cross-memory pattern extraction
     if (extractPatterns && cluster.length >= 3) {
-      const patternText = await llm.extractPattern(cluster.map(m => m.text));
+      // 同上：pattern 抽取失败也只丢这一簇的 pattern，不连坐已经写好的 insight。
+      let patternText: string | null;
+      try {
+        patternText = await llm.extractPattern(cluster.map(m => m.text));
+      } catch (err) {
+        result.llmFailures++;
+        logWarn(`[WARN] pattern 抽取 LLM 调用失败，本簇跳过: ${err instanceof Error ? err.message : String(err)}`);
+        patternText = null;
+      }
       if (patternText) {
         // 与同函数上方的 cluster insight 取同一个值：派生物继承源里最高的 importance，
         // 不额外加成。原本这里是 maxImportance + 0.1，会让 LLM 抽出的 pattern 比它的

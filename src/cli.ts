@@ -39,7 +39,7 @@ import {
 import { runDoctor, formatDoctorResults } from "./doctor.js";
 import { persistCaseMemory, persistMemory, persistWorkflowPattern } from "./capture-engine.js";
 import { scanMemoryPromotions, buildPromoteScanDeps, formatPromoteScanResult } from "./memory-promotion.js";
-import { runDream, formatDreamResult, DEFAULT_DREAM_CONFIG, classifyDreamFailure, shouldBlockDreamRun, partitionAutoDreamScopes } from "./dream-pipeline.js";
+import { runDream, formatDreamResult, formatDreamMetrics, DEFAULT_DREAM_CONFIG, classifyDreamFailure, shouldBlockDreamRun, partitionAutoDreamScopes } from "./dream-pipeline.js";
 import { listScopesAboveThreshold } from "./activity-counter.js";
 import {
   CaseMemoryInputSchema,
@@ -1682,11 +1682,13 @@ program
       }
       // 这一行是 dream-consolidation.sh 存在性闸的锚点：STATUS=ok 却没有它 = 判失败。
       // 它防的是「断言本身被某次重构悄悄删掉」—— 一个不需要调参的自检。
-      console.log(
-        `[[DREAM_METRICS]] produced=${tally.produced} noop=${tally.noop} partial=${tally.partial} `
-        + `skipped=${tally.skipped} degraded=${degradedScopes.length} effects=${effectsTotal} `
-        + `processed=${processed}/${scopes.length}`,
-      );
+      console.log(formatDreamMetrics({
+        tally,
+        degraded: degradedScopes.length,
+        effects: effectsTotal,
+        processed,
+        total: scopes.length,
+      }));
       console.log(blocked ? "[[DREAM_STATUS]] blocked" : "[[DREAM_STATUS]] ok");
       process.exit(blocked ? 1 : 0);
     }
@@ -1703,6 +1705,18 @@ program
       });
 
       console.log(formatDreamResult(result));
+      // 单 scope 也必须打产出计量：dream-consolidation.sh 的存在性闸对 STATUS=ok
+      // 一视同仁地要求这行，而本分支此前从不打 —— 08-12 那道闸上线后，周日的
+      // memory 轮次即使跑成功也会被判"产出断言缺失"。tally 在这里只有一格是 1。
+      const tally = { produced: 0, noop: 0, partial: 0, skipped: 0 };
+      tally[result.output.kind] = 1;
+      console.log(formatDreamMetrics({
+        tally,
+        degraded: result.output.degraded ? 1 : 0,
+        effects: result.output.effectsWritten,
+        processed: 1,
+        total: 1,
+      }));
       console.log(result.ran ? "[[DREAM_STATUS]] ok" : "[[DREAM_STATUS]] skip");
       process.exit(0);
     } catch (err) {

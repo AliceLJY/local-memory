@@ -499,6 +499,30 @@ export function countDreamEffects(stats: DreamResult["stats"]): number {
     + stats.archivedCount;
 }
 
+/**
+ * 产出计量行的唯一格式来源。
+ *
+ * 抽出来是因为它有一个**进程外的消费者**：`dream-consolidation.sh` 的存在性闸靠
+ * 字面量 `[[DREAM_METRICS]]` 匹配，报了 ok 却没有这行就判整轮失败。两条 CLI 路径
+ * （`--auto` 与单 scope）各写一份格式，迟早漂；漂了的那条会被闸当成"断言缺失"误杀。
+ *
+ * 2026-08-13 补单 scope 路径时发现：`--scope memory` 分支**从来没打过这行**，
+ * 而闸是 08-12 加的 —— 也就是说 08-16 周日的 memory 轮次即使跑成功也会被判失败。
+ * 这是那道闸的第一个真实误伤（它自称"误伤面≈0"，成立的前提是所有 ok 路径都打这行）。
+ */
+export function formatDreamMetrics(input: {
+  tally: Record<DreamOutputKind, number>;
+  degraded: number;
+  effects: number;
+  processed: number;
+  total: number;
+}): string {
+  return `[[DREAM_METRICS]] produced=${input.tally.produced} noop=${input.tally.noop} `
+    + `partial=${input.tally.partial} skipped=${input.tally.skipped} `
+    + `degraded=${input.degraded} effects=${input.effects} `
+    + `processed=${input.processed}/${input.total}`;
+}
+
 /** 把一轮 dream 归类。硬不变量：`kind === "produced"` <=> `effectsWritten > 0`。 */
 export function classifyDreamOutput(input: {
   consolidateRan: boolean;

@@ -310,6 +310,128 @@ describe("clusterAndConsolidate", () => {
     expect(result.clustersConsolidated).toBe(1); // Still counts as processed
     expect(result.insightsGenerated).toBe(0); // No insight generated
     expect(stored.length).toBe(0); // Nothing stored
+    expect(result.llmFailures).toBe(0); // 返回 null 不是失败，是合法的"没料可炼"
+  });
+
+  // 2026-08-13：上面那条测的是 generateL0 **返回 null**；下面这条测它 **抛异常**。
+  // 两者此前走的是完全不同的路径 —— 返回 null 被消化，抛异常会一路冒出 runDream，
+  // 把整个 scope 的 dream 炸掉（llm-client 的 chat() 在 catch 里是 `throw err`）。
+  // 2026-08-09 memory 周日轮次连挂两次就是这条路径：15s AbortController 超时。
+  it("单个 cluster 的 LLM 抛异常时吸收掉，不炸整轮（2026-08-09 memory 轮次根因）", async () => {
+    const entries = [
+      makeEntry({ id: "a", text: "memory A", vector: [0.9, 0.1, 0] }),
+      makeEntry({ id: "b", text: "memory B", vector: [0.88, 0.12, 0] }),
+      makeEntry({ id: "c", text: "memory C", vector: [0.92, 0.08, 0] }),
+    ];
+
+    const { store, stored } = createMockStore();
+    const llm = {
+      async generateL0(_text: string): Promise<string | null> {
+        throw new Error("Request was aborted.");
+      },
+      async extractPattern(_texts: string[]): Promise<string | null> {
+        return null;
+      },
+    };
+    const embedder = createMockEmbedder();
+
+    const result = await clusterAndConsolidate({
+      entries,
+      embedder,
+      llm: llm as unknown as LLMClient,
+      store,
+      scope: "project:test",
+      minClusterSize: 3,
+      clusterThreshold: 0.75,
+    });
+
+    // 关键断言：函数正常返回而不是抛出。修复前这一行根本到不了 —— 异常直接冒到调用方。
+    expect(result.clustersFound).toBe(1);
+    expect(result.clustersConsolidated).toBe(1);
+    expect(result.insightsGenerated).toBe(0);
+    expect(stored.length).toBe(0);
+    // 吸收 ≠ 静默：失败要计数，否则"LLM 全程不可用"和"今天没料可炼"长得一样。
+    expect(result.llmFailures).toBe(1);
+  });
+
+  it("多个 cluster 时，一个 LLM 抛异常不影响其他 cluster 产出", async () => {
+    // 两个互相正交的簇，各 3 个成员
+    const entries = [
+      makeEntry({ id: "a1", text: "cluster one A", vector: [0.9, 0.1, 0] }),
+      makeEntry({ id: "a2", text: "cluster one B", vector: [0.88, 0.12, 0] }),
+      makeEntry({ id: "a3", text: "cluster one C", vector: [0.92, 0.08, 0] }),
+      makeEntry({ id: "b1", text: "cluster two A", vector: [0, 0.9, 0.1] }),
+      makeEntry({ id: "b2", text: "cluster two B", vector: [0, 0.88, 0.12] }),
+      makeEntry({ id: "b3", text: "cluster two C", vector: [0, 0.92, 0.08] }),
+    ];
+
+    const { store, stored } = createMockStore();
+    let call = 0;
+    const llm = {
+      async generateL0(_text: string): Promise<string | null> {
+        call++;
+        if (call === 1) throw new Error("Request was aborted.");
+        return "第二个簇的 insight";
+      },
+      async extractPattern(_texts: string[]): Promise<string | null> {
+        return null;
+      },
+    };
+    const embedder = createMockEmbedder();
+
+    const result = await clusterAndConsolidate({
+      entries,
+      embedder,
+      llm: llm as unknown as LLMClient,
+      store,
+      scope: "project:test",
+      minClusterSize: 3,
+      clusterThreshold: 0.75,
+    });
+
+    expect(result.clustersFound).toBe(2);
+    expect(result.llmFailures).toBe(1);
+    // 修复前：第一个簇抛异常 → 整个函数炸掉 → 第二个簇永远跑不到，产出为 0。
+    expect(result.insightsGenerated).toBe(1);
+    expect(stored.length).toBe(1);
+    expect(stored[0].text).toBe("第二个簇的 insight");
+  });
+
+  it("pattern 抽取抛异常时只丢这一簇的 pattern，已写好的 insight 不连坐", async () => {
+    const entries = [
+      makeEntry({ id: "a", text: "memory A", vector: [0.9, 0.1, 0] }),
+      makeEntry({ id: "b", text: "memory B", vector: [0.88, 0.12, 0] }),
+      makeEntry({ id: "c", text: "memory C", vector: [0.92, 0.08, 0] }),
+    ];
+
+    const { store, stored } = createMockStore();
+    const llm = {
+      async generateL0(_text: string): Promise<string | null> {
+        return "insight 正常产出";
+      },
+      async extractPattern(_texts: string[]): Promise<string | null> {
+        throw new Error("Request was aborted.");
+      },
+    };
+    const embedder = createMockEmbedder();
+
+    const result = await clusterAndConsolidate({
+      entries,
+      embedder,
+      llm: llm as unknown as LLMClient,
+      store,
+      scope: "project:test",
+      minClusterSize: 3,
+      clusterThreshold: 0.75,
+      extractPatterns: true,
+    });
+
+    expect(result.llmFailures).toBe(1);
+    expect(result.patternsExtracted).toBe(0);
+    // insight 已经写进去了，不该被 pattern 阶段的失败拖掉
+    expect(result.insightsGenerated).toBe(1);
+    expect(stored.length).toBe(1);
+    expect(stored[0].text).toBe("insight 正常产出");
   });
 
   it("respects maxClusters limit", async () => {

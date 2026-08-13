@@ -3,7 +3,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  runDream, formatDreamResult, assertDreamSweepHealth, classifyDreamOutput, countDreamEffects,
+  runDream, formatDreamResult, formatDreamMetrics, assertDreamSweepHealth, classifyDreamOutput, countDreamEffects,
   type DreamResult,
 } from "../dream-pipeline.js";
 import { isDerivedInsight } from "../consolidation-engine.js";
@@ -734,5 +734,47 @@ describe("autoExcludeScopes / partitionAutoDreamScopes", () => {
     const { run, deferred } = partitionAutoDreamScopes(["memory"], ["memory"]);
     expect(run).toEqual([]);
     expect(deferred).toEqual(["memory"]);
+  });
+});
+
+describe("formatDreamMetrics", () => {
+  // 这行有个进程外消费者：dream-consolidation.sh 的存在性闸按字面量匹配
+  // `[[DREAM_METRICS]]`，报了 ok 却没有它就判整轮失败。所以格式本身要锁住。
+  it("产出的前缀必须是 shell 闸认的字面量", () => {
+    const line = formatDreamMetrics({
+      tally: { produced: 0, noop: 0, partial: 0, skipped: 0 },
+      degraded: 0, effects: 0, processed: 0, total: 0,
+    });
+    expect(line.startsWith("[[DREAM_METRICS]] ")).toBe(true);
+  });
+
+  it("--auto 场景：六个字段与 processed/total 都如实带出", () => {
+    const line = formatDreamMetrics({
+      tally: { produced: 54, noop: 7, partial: 0, skipped: 0 },
+      degraded: 0, effects: 1142, processed: 61, total: 166,
+    });
+    expect(line).toBe(
+      "[[DREAM_METRICS]] produced=54 noop=7 partial=0 skipped=0 degraded=0 effects=1142 processed=61/166",
+    );
+  });
+
+  it("单 scope 场景：tally 只有一格是 1，processed 恒为 1/1", () => {
+    const line = formatDreamMetrics({
+      tally: { produced: 1, noop: 0, partial: 0, skipped: 0 },
+      degraded: 0, effects: 12, processed: 1, total: 1,
+    });
+    expect(line).toBe(
+      "[[DREAM_METRICS]] produced=1 noop=0 partial=0 skipped=0 degraded=0 effects=12 processed=1/1",
+    );
+  });
+
+  it("degraded 非零时照实报，不被 produced 掩盖", () => {
+    // DreamOutput.degraded 与 kind 正交：produced 也可以是 degraded 的。
+    const line = formatDreamMetrics({
+      tally: { produced: 1, noop: 0, partial: 0, skipped: 0 },
+      degraded: 1, effects: 3, processed: 1, total: 1,
+    });
+    expect(line).toContain("degraded=1");
+    expect(line).toContain("produced=1");
   });
 });
