@@ -579,12 +579,21 @@ export function classifyDreamFailure(message: string): DreamFailureKind {
 /** transient 失败占比超过这个比例仍判整轮失败——否则"475 个全被锁挡住"会假绿。 */
 export const DREAM_TRANSIENT_BLOCK_RATIO = 0.2;
 
+/** 比例阈值之外的绝对量豁免：transient 失败不超过这个数就不算整轮失败。
+ *  2026-08-14 transcript 出队后 inline 队列缩到个位数，1/1 = 100% > 20% 让单个
+ *  瞬态锁竞争把整轮判红（当天验证轮实测：一个死进程的残留 store-write 锁 →
+ *  唯一 durable scope 等锁超时 → blocked → launchd 失败通知）。比例阈值的原意是
+ *  「环境性失败要成规模」，1-2 个绝对不算规模——失败的 scope 计数未清、明天自动
+ *  重试，兜底仍在。fatal 不享受豁免（一票否决不变）。 */
+export const DREAM_TRANSIENT_ABSOLUTE_TOLERANCE = 2;
+
 /**
  * 一轮 `dream --auto` 是否该判 blocked。
  *
  * 旧语义是「任意一个 scope 抛异常即 blocked」,在 475 个 scope 的规模下等于
  * 「有一个撞上锁就整轮红」,而红了会让 shell 脚本走重试 → 重跑全量。
- * 新语义:代码/数据缺陷一票否决;环境性失败要成规模才算整轮失败。
+ * 新语义:代码/数据缺陷一票否决;环境性失败要成规模才算整轮失败——
+ * 「规模」同时看比例(> 20%)与绝对量(> 2 个),小队列下单个瞬态不再整轮红。
  */
 export function shouldBlockDreamRun(params: {
   totalScopes: number;
@@ -593,6 +602,7 @@ export function shouldBlockDreamRun(params: {
 }): boolean {
   if (params.fatalFailures > 0) return true;
   if (params.totalScopes <= 0) return false;
+  if (params.transientFailures <= DREAM_TRANSIENT_ABSOLUTE_TOLERANCE) return false;
   return params.transientFailures / params.totalScopes > DREAM_TRANSIENT_BLOCK_RATIO;
 }
 

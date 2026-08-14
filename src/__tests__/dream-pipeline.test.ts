@@ -702,6 +702,20 @@ describe("shouldBlockDreamRun", () => {
     expect(shouldBlockDreamRun({ totalScopes: 475, fatalFailures: 0, transientFailures: 0 })).toBe(false);
     expect(shouldBlockDreamRun({ totalScopes: 0, fatalFailures: 0, transientFailures: 0 })).toBe(false);
   });
+
+  // 2026-08-14: transcript 出队后队列缩到个位数，1/1 = 100% > 20% 曾把单个瞬态锁竞争
+  // 判成整轮红（当天验证轮实测）。绝对量豁免：transient ≤ 2 不算「成规模」。
+  it("小队列豁免：个位数队列里 1-2 个瞬态失败不判 blocked", () => {
+    expect(shouldBlockDreamRun({ totalScopes: 1, fatalFailures: 0, transientFailures: 1 })).toBe(false);
+    expect(shouldBlockDreamRun({ totalScopes: 2, fatalFailures: 0, transientFailures: 2 })).toBe(false);
+    expect(shouldBlockDreamRun({ totalScopes: 3, fatalFailures: 0, transientFailures: 2 })).toBe(false);
+  });
+
+  it("小队列豁免不放过 fatal，也不放过超出绝对量的比例失败", () => {
+    expect(shouldBlockDreamRun({ totalScopes: 1, fatalFailures: 1, transientFailures: 0 })).toBe(true);
+    // 3 个 transient 超出绝对豁免（2），且 3/5 = 60% > 20% → 该红还是红
+    expect(shouldBlockDreamRun({ totalScopes: 5, fatalFailures: 0, transientFailures: 3 })).toBe(true);
+  });
 });
 
 describe("autoRunBudgetMs default", () => {
