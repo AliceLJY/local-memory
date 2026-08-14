@@ -20,8 +20,8 @@
 import type { MemoryEntry, MemorySearchResult } from "./store.js";
 import { deterministicId } from "./store.js";
 import type { MemoryStorePort } from "./memory-store-port.js";
-import { createVersionGroup } from "./version-manager.js";
-import { isActiveMemory, parseEvolution, buildSupersedeMetadata, buildConsolidatedMetadata, patchEvolution } from "./memory-evolution.js";
+import { computeVersionGroupPatch, resolveGroupId } from "./version-manager.js";
+import { isActiveMemory, parseEvolution, buildSupersedeMetadata, patchEvolutionOnMeta } from "./memory-evolution.js";
 import { cosineSimilarity } from "./multi-vector.js";
 import type { LLMClient } from "./llm-client.js";
 import type { Embedder } from "./embedder.js";
@@ -163,7 +163,7 @@ export function detectHeuristicContradiction(textA: string, textB: string): bool
 // Store interface (duck-typed to avoid hard dependency)
 // ---------------------------------------------------------------------------
 
-type ConsolidationStore = Pick<MemoryStorePort, "list" | "getById" | "vectorSearch" | "update">;
+type ConsolidationStore = Pick<MemoryStorePort, "list" | "getById" | "vectorSearch" | "update" | "patchMetadataBatch">;
 
 // ---------------------------------------------------------------------------
 // Engine
@@ -289,6 +289,22 @@ export class ConsolidationEngine {
         const scoreMap = new Map<string, number>();
         for (const r of pairResults) scoreMap.set(r.entry.id, r.score);
 
+        // 2026-08-14 批量化重构（dream 写爆库根治 + Bug-1 修复）：
+        //
+        // 旧路径对每个 member 逐条写库 2-4 次（merge: createVersionGroup 2 + member 1
+        // + canonical 1；link: 2），一个 cluster 写 canonical N 遍 —— 且每次 patch 都
+        // 基于循环里从不刷新的旧内存串，后写的把先写的键抹掉：member1 经
+        // createVersionGroup 落库的 version_group 被随后的 sourceMemories 更新（旧串
+        // 起底）覆盖，member2 又因读到无组的旧串新造一个 groupId。最终态是 canonical
+        // 与全部 member 通常都不带组、sourceMemories 只剩最后一个 member（2 成员的
+        // cluster 同样全丢）。
+        //
+        // 新路径：先纯计算把 member 分进 merge/link 两组，cluster 末尾一次
+        // patchMetadataBatch —— patchFn 在锁内以库中最新 meta 为底座应用，canonical
+        // 只写一次（version-group 键 + sourceMemories 累积 + cluster_members 累积），
+        // groupId 在 cluster 级决策一次全组共享。每 cluster 1 个 commit（原 2-4×N）。
+        const mergeMembers: MemoryEntry[] = [];
+        const linkMembers: MemoryEntry[] = [];
         for (const member of sorted.slice(1)) {
           const sim = scoreMap.get(member.id) ?? clusterThreshold;
 
@@ -302,35 +318,76 @@ export class ConsolidationEngine {
           );
 
           if (sim >= mergeThreshold || jaccard >= tripleJaccardThreshold) {
-            // Tier 3.3: Version coexistence — both stay but grouped.
-            await createVersionGroup(this.store, canonical, member, scope);
-            // C-1: Also mark the weaker entry as consolidated via evolution metadata
-            const consolidatedMeta = buildConsolidatedMetadata(member.metadata, canonical.id);
-            await this.store.update(member.id, { metadata: consolidatedMeta }, [scope]);
-            // Mark canonical as having source memories
-            const canonEvo = parseEvolution(canonical.metadata, canonical.timestamp);
-            if (!canonEvo.sourceMemories.includes(member.id)) {
-              const updatedCanon = patchEvolution(canonical.metadata, {
-                sourceMemories: [...canonEvo.sourceMemories, member.id],
-              });
-              await this.store.update(canonical.id, { metadata: updatedCanon }, [scope]);
-            }
+            mergeMembers.push(member);
             mergedCount++;
             if (sim < mergeThreshold) tripleEvidenceMerges++;
           } else {
-            // Link: add clustered_with relation
-            const memberMeta = parseMetadata(member);
-            memberMeta.clustered_with = canonical.id;
-            await this.store.update(member.id, { metadata: JSON.stringify(memberMeta) }, [scope]);
-
-            const canonMeta = parseMetadata(canonical);
-            if (!Array.isArray(canonMeta.cluster_members)) canonMeta.cluster_members = [];
-            if (!(canonMeta.cluster_members as string[]).includes(member.id)) {
-              (canonMeta.cluster_members as string[]).push(member.id);
-            }
-            await this.store.update(canonical.id, { metadata: JSON.stringify(canonMeta) }, [scope]);
+            linkMembers.push(member);
             relationsAdded++;
           }
+        }
+
+        if (mergeMembers.length > 0 || linkMembers.length > 0) {
+          // groupId 决策：canonical 已有组沿用，否则 cluster 级新生成一次。
+          // 决策基于本 cluster 开头刚 getById 的 canonical（毫秒级新鲜）；组字段只有
+          // dream 自己写、且本 scope 有 per-scope dream 锁，锁外决策的竞态面趋零。
+          const groupId = mergeMembers.length > 0 ? resolveGroupId(canonical) : null;
+          const nowIso = new Date().toISOString();
+          const mergeIds = mergeMembers.map(m => m.id);
+          const linkIds = linkMembers.map(m => m.id);
+
+          const patches: Array<{
+            id: string;
+            patchFn: (meta: Record<string, unknown>, entry: MemoryEntry) => Record<string, unknown>;
+          }> = [];
+
+          patches.push({
+            id: canonical.id,
+            patchFn: (meta, entry) => {
+              if (groupId) computeVersionGroupPatch(meta, entry, groupId, true, nowIso);
+              if (mergeIds.length > 0) {
+                const evo = meta.evolution !== null && typeof meta.evolution === "object" && !Array.isArray(meta.evolution)
+                  ? (meta.evolution as Record<string, unknown>)
+                  : {};
+                const existing = Array.isArray(evo.sourceMemories) ? (evo.sourceMemories as string[]) : [];
+                const accumulated = [...existing];
+                for (const id of mergeIds) if (!accumulated.includes(id)) accumulated.push(id);
+                patchEvolutionOnMeta(meta, { sourceMemories: accumulated });
+              }
+              if (linkIds.length > 0) {
+                const members = Array.isArray(meta.cluster_members) ? (meta.cluster_members as string[]) : [];
+                for (const id of linkIds) if (!members.includes(id)) members.push(id);
+                meta.cluster_members = members;
+              }
+              return meta;
+            },
+          });
+
+          for (const member of mergeMembers) {
+            patches.push({
+              id: member.id,
+              patchFn: (meta, entry) => {
+                // Tier 3.3 version coexistence + C-1 consolidated 标记，一次写齐
+                computeVersionGroupPatch(meta, entry, groupId as string, false, nowIso);
+                return patchEvolutionOnMeta(meta, {
+                  status: "consolidated",
+                  consolidatedInto: canonical.id,
+                });
+              },
+            });
+          }
+
+          for (const member of linkMembers) {
+            patches.push({
+              id: member.id,
+              patchFn: (meta) => {
+                meta.clustered_with = canonical.id;
+                return meta;
+              },
+            });
+          }
+
+          await this.store.patchMetadataBatch(patches, [scope]);
         }
 
         // Conflict detection within cluster
@@ -389,7 +446,7 @@ export async function clusterAndConsolidate(params: {
   entries: MemoryEntry[];
   embedder: Pick<Embedder, "embedPassage">;
   llm: LLMClient;
-  store: Pick<MemoryStorePort, "store" | "update">;
+  store: Pick<MemoryStorePort, "store" | "update" | "patchMetadataBatch">;
   scope: string;
   /** Minimum cluster size to trigger consolidation (default: 3) */
   minClusterSize?: number;
@@ -560,15 +617,22 @@ export async function clusterAndConsolidate(params: {
 
     result.insightsGenerated++;
 
-    // Mark source memories as consolidated_into (but keep them active)
-    for (const member of cluster) {
-      const patched = patchEvolution(member.metadata, {
-        consolidatedInto: insightEntry.id,
-        // Keep status active — still individually searchable
-      });
-      await store.update(member.id, { metadata: patched }, [scope]);
-      result.entriesLinked++;
-    }
+    // Mark source memories as consolidated_into (but keep them active).
+    // 2026-08-14 批量化：N 次逐条 update → 1 次 patchMetadataBatch。patchFn 在锁内
+    // 以最新 meta 为底座，pattern 段随后的 contributedToPattern 批不会再把这里写的
+    // consolidatedInto 抹掉（旧路径的 Bug-2：两段都从同一个旧内存串起底 patch）。
+    // 本批独立于 pattern 批提交：pattern 路径失败时 insight 的源链接已落库（保持
+    // 旧异常语义 —— insight 源链接从来不等 pattern）。
+    result.entriesLinked += await store.patchMetadataBatch(
+      cluster.map(member => ({
+        id: member.id,
+        patchFn: (meta: Record<string, unknown>) => patchEvolutionOnMeta(meta, {
+          consolidatedInto: insightEntry.id,
+          // Keep status active — still individually searchable
+        }),
+      })),
+      [scope],
+    );
 
     result.clustersConsolidated++;
 
@@ -618,13 +682,17 @@ export async function clusterAndConsolidate(params: {
           }),
         });
 
-        // Mark source memories with contributedToPattern
-        for (const member of cluster) {
-          const patched = patchEvolution(member.metadata, {
-            contributedToPattern: patternEntry.id,
-          });
-          await store.update(member.id, { metadata: patched }, [scope]);
-        }
+        // Mark source memories with contributedToPattern（同上：一批提交，锁内最新
+        // meta 起底 —— 与 insight 批叠加而非互抹）
+        await store.patchMetadataBatch(
+          cluster.map(member => ({
+            id: member.id,
+            patchFn: (meta: Record<string, unknown>) => patchEvolutionOnMeta(meta, {
+              contributedToPattern: patternEntry.id,
+            }),
+          })),
+          [scope],
+        );
 
         result.patternsExtracted++;
       }

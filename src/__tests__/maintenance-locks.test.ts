@@ -51,6 +51,7 @@ describe("runDream cross-process lock", () => {
       list: async () => [],
       listPage: async () => [],
       update: async () => null,
+      patchMetadataBatch: async (patches: Array<{ id: string; patchFn: unknown }>) => patches.length,
       patchMetadata: async () => null,
     };
 
@@ -86,6 +87,7 @@ describe("runDream cross-process lock", () => {
       list: async () => entries,
       listPage: async () => [],
       update: async () => null,
+      patchMetadataBatch: async (patches: Array<{ id: string; patchFn: unknown }>) => patches.length,
       patchMetadata: async () => null,
       getById: async () => null,
       vectorSearch: async () => [],
@@ -132,6 +134,7 @@ describe("runDream cross-process lock", () => {
       list: async () => [], // no active entries → completed_early path (still resets)
       listPage: async () => [],
       update: async () => null,
+      patchMetadataBatch: async (patches: Array<{ id: string; patchFn: unknown }>) => patches.length,
       patchMetadata: async () => null,
       getById: async () => null,
       vectorSearch: async () => [],
@@ -158,6 +161,7 @@ describe("maybeRunGc cross-process lock + throttle", () => {
       stats: async () => ({ totalCount, scopeCounts: {}, categoryCounts: {} }),
       listPage: async () => [] as unknown[],
       update: async () => null,
+      patchMetadataBatch: async (patches: Array<{ id: string; patchFn: unknown }>) => patches.length,
       list: async () => [],
     } as any;
   }

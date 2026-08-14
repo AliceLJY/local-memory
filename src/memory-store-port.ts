@@ -42,5 +42,15 @@ export interface MemoryStorePort {
     patchFn: (meta: Record<string, unknown>, entry: MemoryEntry) => Record<string, unknown>,
     scopeFilter?: string[],
   ): Promise<MemoryEntry | null>;
+  /** metadata 批量读改写：单锁单 commit 写一批行（≤200/批）。patchFn 在锁内以库中
+   *  最新行为底座、按数组序依次应用（同批闭包可传递决策）。单条失败跳过不炸整批，
+   *  返回成功写入数。dream 3a/3b/auto-gc 的写放大治理入口（2026-08-14）。 */
+  patchMetadataBatch(
+    patches: Array<{
+      id: string;
+      patchFn: (meta: Record<string, unknown>, entry: MemoryEntry) => Record<string, unknown>;
+    }>,
+    scopeFilter?: string[],
+  ): Promise<number>;
   vectorSearch(vector: number[], limit?: number, minScore?: number, scopeFilter?: string[]): Promise<MemorySearchResult[]>;
 }

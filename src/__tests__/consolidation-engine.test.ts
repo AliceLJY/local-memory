@@ -59,6 +59,25 @@ function createMockStore(entries: MemoryEntry[], similarityMap: Map<string, Map<
         }
         return entry;
       },
+      // 2026-08-14: 忠实模拟生产语义 —— 以 mock 存储的最新行起底应用 patchFn、按序执行、
+      // 就地落库。批量写同样进 updates 数组，既有的 updates.find() 断言无需改动。
+      async patchMetadataBatch(
+        patches: Array<{ id: string; patchFn: (meta: Record<string, unknown>, entry: MemoryEntry) => Record<string, unknown> }>,
+        _scopeFilter?: string[],
+      ) {
+        let written = 0;
+        for (const { id, patchFn } of patches) {
+          const entry = data.get(id);
+          if (!entry) continue;
+          let meta: Record<string, unknown>;
+          try { meta = JSON.parse(entry.metadata || "{}") as Record<string, unknown>; } catch { meta = {}; }
+          const patched = patchFn(meta, entry);
+          entry.metadata = JSON.stringify(patched);
+          updates.push({ id, metadata: entry.metadata });
+          written++;
+        }
+        return written;
+      },
     },
   };
 }
@@ -79,6 +98,77 @@ describe("ConsolidationEngine", () => {
     const result = await engine.run("project:test");
     expect(result.originalCount).toBe(1);
     expect(result.clustersFound).toBe(0);
+  });
+
+  // 2026-08-14 Bug-1 回归：旧逐条写路径里 cluster 循环基于从不刷新的旧内存串 patch，
+  // member 的 consolidatedMeta 写与 canonical 的 sourceMemories 写会把 createVersionGroup
+  // 刚落库的 version_group 抹掉（2 成员 cluster 同样全丢），下一个 member 还会新造 groupId。
+  // 断言口径是**最终存储态**（getById 终值）——旧测试用 updates.find() 只看首写，恰好
+  // 看不见覆盖（互审 C3 指出的断言形态缺陷）。
+  it("Bug-1 回归：2 成员 merge 后双方 version_group 同组共存，sourceMemories/consolidatedInto 齐全", async () => {
+    const entryA = makeEntry({ id: "a", text: "canonical fact", vector: [1, 0, 0], importance: 0.9 });
+    const entryB = makeEntry({ id: "b", text: "duplicate fact", vector: [0.99, 0.1, 0], importance: 0.5 });
+    const simMap = new Map([
+      ["a", new Map([["b", 0.95]])],
+      ["b", new Map([["a", 0.95]])],
+    ]);
+    const { store } = createMockStore([entryA, entryB], simMap);
+    const engine = new ConsolidationEngine(store, { ...DEFAULT_CONSOLIDATION_CONFIG, mergeThreshold: 0.92 });
+    await engine.run("project:test");
+
+    const finalA = JSON.parse((await store.getById("a"))!.metadata!) as Record<string, any>;
+    const finalB = JSON.parse((await store.getById("b"))!.metadata!) as Record<string, any>;
+    expect(typeof finalA.version_group).toBe("string");
+    expect(finalB.version_group).toBe(finalA.version_group); // 同组，且都没被后续写抹掉
+    expect(typeof finalA.version_rank).toBe("number");
+    expect(typeof finalB.version_rank).toBe("number");
+    expect(finalA.evolution.sourceMemories).toContain("b");
+    expect(finalB.evolution.status).toBe("consolidated");
+    expect(finalB.evolution.consolidatedInto).toBe("a");
+  });
+
+  it("Bug-1 回归：多 member merge 共享同一个 groupId，canonical 的 sourceMemories 不丢前面的 member", async () => {
+    const entryA = makeEntry({ id: "a", text: "fact v1", vector: [1, 0, 0], importance: 0.9 });
+    const entryB = makeEntry({ id: "b", text: "fact v2", vector: [0.99, 0.1, 0], importance: 0.5 });
+    const entryC = makeEntry({ id: "c", text: "fact v3", vector: [0.98, 0.15, 0], importance: 0.4 });
+    const simMap = new Map([
+      ["a", new Map([["b", 0.95], ["c", 0.94]])],
+      ["b", new Map([["a", 0.95], ["c", 0.93]])],
+      ["c", new Map([["a", 0.94], ["b", 0.93]])],
+    ]);
+    const { store } = createMockStore([entryA, entryB, entryC], simMap);
+    const engine = new ConsolidationEngine(store, { ...DEFAULT_CONSOLIDATION_CONFIG, mergeThreshold: 0.92 });
+    await engine.run("project:test");
+
+    const finalA = JSON.parse((await store.getById("a"))!.metadata!) as Record<string, any>;
+    const finalB = JSON.parse((await store.getById("b"))!.metadata!) as Record<string, any>;
+    const finalC = JSON.parse((await store.getById("c"))!.metadata!) as Record<string, any>;
+    expect(typeof finalA.version_group).toBe("string");
+    expect(finalB.version_group).toBe(finalA.version_group); // 旧路径这里各是一个新组
+    expect(finalC.version_group).toBe(finalA.version_group);
+    expect(finalA.evolution.sourceMemories).toEqual(expect.arrayContaining(["b", "c"])); // 旧路径只剩最后一个
+  });
+
+  it("link 分支回归：多 member 时 canonical 的 cluster_members 累积全部（不再只剩最后一个）", async () => {
+    const entryA = makeEntry({ id: "a", text: "topic center", vector: [1, 0, 0], importance: 0.9 });
+    const entryB = makeEntry({ id: "b", text: "related one", vector: [0.9, 0.3, 0], importance: 0.5 });
+    const entryC = makeEntry({ id: "c", text: "related two", vector: [0.88, 0.35, 0], importance: 0.4 });
+    // 0.85 落在 clusterThreshold(0.82) 与 mergeThreshold(0.92) 之间 → link 分支
+    const simMap = new Map([
+      ["a", new Map([["b", 0.85], ["c", 0.85]])],
+      ["b", new Map([["a", 0.85], ["c", 0.84]])],
+      ["c", new Map([["a", 0.85], ["b", 0.84]])],
+    ]);
+    const { store } = createMockStore([entryA, entryB, entryC], simMap);
+    const engine = new ConsolidationEngine(store, { ...DEFAULT_CONSOLIDATION_CONFIG, clusterThreshold: 0.82, mergeThreshold: 0.92 });
+    await engine.run("project:test");
+
+    const finalA = JSON.parse((await store.getById("a"))!.metadata!) as Record<string, any>;
+    const finalB = JSON.parse((await store.getById("b"))!.metadata!) as Record<string, any>;
+    const finalC = JSON.parse((await store.getById("c"))!.metadata!) as Record<string, any>;
+    expect(finalA.cluster_members).toEqual(expect.arrayContaining(["b", "c"]));
+    expect(finalB.clustered_with).toBe("a");
+    expect(finalC.clustered_with).toBe("a");
   });
 
   it("merges near-duplicates above mergeThreshold", async () => {

@@ -38,13 +38,21 @@ function makeEntry(overrides: Partial<MemoryEntry> & { id: string; text: string 
   };
 }
 
-/** Create a mock store that tracks store() and update() calls */
-function createMockStore() {
+/** Create a mock store that tracks store() and update() calls.
+ *  可选 seed：模拟"库中已有行"的 metadata（patchMetadataBatch 的生产语义是以库中
+ *  最新行起底应用 patchFn——不给 seed 时起底为空对象）。 */
+function createMockStore(seed: MemoryEntry[] = []) {
   const stored: MemoryEntry[] = [];
   const updates: Array<{ id: string; metadata: string }> = [];
+  // 2026-08-14: patchMetadataBatch 的最新态表 —— patchFn 以上一批的结果起底，
+  // 忠实模拟生产语义（锁内最新行起底、批间叠加而非互抹）。
+  const metaById = new Map<string, Record<string, unknown>>();
+  for (const e of seed) {
+    try { metaById.set(e.id, JSON.parse(e.metadata || "{}") as Record<string, unknown>); } catch { /* skip bad seed */ }
+  }
   let storeCounter = 0;
 
-  const store: Pick<MemoryStore, "store" | "update"> = {
+  const store: Pick<MemoryStore, "store" | "update" | "patchMetadataBatch"> = {
     async store(entry) {
       const full: MemoryEntry = {
         ...entry,
@@ -61,9 +69,19 @@ function createMockStore() {
       }
       return { id, text: "", vector: [], category: "events", scope: "project:test", importance: 0.5, timestamp: Date.now(), metadata: upd.metadata || "{}" } as MemoryEntry;
     },
+    async patchMetadataBatch(patches, _scopeFilter?) {
+      for (const { id, patchFn } of patches) {
+        const current = metaById.get(id) ?? {};
+        const entry = { id, text: "", vector: [], category: "events", scope: "project:test", importance: 0.5, timestamp: Date.now(), metadata: JSON.stringify(current) } as MemoryEntry;
+        const patched = patchFn(current, entry);
+        metaById.set(id, patched);
+        updates.push({ id, metadata: JSON.stringify(patched) });
+      }
+      return patches.length;
+    },
   };
 
-  return { store, stored, updates };
+  return { store, stored, updates, metaById };
 }
 
 /** Create a mock LLM that returns a fixed insight string (or null to simulate failure) */
@@ -147,7 +165,7 @@ describe("clusterAndConsolidate", () => {
       makeEntry({ id: "c", text: "TypeScript improves developer experience", vector: [0.92, 0.08, 0], importance: 0.6 }),
     ];
 
-    const { store, stored, updates } = createMockStore();
+    const { store, stored, updates } = createMockStore(entries);
     const llm = createMockLLM(() => "TypeScript benefits for development");
     const embedder = createMockEmbedder([0.5, 0.5, 0]);
 
@@ -184,6 +202,37 @@ describe("clusterAndConsolidate", () => {
       expect(meta.evolution.consolidatedInto).toBe(stored[0].id);
       // Status should remain active (not changed)
       expect(meta.evolution.status).toBe("active");
+    }
+  });
+
+  // 2026-08-14 Bug-2 回归：旧路径 insight 源回写与 pattern 源回写都从同一个旧内存串
+  // 起底 patch，后者会把前者刚写库的 consolidatedInto 抹掉——凡走到 pattern 抽取的
+  // cluster，源条目的 consolidatedInto 全丢。新路径两段批量都以最新态起底，叠加共存。
+  it("Bug-2 回归：pattern 源回写后 consolidatedInto 与 contributedToPattern 并存（最终态）", async () => {
+    const entries = [
+      makeEntry({ id: "a", text: "TypeScript is great", vector: [0.9, 0.1, 0], importance: 0.8 }),
+      makeEntry({ id: "b", text: "TypeScript is safe", vector: [0.88, 0.12, 0], importance: 0.7 }),
+      makeEntry({ id: "c", text: "TypeScript is productive", vector: [0.92, 0.08, 0], importance: 0.6 }),
+    ];
+    const { store, stored, metaById } = createMockStore(entries);
+    const llm = createMockLLM(() => "TS insight", () => "TS pattern");
+    const embedder = createMockEmbedder([0.5, 0.5, 0]);
+
+    const result = await clusterAndConsolidate({
+      entries, embedder, llm: llm as unknown as LLMClient, store,
+      scope: "project:test", minClusterSize: 3, clusterThreshold: 0.75,
+      extractPatterns: true,
+    });
+
+    expect(result.insightsGenerated).toBe(1);
+    expect(result.patternsExtracted).toBe(1);
+    const insight = stored.find(e => JSON.parse(e.metadata!).cluster_insight === true)!;
+    const pattern = stored.find(e => JSON.parse(e.metadata!).cross_memory_pattern === true)!;
+    for (const id of ["a", "b", "c"]) {
+      const final = metaById.get(id) as { evolution: Record<string, unknown> };
+      expect(final.evolution.consolidatedInto).toBe(insight.id); // 旧路径这里被 pattern 批抹成 undefined
+      expect(final.evolution.contributedToPattern).toBe(pattern.id);
+      expect(final.evolution.status).toBe("active"); // 3b 不动 status
     }
   });
 
@@ -237,6 +286,9 @@ describe("clusterAndConsolidate", () => {
       },
       async update(id, upd) {
         return { id, text: "", vector: [], category: "events", scope: "project:test", importance: 0.5, timestamp: Date.now(), metadata: upd.metadata || "{}" } as MemoryEntry;
+      },
+      async patchMetadataBatch(patches: Array<{ id: string; patchFn: (meta: Record<string, unknown>, entry: MemoryEntry) => Record<string, unknown> }>) {
+        return patches.length; // 本用例只断言 insight 幂等，源回写记录不参与断言
       },
     };
 

@@ -20,7 +20,7 @@ const testConfig: Partial<ActivityCounterConfig> = {
 const A = "cc:project:a";
 const B = "cc:project:b";
 
-describe("activity-counter (HP-3, per-scope)", () => {
+describe("activity-counter (HP-3, per-scope)", async () => {
   beforeEach(() => {
     mkdirSync(TMP_DIR, { recursive: true });
     const p = testConfig.statsPath!;
@@ -31,95 +31,95 @@ describe("activity-counter (HP-3, per-scope)", () => {
     rmSync(TMP_DIR, { recursive: true, force: true });
   });
 
-  describe("incrementWriteCount", () => {
-    it("starts at 0 and increments by 1 for a scope", () => {
+  describe("incrementWriteCount", async () => {
+    it("starts at 0 and increments by 1 for a scope", async () => {
       expect(getWriteCount(A, testConfig)).toBe(0);
-      expect(incrementWriteCount(A, 1, testConfig)).toBe(1);
-      expect(incrementWriteCount(A, 1, testConfig)).toBe(2);
+      expect(await incrementWriteCount(A, 1, testConfig)).toBe(1);
+      expect(await incrementWriteCount(A, 1, testConfig)).toBe(2);
       expect(getWriteCount(A, testConfig)).toBe(2);
     });
 
-    it("increments by arbitrary n", () => {
-      incrementWriteCount(A, 5, testConfig);
+    it("increments by arbitrary n", async () => {
+      await incrementWriteCount(A, 5, testConfig);
       expect(getWriteCount(A, testConfig)).toBe(5);
-      incrementWriteCount(A, 3, testConfig);
+      await incrementWriteCount(A, 3, testConfig);
       expect(getWriteCount(A, testConfig)).toBe(8);
     });
 
-    it("counts each scope independently", () => {
-      incrementWriteCount(A, 4, testConfig);
-      incrementWriteCount(B, 1, testConfig);
+    it("counts each scope independently", async () => {
+      await incrementWriteCount(A, 4, testConfig);
+      await incrementWriteCount(B, 1, testConfig);
       expect(getWriteCount(A, testConfig)).toBe(4);
       expect(getWriteCount(B, testConfig)).toBe(1);
     });
   });
 
-  describe("resetWriteCount", () => {
-    it("resets only the given scope, leaving others intact", () => {
-      incrementWriteCount(A, 7, testConfig);
-      incrementWriteCount(B, 5, testConfig);
-      resetWriteCount(A, testConfig);
+  describe("resetWriteCount", async () => {
+    it("resets only the given scope, leaving others intact", async () => {
+      await incrementWriteCount(A, 7, testConfig);
+      await incrementWriteCount(B, 5, testConfig);
+      await resetWriteCount(A, testConfig);
       expect(getWriteCount(A, testConfig)).toBe(0);
       expect(getWriteCount(B, testConfig)).toBe(5); // not starved by A's reset
     });
   });
 
-  describe("listScopesAboveThreshold", () => {
-    it("returns scopes at or above the threshold only", () => {
-      incrementWriteCount(A, 12, testConfig);
-      incrementWriteCount(B, 4, testConfig);
-      incrementWriteCount("cc:project:c", 10, testConfig);
+  describe("listScopesAboveThreshold", async () => {
+    it("returns scopes at or above the threshold only", async () => {
+      await incrementWriteCount(A, 12, testConfig);
+      await incrementWriteCount(B, 4, testConfig);
+      await incrementWriteCount("cc:project:c", 10, testConfig);
       const above = listScopesAboveThreshold(10, testConfig).sort();
       expect(above).toEqual(["cc:project:a", "cc:project:c"]);
     });
 
-    it("returns empty when no scope qualifies", () => {
-      incrementWriteCount(A, 2, testConfig);
+    it("returns empty when no scope qualifies", async () => {
+      await incrementWriteCount(A, 2, testConfig);
       expect(listScopesAboveThreshold(10, testConfig)).toEqual([]);
     });
   });
 
-  describe("getDistillTier", () => {
-    it("returns 'none' when below light threshold", () => {
-      incrementWriteCount(A, 2, testConfig);
+  describe("getDistillTier", async () => {
+    it("returns 'none' when below light threshold", async () => {
+      await incrementWriteCount(A, 2, testConfig);
       expect(getDistillTier(A, testConfig)).toBe("none");
     });
 
-    it("returns 'light' at light threshold", () => {
-      incrementWriteCount(A, 3, testConfig);
+    it("returns 'light' at light threshold", async () => {
+      await incrementWriteCount(A, 3, testConfig);
       expect(getDistillTier(A, testConfig)).toBe("light");
     });
 
-    it("returns 'standard' at standard threshold", () => {
-      incrementWriteCount(A, 10, testConfig);
+    it("returns 'standard' at standard threshold", async () => {
+      await incrementWriteCount(A, 10, testConfig);
       expect(getDistillTier(A, testConfig)).toBe("standard");
     });
 
-    it("returns 'deep' at and above deep threshold", () => {
-      incrementWriteCount(A, 20, testConfig);
+    it("returns 'deep' at and above deep threshold", async () => {
+      await incrementWriteCount(A, 20, testConfig);
       expect(getDistillTier(A, testConfig)).toBe("deep");
-      incrementWriteCount(A, 100, testConfig);
+      await incrementWriteCount(A, 100, testConfig);
       expect(getDistillTier(A, testConfig)).toBe("deep");
     });
   });
 
-  describe("resilience", () => {
-    it("handles missing stats file gracefully", () => {
+  describe("resilience", async () => {
+    it("handles missing stats file gracefully", async () => {
       expect(getWriteCount(A, testConfig)).toBe(0);
       expect(getDistillTier(A, testConfig)).toBe("none");
       expect(listScopesAboveThreshold(1, testConfig)).toEqual([]);
     });
 
-    it("handles corrupt stats file gracefully", () => {
+    it("handles corrupt stats file gracefully", async () => {
       writeFileSync(testConfig.statsPath!, "not-json{{{");
       expect(getWriteCount(A, testConfig)).toBe(0);
     });
 
-    it("treats the legacy global format as empty (no migration)", () => {
+    it("treats the legacy global format as empty (no migration)", async () => {
       writeFileSync(testConfig.statsPath!, JSON.stringify({ writesSinceLastDistill: 42, lastResetAt: 1 }));
       expect(getWriteCount(A, testConfig)).toBe(0);
       // first increment starts a fresh per-scope map
-      expect(incrementWriteCount(A, 1, testConfig)).toBe(1);
+      expect(await incrementWriteCount(A, 1, testConfig)).toBe(1);
     });
   });
 });

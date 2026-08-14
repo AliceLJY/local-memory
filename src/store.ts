@@ -467,7 +467,7 @@ export class MemoryStore implements MemoryStorePort {
       const statsPath = this.activityStatsPath();
       const countByScope = new Map<string, number>();
       for (const e of toWrite) countByScope.set(e.scope, (countByScope.get(e.scope) ?? 0) + 1);
-      for (const [scope, n] of countByScope) incrementWriteCount(scope, n, { statsPath });
+      for (const [scope, n] of countByScope) await incrementWriteCount(scope, n, { statsPath });
     } catch { /* activity tracking is best-effort */ }
     return toWrite.length;
   }
@@ -497,7 +497,7 @@ export class MemoryStore implements MemoryStorePort {
     }, { expireMs: 30_000 });
     // Per-scope write count drives dream activation. Best-effort — never block a write.
     try {
-      incrementWriteCount(entry.scope, 1, { statsPath: this.activityStatsPath() });
+      await incrementWriteCount(entry.scope, 1, { statsPath: this.activityStatsPath() });
     } catch { /* activity tracking is best-effort */ }
     return entry;
   }
@@ -1110,11 +1110,17 @@ export class MemoryStore implements MemoryStorePort {
     // Atomic upsert via mergeInsert — replaces the previous delete+add two-step,
     // which could lose the row entirely on a crash between steps and exposed a
     // window where concurrent reads saw the id momentarily vanish.
-    await this.table!
-      .mergeInsert("id")
-      .whenMatchedUpdateAll()
-      .whenNotMatchedInsertAll()
-      .execute([updated]);
+    //
+    // 2026-08-14: 包进 store-write 锁与 upsert/storeBatch 对齐 —— 此前 update 是唯一
+    // 裸奔的写路径（dream 的 3a/3b/auto-gc 全走它），与其他进程的 mergeInsert 并发时
+    // 靠 LanceDB 乐观重试硬扛，是 commit conflict 的隐性源之一。
+    await withWriteLock("store-write", async () => {
+      await this.table!
+        .mergeInsert("id")
+        .whenMatchedUpdateAll()
+        .whenNotMatchedInsertAll()
+        .execute([updated]);
+    }, { expireMs: 30_000 });
 
     return updated;
   }
@@ -1193,6 +1199,93 @@ export class MemoryStore implements MemoryStorePort {
   /** Number of ids with in-flight metadata patches (test/diagnostic hook). */
   get pendingMetadataPatchCount(): number {
     return this.metadataPatchQueues.size;
+  }
+
+  /**
+   * Batched metadata read-modify-write: one store-write lock acquisition, one
+   * mergeInsert commit per batch of up to 200 rows — versus one commit per row
+   * through update()/patchMetadata().
+   *
+   * 为什么存在（2026-08-14 dream 写爆库根治）：LanceDB 每次写 commit 生成一个新
+   * manifest 版本文件，manifest 大小 ∝ 全表 fragment 数（实测 348-436KB/个）。dream
+   * 的 3a/3b/auto-gc 全部逐条 update，一轮 --auto 写出 ~6600 个 commit ≈ 2GB+ 的
+   * _versions 增量。本方法把"一批相关行的 metadata 变更"折成单次 commit。
+   *
+   * 语义要点：
+   * - patchFn 在 **锁内、以库里最新行为底座** 应用 —— 不接受调用方预先物化的完整
+   *   metadata 串。这是互审 R1 的 P0 修正：3b 持有的是 3a 之前 gather 的旧条目，
+   *   预物化串批量写会把 3a 刚提交的 version_group/sourceMemories 再抹一遍
+   *   （与它要修的 Bug-1 同病，只是从循环内搬到阶段间）。
+   * - patches 按数组序在同一临界区内依次应用：同批的 patchFn 之间可通过调用方
+   *   闭包传递决策（3a 靠它让 canonical 与 members 共享同一个 groupId）。
+   * - 单条 patchFn 抛错或 id 不存在/越权：跳过该条继续（stderr 记一行），不炸整批 ——
+   *   与 dream"单 scope 失败不阻断其他"的分级一致。返回成功写入数。
+   * - 与 patchMetadata 的 per-id 队列并存：本方法自身持 store-write 锁做批内原子，
+   *   跨进程窗口由锁消除；进程内与单条 patchMetadata 的交错等同于现状并发水平。
+   */
+  async patchMetadataBatch(
+    patches: Array<{
+      id: string;
+      patchFn: (meta: Record<string, unknown>, entry: MemoryEntry) => Record<string, unknown>;
+    }>,
+    scopeFilter?: string[],
+  ): Promise<number> {
+    await this.ensureInitialized();
+    if (patches.length === 0) return 0;
+
+    let written = 0;
+    // 分批：避免 OR 链过长（抄 getVectors 的范式，批更保守——每批一个 commit 本身就是收益）
+    const BATCH = 200;
+    for (let i = 0; i < patches.length; i += BATCH) {
+      const batch = patches.slice(i, i + BATCH);
+      written += await withWriteLock("store-write", async () => {
+        // 锁内读最新行
+        const conditions = batch.map(p => `id = '${escapeSqlLiteral(p.id)}'`).join(" OR ");
+        const rows = await this.table!.query().where(conditions).limit(batch.length).toArray();
+        const rowById = new Map<string, Record<string, unknown>>();
+        for (const row of rows) rowById.set(row.id as string, row as Record<string, unknown>);
+
+        const toWrite: MemoryEntry[] = [];
+        for (const { id, patchFn } of batch) {
+          const row = rowById.get(id);
+          if (!row) continue; // 行不存在：跳过（dream 处理途中被并发删除属正常）
+          const rowScope = (row.scope as string | undefined) ?? "";
+          if (!matchesScopeFilter(rowScope, scopeFilter)) continue;
+          let meta: Record<string, unknown>;
+          try {
+            const parsed: unknown = JSON.parse((row.metadata as string) || "{}");
+            meta = parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
+              ? (parsed as Record<string, unknown>)
+              : {};
+          } catch {
+            meta = {};
+          }
+          const entry: MemoryEntry = {
+            id: row.id as string,
+            text: row.text as string,
+            // null 向量防护同 update()：历史病行 → []，metadata-only 批量写不被绊倒
+            vector: row.vector ? Array.from(row.vector as Iterable<number>) : [],
+            category: row.category as MemoryEntry["category"],
+            scope: rowScope,
+            importance: Number(row.importance),
+            timestamp: Number(row.timestamp),
+            metadata: (row.metadata as string) || "{}",
+            language: (row.language as string) || "en",
+            fts_text: (row.fts_text as string) || (row.text as string),
+          };
+          try {
+            const patched = patchFn(meta, entry);
+            toWrite.push({ ...entry, metadata: JSON.stringify(patched) });
+          } catch (err) {
+            console.error(`[patchMetadataBatch] patchFn failed for ${id}, skipping: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        }
+        if (toWrite.length === 0) return 0;
+        await this.table!.mergeInsert("id").whenMatchedUpdateAll().whenNotMatchedInsertAll().execute(toWrite);
+        return toWrite.length;
+      }, { expireMs: 30_000 });
+    }
+    return written;
   }
 
   async bulkDelete(scopeFilter: string[], beforeTimestamp?: number): Promise<number> {

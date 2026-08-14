@@ -115,6 +115,22 @@ export function patchEvolution(
   return JSON.stringify(parsed);
 }
 
+/**
+ * patchEvolution 的对象版：给 patchMetadataBatch 的 patchFn 用（那条通道进出都是
+ * 已解析的 metadata 对象，不该为了复用字符串版而反复 stringify/parse）。
+ * 就地修改并返回同一对象，语义与 patchEvolution 一致（浅合并 evolution 子对象）。
+ */
+export function patchEvolutionOnMeta(
+  meta: Record<string, unknown>,
+  patch: Partial<EvolutionMetadata>,
+): Record<string, unknown> {
+  const existing = meta.evolution !== null && typeof meta.evolution === "object" && !Array.isArray(meta.evolution)
+    ? (meta.evolution as Partial<EvolutionMetadata>)
+    : undefined;
+  meta.evolution = { ...existing, ...patch };
+  return meta;
+}
+
 // ---------------------------------------------------------------------------
 // Predicates
 // ---------------------------------------------------------------------------

@@ -34,8 +34,41 @@ export interface VersionGroupMetadata {
 // ============================================================================
 
 /**
+ * 纯计算版：给一条 entry 的（已解析）metadata 打 version-group 三键，不写库。
+ * 就地修改并返回传入的 meta 对象。
+ *
+ * 供 consolidation-engine 3a 在 patchMetadataBatch 的 patchFn 里使用 —— patchFn 在
+ * 锁内拿到库中最新 meta，这里只负责"该设哪些键"；groupId 的决策（沿用已有组 or
+ * 新生成）由调用方在 cluster 级做一次、全 cluster 共享，修掉了旧路径"每个 member
+ * 重新从旧内存串判组 → 各造一个新 groupId"的 Bug-1 半边。
+ *
+ * @param preserveCreated canonical 语义：已有 version_created 则保留；member 语义传 false（总是刷新）
+ */
+export function computeVersionGroupPatch(
+  meta: Record<string, unknown>,
+  entry: MemoryEntry,
+  groupId: string,
+  preserveCreated: boolean,
+  nowIso: string,
+): Record<string, unknown> {
+  meta.version_group = groupId;
+  meta.version_rank = computeVersionRank(entry);
+  if (!preserveCreated || !meta.version_created) meta.version_created = nowIso;
+  return meta;
+}
+
+/**
  * Create a version group from two entries that would otherwise be merged.
  * Instead of archiving the weaker one, both get tagged with the same group.
+ *
+ * ⚠️ 2026-08-14 起 consolidation-engine 3a 不再走本函数（改走 computeVersionGroupPatch
+ * + patchMetadataBatch，每 cluster 一次 commit）。本函数保留原签名原行为（逐条 update，
+ * 每次调用 2 个 commit），唯一剩余调用方是 llm-consolidation.ts:executeMergeDecisions ——
+ * 该路径的调用链（auto-consolidation.ts）生产零 import 且被 RECALLNEST_LLM_CONSOLIDATION
+ * flag 关闭，是不可达死代码；其调用循环里还留着与 Bug-1 同族的 stale-canonical 问题
+ * （多 member 时每次从旧内存串判组）。**有意不修不批量化**：给不可达路径补测试无收益。
+ * 若 auto-consolidation 被接回生产路径，先修那个循环再上线（见 2026-08-14 dream 根治
+ * 方案 plan.md D 节否决项）。
  *
  * @param store      Memory store
  * @param canonical  The stronger entry (higher canonicalScore)
@@ -77,6 +110,13 @@ export async function createVersionGroup(
   );
 
   return groupId;
+}
+
+/** 3a 批量路径的 groupId 决策：canonical 已有组沿用，否则新生成（cluster 级一次）。 */
+export function resolveGroupId(canonical: MemoryEntry): string {
+  const canonMeta = parseMetadata(canonical.metadata);
+  const existing = typeof canonMeta.version_group === "string" ? canonMeta.version_group : null;
+  return existing ?? generateGroupId();
 }
 
 /**

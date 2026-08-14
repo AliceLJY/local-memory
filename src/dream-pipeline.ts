@@ -45,12 +45,14 @@ export interface DreamConfig {
   extractPatterns: boolean;
   /** Max entries to scan per consolidation run (default: 500) */
   maxEntriesPerRun: number;
-  /** Wall-clock budget for one `dream --auto` sweep, ms (default: 6h).
+  /** Wall-clock budget for one `dream --auto` sweep, ms (default: 2h).
    *  防跨天兜底闸,不是调度器。2026-07-24 那轮跑了 4 天 15 小时(见 cli.ts --auto 分支
    *  与 scripts/dream-consolidation.sh:57 的注释),期间堵死三天调度。
-   *  已知天花板:超预算后剩余 scope 直接丢弃,而每轮都从列表头重来 → 靠后的 scope 会被
-   *  系统性饿死。真解是 session scope TTL(只 dream 近 N 天活跃的),不是把预算调大——
-   *  scope 数 07-10 是 133、07-29 是 475,只增不减,加预算追不上。 */
+   *  2026-08-14: 6h→2h。transcript scope 已整体出队(原文层不参与巩固,cli.ts --auto
+   *  的 pruneWriteCounts(isTranscriptScope)),inline 队列只剩个位数 durable scope,
+   *  典型轮次分钟级;2h 是纯兜底。单 scope 路径(weekly memory / MCP dream tool)不走
+   *  本预算(budget/deadline 只存在于 cli.ts --auto 分支)。env 覆盖:
+   *  RECALLNEST_DREAM_BUDGET_MS。 */
   autoRunBudgetMs: number;
   /** Scopes the `--auto` sweep hands off to a dedicated schedule instead of running inline.
    *  Exact match only — a prefix rule would silently swallow future `memory-*` scopes.
@@ -76,7 +78,7 @@ export const DEFAULT_DREAM_CONFIG: DreamConfig = {
   minClusterSize: 3,
   extractPatterns: true,
   maxEntriesPerRun: 500,
-  autoRunBudgetMs: 6 * 60 * 60 * 1000,
+  autoRunBudgetMs: 2 * 60 * 60 * 1000,
   autoExcludeScopes: ["memory"],
   gc: DEFAULT_AUTO_GC_CONFIG,
 };
@@ -282,7 +284,7 @@ async function runDreamInner(params: {
   if (consolidatable.length < config.minClusterSize) {
     phases.push({ phase: "consolidate", detail: "skipped — too few active entries" });
     phases.push({ phase: "prune", detail: "skipped — too few entries for GC" });
-    resetWriteCount(scope, statsCfg);
+    await resetWriteCount(scope, statsCfg);
     return {
       ran: true,
       reason: "completed_early",
@@ -384,7 +386,7 @@ async function runDreamInner(params: {
   // 注意：清对之后，listScopesAboveThreshold 的 FIFO 自组织才真正开始工作 ——
   // 处理完的 scope 被 delete、下次攒够写入重新插入时排到队尾，被跳过的带原计数留在
   // 队首下轮优先。所以这里不需要额外的游标 / checkpoint 文件。
-  if (consolidateOutcome.ran) resetWriteCount(scope, statsCfg);
+  if (consolidateOutcome.ran) await resetWriteCount(scope, statsCfg);
 
   const health = assertDreamSweepHealth({
     llmPresent: llm != null,

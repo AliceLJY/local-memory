@@ -332,6 +332,7 @@ registerTool(
         getById: store.getById.bind(store),
         vectorSearch: store.vectorSearch.bind(store),
         update: async () => null, // no-op in dry-run
+        patchMetadataBatch: async () => 0, // no-op in dry-run（3a 批量写通道，2026-08-14）
       };
       const engine = new ConsolidationEngine(readOnlyStore, { clusterThreshold, mergeThreshold, maxEntriesPerRun: maxEntries }, getKGStore());
       const result = await engine.run(scope);

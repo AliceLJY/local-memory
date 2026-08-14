@@ -121,6 +121,29 @@ function createMockStore(entries: MemoryEntry[]): MemoryStore {
       entry.metadata = JSON.stringify(patchFn(meta, entry));
       return entry;
     },
+    // 2026-08-14 批量通道：语义同上面的单条 patchMetadata，按序逐条以最新行起底
+    async patchMetadataBatch(
+      patches: Array<{ id: string; patchFn: (meta: Record<string, unknown>, entry: MemoryEntry) => Record<string, unknown> }>,
+      _scopeFilter?: string[],
+    ) {
+      let written = 0;
+      for (const { id, patchFn } of patches) {
+        const entry = stored.find(e => e.id === id);
+        if (!entry) continue;
+        let meta: Record<string, unknown>;
+        try {
+          const parsed: unknown = JSON.parse(entry.metadata || "{}");
+          meta = parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
+            ? (parsed as Record<string, unknown>)
+            : {};
+        } catch {
+          meta = {};
+        }
+        entry.metadata = JSON.stringify(patchFn(meta, entry));
+        written++;
+      }
+      return written;
+    },
     async vectorSearch(_vec: number[], limit: number, _threshold: number, _scopes?: string[]) {
       return stored.slice(0, limit).map(e => ({ entry: e, score: 0.85 }));
     },
@@ -684,7 +707,9 @@ describe("shouldBlockDreamRun", () => {
 describe("autoRunBudgetMs default", () => {
   it("caps one --auto sweep well below a day", () => {
     // 07-24 那轮 4 天 15 小时，堵死三天调度。预算是防跨天的兜底闸。
-    expect(DEFAULT_DREAM_CONFIG.autoRunBudgetMs).toBe(6 * 60 * 60 * 1000);
+    // 2026-08-14: 6h→2h —— transcript 出队后 inline 队列只剩个位数 durable scope，
+    // 典型轮次分钟级，2h 是纯兜底（单 scope 路径不走本预算）。
+    expect(DEFAULT_DREAM_CONFIG.autoRunBudgetMs).toBe(2 * 60 * 60 * 1000);
     expect(DEFAULT_DREAM_CONFIG.autoRunBudgetMs).toBeLessThan(24 * 60 * 60 * 1000);
   });
 });

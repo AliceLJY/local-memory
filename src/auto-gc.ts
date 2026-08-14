@@ -14,7 +14,7 @@ import {
   parseEvolution,
   computeDecayScore,
   computeUsageAdjustedDecayScore,
-  buildArchivedMetadata,
+  patchEvolutionOnMeta,
   isActiveMemory,
 } from "./memory-evolution.js";
 import { loadRetentionPolicy, shouldArchiveByPolicy } from "./retention-policy.js";
@@ -169,13 +169,47 @@ async function runGcScan(
 
   // Pass 2: archive sweep.
   const useUsageAdjustedDecay = envConfig.usageDecay() && isUsageSignalActive();
+
+  // 2026-08-14 批量化（dream 写爆库根治）：候选先收集，页末统一一次 patchMetadataBatch
+  // —— 原逐条 update 每行一个 LanceDB commit（每天最多 100 个 manifest），现在页数级。
+  // activeCounts 仍在"选中"时即刻预递减，保持旧路径"逐行归档、后续行的 retention 判断
+  // 看到已减的 activeCount"语义（互审 C6）。selected 与 archivedCount 分开：前者控
+  // maxArchivePerRun 上限（选中即占额度），后者按批量写的实际写入数累计。
+  let selected = 0;
+  let pendingArchive: Array<{ id: string; ageDays: number }> = [];
+  const flushArchiveBatch = async (): Promise<void> => {
+    if (pendingArchive.length === 0) return;
+    const batch = pendingArchive;
+    pendingArchive = [];
+    const written = await store.patchMetadataBatch(
+      batch.map(({ id }) => ({
+        id,
+        patchFn: (meta: Record<string, unknown>) => patchEvolutionOnMeta(meta, { status: "archived" }),
+      })),
+    );
+    archivedCount += written;
+    // F-1: Audit log — record archive operations (silent on failure)。按提交批记录：
+    // 批内个别行被并发删除时 audit 会多记一条，best-effort 语义可接受（旧路径里
+    // update 失败是直接炸掉整个 GC，连 audit 都到不了）。
+    for (const { id, ageDays } of batch) {
+      try {
+        auditLogger?.log({
+          operation: "archive",
+          memoryId: id,
+          actor: "system",
+          details: `auto-gc: age=${Math.floor(ageDays)}d`,
+        });
+      } catch { /* Audit must never block GC */ }
+    }
+  };
+
   outer:
   for (let offset = 0; ; offset += GC_PAGE_SIZE) {
     const page = await store.listPage({ limit: GC_PAGE_SIZE, offset });
     totalChecked += page.length;
 
   for (const entry of page) {
-    if (archivedCount >= config.maxArchivePerRun) break outer;
+    if (selected >= config.maxArchivePerRun) break outer;
 
     // Only archive active memories
     if (!isActiveMemory(entry.metadata)) continue;
@@ -215,19 +249,10 @@ async function runGcScan(
     }
 
     if (shouldArchive) {
-      const archivedMeta = buildArchivedMetadata(entry.metadata);
-      await store.update(entry.id, { metadata: archivedMeta });
-      archivedCount++;
-      // F-1: Audit log — record archive operation (silent on failure)
-      try {
-        auditLogger?.log({
-          operation: "archive",
-          memoryId: entry.id,
-          actor: "system",
-          details: `auto-gc: age=${Math.floor(ageDays)}d`,
-        });
-      } catch { /* Audit must never block GC */ }
-      // Decrement active count for the scope (memory is no longer active)
+      pendingArchive.push({ id: entry.id, ageDays });
+      selected++;
+      // Decrement active count for the scope（预递减：选中即视为不再 active，
+      // 同页后续行的 retention 判断与旧逐行路径看到同样的计数）
       const scope = entry.scope ?? "";
       const prev = activeCounts.get(scope) ?? 0;
       if (prev > 0) {
@@ -236,8 +261,13 @@ async function runGcScan(
     }
   }
 
+    // 页末提交本页候选（含 break outer 前最后一页扫过的部分）
+    await flushArchiveBatch();
     if (page.length < GC_PAGE_SIZE) break;
   }
+
+  // break outer 跳出时 pendingArchive 可能还有未提交的候选 —— 上限命中不弃单（互审 C6）
+  await flushArchiveBatch();
 
   return { archivedCount, totalChecked };
 }

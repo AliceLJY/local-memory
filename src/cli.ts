@@ -40,7 +40,9 @@ import { runDoctor, formatDoctorResults } from "./doctor.js";
 import { persistCaseMemory, persistMemory, persistWorkflowPattern } from "./capture-engine.js";
 import { scanMemoryPromotions, buildPromoteScanDeps, formatPromoteScanResult } from "./memory-promotion.js";
 import { runDream, formatDreamResult, formatDreamMetrics, DEFAULT_DREAM_CONFIG, classifyDreamFailure, shouldBlockDreamRun, partitionAutoDreamScopes } from "./dream-pipeline.js";
-import { listScopesAboveThreshold } from "./activity-counter.js";
+import { listScopesAboveThreshold, pruneWriteCounts } from "./activity-counter.js";
+import { isTranscriptScope } from "./memory-boundaries.js";
+import { maybeRunGc } from "./auto-gc.js";
 import {
   CaseMemoryInputSchema,
   type CaseMemoryInput,
@@ -1602,20 +1604,54 @@ program
       const eligible = listScopesAboveThreshold(DEFAULT_DREAM_CONFIG.minWritesForDream, { statsPath: activityStatsPath });
       // 巨型 scope 交给专用 schedule,不占日常轮次的 wall-clock 预算(理由见
       // DreamConfig.autoExcludeScopes:07-30 那轮 6h 只跑了 15/507,而 memory 独占 79% 的条数)。
-      const { run: scopes, deferred } = partitionAutoDreamScopes(eligible, DEFAULT_DREAM_CONFIG.autoExcludeScopes);
+      const { run: nonMemoryScopes, deferred } = partitionAutoDreamScopes(eligible, DEFAULT_DREAM_CONFIG.autoExcludeScopes);
       if (deferred.length > 0) {
         // 不静默:被挪走的 scope 必须在日志里看得见,否则"今天怎么没跑 memory"只能靠翻代码回答。
         // 前缀刻意用 `[dream]` 而不是 `dream --auto:`——后者是 dream-checkup.sh 抓「达标 scope 数」
         // 的锚点,多一行同前缀的会混进它的取数。
         console.log(`[dream] ${deferred.length} 个 scope 交给专用 schedule，本轮不跑 → ${deferred.join(", ")}`);
       }
+
+      // 2026-08-14 transcript scope 整体出队（dream 写爆库根治的准入侧）：
+      // transcript 是原文层（shared-behaviors §5.3——原文归 Deja/ingest 管，提炼归
+      // pivot 池），历史会话被 ingest 批量灌入就把写计数打过门槛，2026-08 实测达标
+      // 队列 95% 是 codex/cc 会话 scope、dream 派生产物 96.6% 落在不参与日常检索的
+      // transcript scope 上——巩固算力几乎全部空转，还把 _versions 写到 7.7GB。
+      // 出队同时清扫计数（含未达标条目——历史会话只增不减，不清则 stats 文件无限膨胀；
+      // ingest 白天会再写回、次日 04:00 再清，稳态保持小）。判定用 memory-boundaries
+      // 的 isTranscriptScope（接新端时那边本来就要求同步前缀清单）。
+      const scopes = nonMemoryScopes.filter(s => !isTranscriptScope(s));
+      const transcriptEligible = nonMemoryScopes.length - scopes.length;
+      const prunedTranscripts = await pruneWriteCounts(isTranscriptScope, { statsPath: activityStatsPath });
+      if (prunedTranscripts.length > 0 || transcriptEligible > 0) {
+        console.log(
+          `[dream] transcript 原文层不参与巩固（§5.3）：清扫 ${prunedTranscripts.length} 个 scope 的写计数` +
+          `（其中达标 ${transcriptEligible} 个）→ 样例: ${prunedTranscripts.slice(0, 5).join(", ")}`,
+        );
+      }
+
+      // 2026-08-14 全库 GC 兜底（互审 C5-P0）：dream 是 auto-gc 的唯一生产触发点，而
+      // maybeRunGc 藏在 runDreamInner 里 —— transcript 出队后 durable 队列可为空，若在
+      // 进循环前就 exit，全库 GC 检查会静默消失、归档管线停转。这里无条件补调一次：
+      // GC 自带 24h stamp + 跨进程锁，循环内已触发过则本次 too_soon 跳过，幂等零成本。
+      // 失败只记日志不并入 blocked：GC 是 best-effort 维护，明天还有机会。
+      const runGcBackstop = async (): Promise<void> => {
+        try {
+          const gc = await maybeRunGc(store, DEFAULT_DREAM_CONFIG.gc);
+          console.log(`[dream] 全库 GC 兜底: ${gc.triggered ? `archived ${gc.archivedCount}` : `skipped — ${gc.reason}`}`);
+        } catch (err) {
+          console.error(`[dream] 全库 GC 兜底失败（不阻断本轮判定）: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      };
+
       if (scopes.length === 0) {
-        // 两种空:一种是真没人达标,一种是达标的全被挪走了——混成一句会让排障从这里开始跑偏。
+        // 三种空分开说:真没人达标 / 达标的全被挪走或全是 transcript——混成一句会让排障跑偏。
         console.log(
           eligible.length === 0
             ? "dream --auto: 无达标 scope（写计数均低于门槛）"
-            : "dream --auto: 达标 scope 全部交给专用 schedule，本轮无事可做",
+            : "dream --auto: 达标 scope 均为 transcript（已清扫）或已交专用 schedule，本轮无事可做",
         );
+        await runGcBackstop();
         console.log("[[DREAM_STATUS]] skip");
         process.exit(0);
       }
@@ -1664,6 +1700,10 @@ program
           console.error(`[scope=${scope}] dream failed: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
         }
       }
+
+      // 全库 GC 兜底：循环内的 per-scope GC 若已触发过，这里 too_soon 幂等跳过；
+      // 若全部 scope 都 skip/失败没走到 prune 阶段，这里补上当天唯一一次 GC 检查。
+      await runGcBackstop();
 
       // 旧语义是「任一 scope 抛异常即 blocked」，在 475 个 scope 的规模下等于「有一个撞上
       // store-write 锁就整轮红」，而整轮红会让 shell 脚本重试 → 重跑全量。改为：代码/数据

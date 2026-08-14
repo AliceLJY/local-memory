@@ -71,6 +71,22 @@ describe("B-2: Archive Strategy", () => {
             entry.metadata = patch.metadata;
             return entry;
           },
+          // 2026-08-14 auto-gc 批量归档通道：以 data 最新行起底应用 patchFn（生产语义）
+          patchMetadataBatch: async (
+            patches: Array<{ id: string; patchFn: (meta: Record<string, unknown>, entry: unknown) => Record<string, unknown> }>,
+          ) => {
+            let written = 0;
+            for (const { id, patchFn } of patches) {
+              const entry = data.get(id);
+              if (!entry) continue;
+              let meta: Record<string, unknown>;
+              try { meta = JSON.parse(entry.metadata || "{}") as Record<string, unknown>; } catch { meta = {}; }
+              entry.metadata = JSON.stringify(patchFn(meta, entry));
+              updates.push({ id, metadata: entry.metadata });
+              written++;
+            }
+            return written;
+          },
         },
         updates,
       };
