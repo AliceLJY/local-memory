@@ -11,6 +11,13 @@ if [ -f "$SCRIPT_DIR/.env" ]; then
   source "$SCRIPT_DIR/.env"
   set +a
 fi
+# 2026-08-16: 走系统代理。mini 直连 api.jina.ai 会撞 ERR_TLS_CERT_ALTNAME_INVALID（DNS 污染，时好时坏），
+# 表现为 "Failed to generate embedding: Connection error"（08-15 ingest 日志实证）；bun fetch 遵守 HTTPS_PROXY。
+if [ -r "$HOME/.proxy.env" ]; then
+  set -a
+  source "$HOME/.proxy.env"
+  set +a
+fi
 export PATH="$HOME/.bun/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 
 LOG_DIR="$SCRIPT_DIR/logs"
