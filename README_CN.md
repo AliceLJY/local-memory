@@ -2,7 +2,7 @@
 
 # RecallNest
 
-**面向任意 MCP 客户端的共享记忆层 —— Claude Code、Codex、Kimi、Antigravity、Gemini CLI**
+**面向任意 MCP 客户端的共享记忆层 —— Claude Code、Codex、Kimi、Antigravity (agy)**
 
 *一套记忆，每个终端，上下文跨窗口延续。*
 
@@ -322,7 +322,7 @@ v2.2 强化了检索质量；v2.3 通过标准 Connector 框架和运维健康�
 
 RecallNest 提供两种接口：
 
-- **MCP** —— 给任意 MCP 客户端使用：Claude Code、Codex、Kimi、Antigravity、Gemini CLI（原生工具访问）
+- **MCP** —— 给任意 MCP 客户端使用：Claude Code、Codex、Kimi、Antigravity (agy)（原生工具访问）
 - **HTTP API** —— 给自定义 Agent、SDK 应用和任何 HTTP 客户端使用
 
 ### Agent 框架示例
@@ -498,7 +498,7 @@ RecallNest 持续维护中。所有主要架构阶段已完成——完整路线
 RecallNest 起源于 [memory-lancedb-pro](https://github.com/CortexReach/memory-lancedb-pro) 的 fork，共享混合检索、衰减建模、记忆即系统的核心理念。关键区别：
 
 - **memory-lancedb-pro** 是 OpenClaw 插件——为单个 OpenClaw Agent 添加长期记忆。
-- **RecallNest** 是独立记忆层——通过 MCP + HTTP API 同时服务任意 MCP 客户端（Claude Code、Codex、Kimi、Antigravity、Gemini CLI），内建会话连续性、结构化资产和冲突管理。
+- **RecallNest** 是独立记忆层——通过 MCP + HTTP API 同时服务任意 MCP 客户端（Claude Code、Codex、Kimi、Antigravity (agy)），内建会话连续性、结构化资产和冲突管理。
 
 ## 致谢
 

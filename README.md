@@ -2,7 +2,7 @@
 
 # RecallNest
 
-**Shared Memory Layer for Any MCP Client — Claude Code, Codex, Kimi, Antigravity, Gemini CLI**
+**Shared Memory Layer for Any MCP Client — Claude Code, Codex, Kimi, Antigravity (agy)**
 
 *One memory. Every terminal. Context that survives across windows.*
 
@@ -266,8 +266,8 @@ v2.2 hardened retrieval quality; v2.3 opens RecallNest to external data sources 
 ┌──────────────────────────────────────────────────────────┐
 │                     Client Layer                          │
 ├──────────┬──────────┬──────────┬──────────────────────────┤
-│ Claude   │ Gemini   │ Codex    │ Custom Agents / curl     │
-│ Code     │ CLI      │          │                          │
+│ Claude   │ Anti-    │ Codex    │ Custom Agents / curl     │
+│ Code     │ gravity  │          │                          │
 └────┬─────┴────┬─────┴────┬─────┴──────┬──────────────────┘
      │          │          │            │
      └──── MCP (stdio) ───┘     HTTP API (port 4318)
@@ -323,7 +323,7 @@ v2.2 hardened retrieval quality; v2.3 opens RecallNest to external data sources 
 
 RecallNest serves two interfaces:
 
-- **MCP** — for any MCP client: Claude Code, Codex, Kimi, Antigravity, Gemini CLI (native tool access)
+- **MCP** — for any MCP client: Claude Code, Codex, Kimi, Antigravity (native tool access)
 - **HTTP API** — for custom agents, SDK-based apps, and any HTTP client
 
 ### Agent framework examples
@@ -501,7 +501,7 @@ Maintainers: see [Publishing RecallNest](https://github.com/AliceLJY/recallnest/
 RecallNest started as a fork of [memory-lancedb-pro](https://github.com/CortexReach/memory-lancedb-pro) and shares its core ideas around hybrid retrieval, decay modeling, and memory-as-engineering-system. The key difference:
 
 - **memory-lancedb-pro** is an OpenClaw plugin — it adds long-term memory to a single OpenClaw agent.
-- **RecallNest** is a standalone memory layer — it serves any MCP client (Claude Code, Codex, Kimi, Antigravity, Gemini CLI) simultaneously through MCP + HTTP API, with session continuity, structured assets, and conflict management built in.
+- **RecallNest** is a standalone memory layer — it serves any MCP client (Claude Code, Codex, Kimi, Antigravity) simultaneously through MCP + HTTP API, with session continuity, structured assets, and conflict management built in.
 
 ## Credit
 
