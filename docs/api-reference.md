@@ -298,7 +298,7 @@ Each memory item supports:
       "source": "agent",
       "storedAt": "2026-03-16T02:11:00.000Z",
       "disposition": "stored",
-      "canonicalKey": "entities:recallnest-is-the-shared-memory-layer-for-claude-code-codex-and-gemini-cli"
+      "canonicalKey": "entities:recallnest-is-the-shared-memory-layer-for-claude-code-codex-and-agy"
     }
   ]
 }

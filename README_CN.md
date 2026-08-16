@@ -96,7 +96,7 @@ curl http://localhost:4318/v1/stats
 
 ```bash
 bash integrations/claude-code/setup.sh
-bash integrations/gemini-cli/setup.sh
+bash integrations/agy/setup.sh
 bash integrations/codex/setup.sh
 ```
 

@@ -19,7 +19,7 @@ bash "$SCRIPT_DIR/codex/setup.sh"
 echo ""
 
 echo "--- Gemini CLI ---"
-bash "$SCRIPT_DIR/gemini-cli/setup.sh"
+bash "$SCRIPT_DIR/agy/setup.sh"
 echo ""
 
 echo "======================================"
