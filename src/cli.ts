@@ -1589,10 +1589,11 @@ program
 program
   .command("dream")
   .description("运行 dream 离线整固管线 (Orient/Gather/Consolidate/Prune)")
-  .option("--scope <scope>", "目标 scope(前缀或精确)", "cc")
+  .option("--scope <scope>", "目标 scope(默认前缀家族匹配;加 --exact-scope 变精确)", "cc")
+  .option("--exact-scope", "把 --scope 当成一个具体 scope 名精确匹配,不做前缀家族展开(调度入口必带)")
   .option("--auto", "扫描 activity-counter 中写计数达标的所有 scope，逐个跑 dream（单 scope 失败不阻断其他）")
   .option("--force", "跳过 min-writes 门槛强制运行")
-  .action(async (options: { scope: string; auto?: boolean; force?: boolean }) => {
+  .action(async (options: { scope: string; auto?: boolean; force?: boolean; exactScope?: boolean }) => {
     const config = loadConfig();
     const { store, embedder, llm } = createComponents(config);
     // Same activity-stats file the store writes per-scope counts to (beside the LanceDB dir).
@@ -1612,6 +1613,22 @@ program
         console.log(`[dream] ${deferred.length} 个 scope 交给专用 schedule，本轮不跑 → ${deferred.join(", ")}`);
       }
 
+      // 2026-08-16 策略排除（互审 C2/K5）：与上面的 deferred **语义不同,别合并**——
+      // deferred 是"别处会跑",这里是"没有任何 schedule 会跑"。日志措辞必须分开,
+      // 否则将来查"pivot 怎么没巩固"会被误导去找那个并不存在的专用 job。
+      // 同时清写计数:runDream 对它返回 skipped 不会 resetWriteCount,不清则计数无限
+      // 累积、每天都进达标队列白跑一次(这正是 07-02 那个"处理完不出队"bug 的形状)。
+      const neverDream = DEFAULT_DREAM_CONFIG.neverDreamScopes;
+      const policyExcluded = nonMemoryScopes.filter(s => neverDream.includes(s));
+      const afterPolicy = nonMemoryScopes.filter(s => !neverDream.includes(s));
+      if (policyExcluded.length > 0) {
+        const prunedPolicy = await pruneWriteCounts(s => neverDream.includes(s), { statsPath: activityStatsPath });
+        console.log(
+          `[dream] ${policyExcluded.length} 个 scope 按策略不参与巩固（neverDreamScopes，无专用 schedule）` +
+          ` → ${policyExcluded.join(", ")}；已清写计数 ${prunedPolicy.length} 个`,
+        );
+      }
+
       // 2026-08-14 transcript scope 整体出队（dream 写爆库根治的准入侧）：
       // transcript 是原文层（shared-behaviors §5.3——原文归 Deja/ingest 管，提炼归
       // pivot 池），历史会话被 ingest 批量灌入就把写计数打过门槛，2026-08 实测达标
@@ -1620,8 +1637,8 @@ program
       // 出队同时清扫计数（含未达标条目——历史会话只增不减，不清则 stats 文件无限膨胀；
       // ingest 白天会再写回、次日 04:00 再清，稳态保持小）。判定用 memory-boundaries
       // 的 isTranscriptScope（接新端时那边本来就要求同步前缀清单）。
-      const scopes = nonMemoryScopes.filter(s => !isTranscriptScope(s));
-      const transcriptEligible = nonMemoryScopes.length - scopes.length;
+      const scopes = afterPolicy.filter(s => !isTranscriptScope(s));
+      const transcriptEligible = afterPolicy.length - scopes.length;
       const prunedTranscripts = await pruneWriteCounts(isTranscriptScope, { statsPath: activityStatsPath });
       if (prunedTranscripts.length > 0 || transcriptEligible > 0) {
         console.log(
@@ -1649,7 +1666,7 @@ program
         console.log(
           eligible.length === 0
             ? "dream --auto: 无达标 scope（写计数均低于门槛）"
-            : "dream --auto: 达标 scope 均为 transcript（已清扫）或已交专用 schedule，本轮无事可做",
+            : "dream --auto: 达标 scope 均为 transcript（已清扫）、已交专用 schedule 或按策略排除，本轮无事可做",
         );
         await runGcBackstop();
         console.log("[[DREAM_STATUS]] skip");
@@ -1683,7 +1700,11 @@ program
         }
         processed++;
         try {
-          const result = await runDream({ store, llm, embedder, scope, force: Boolean(options.force), activityStatsPath, kgStore });
+          // scopeMatch: "exact" —— 这些 scope 名直接来自 activity-stats 的键，是具体
+          // scope 不是 family selector。无冒号的键（实测 11 个，含 `cc` / `global` /
+          // `memory`）走前缀会把整个家族卷进来：`cc` 一旦达标就以 `LIKE 'cc%'` 把 08-14
+          // 刚出队的 transcript 原文层整批捞回（2026-08-16 互审 K4）。
+          const result = await runDream({ store, llm, embedder, scope, force: Boolean(options.force), activityStatsPath, kgStore, scopeMatch: "exact" });
           tally[result.output.kind]++;
           effectsTotal += result.output.effectsWritten;
           if (result.output.degraded) degradedScopes.push(`${scope}=${result.output.degraded}`);
@@ -1742,6 +1763,9 @@ program
         force: Boolean(options.force),
         activityStatsPath,
         kgStore,
+        // 手动调用默认保留 family（`--scope cc` 扫 `cc:*` 是既有用法）；
+        // 调度入口（weekly job）必须显式带 --exact-scope。
+        scopeMatch: options.exactScope ? "exact" : "family",
       });
 
       console.log(formatDreamResult(result));

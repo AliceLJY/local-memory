@@ -27,13 +27,20 @@ NOW=$(date '+%Y-%m-%d %H:%M:%S')
 # 接成真正的模式开关。动机:巨型 scope 需要独立排期,否则它一个人吃光 --auto 的 wall-clock
 # 预算——07-30 那轮 6h 只跑完 15/507 个 scope,而 memory 一个占了全部记忆条数的 79%。
 #   未设 DREAM_SCOPE  → --auto,日常轮次(com.recallnest.dream-consolidation,每天 04:00)
-#   DREAM_SCOPE=<s>   → --scope <s>,专用轮次(com.recallnest.dream-memory-weekly,周日 12:00)
-# 排除名单在代码侧:dream-pipeline.ts 的 DreamConfig.autoExcludeScopes,两边要对得上。
+#   DREAM_SCOPE=<s>   → --scope <s> --exact-scope,专用轮次(com.recallnest.dream-memory-weekly,周日 12:00)
+# 代码侧有两份名单,**语义不同别混**(dream-pipeline.ts 的 DreamConfig):
+#   autoExcludeScopes  = 交给专用 schedule 跑(deferred,别处会跑) —— 当前 ["memory"],就是本 job
+#   neverDreamScopes   = 根本不参与巩固(never,没有任何 job 会跑) —— 当前 ["memory:pivot"]
+#
+# 2026-08-16 补 --exact-scope:store 层对不含冒号的 scope 默认是**前缀**匹配,于是
+# `--scope memory` 连 `memory:pivot`(手写提炼层)一起卷进同一轮聚类,实测已产生 14 条
+# 来源横跨两个 scope 的 insight。别指望把 DREAM_SCOPE 写成 `memory:` 来绕开——那是精确
+# 匹配一个不存在的 scope,命中 0 行、永久 noop,而 STATUS 照样报 ok,存在性闸也发现不了。
 #
 # Last run state (调度面调试 + 漏跑判断) 也按模式分开,否则两个 job 会互相盖掉对方的
 # "上次跑成功"时间,漏跑判断直接失真。
 if [ -n "${DREAM_SCOPE:-}" ]; then
-    DREAM_ARGS="--scope $DREAM_SCOPE"
+    DREAM_ARGS="--scope $DREAM_SCOPE --exact-scope"
     MODE_LABEL="scope=$DREAM_SCOPE"
     LAST_RUN_FILE="${HOME}/recallnest/data/.last-dream-run-${DREAM_SCOPE}"
 else

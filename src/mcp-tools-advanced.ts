@@ -633,10 +633,11 @@ registerTool(
   "dream",
   "Run a full memory consolidation cycle (Orient, Gather, Consolidate, Prune). Side effect: may archive low-value entries and generate insight memories. Use when memory count is high and you need periodic maintenance.",
   {
-    scope: z.string().min(1).max(160).optional().describe("Scope to consolidate, e.g. 'project:myapp'. Omit to consolidate across all scopes"),
+    scope: z.string().min(1).max(160).optional().describe("Scope to consolidate, e.g. 'project:myapp'. Matched exactly by default — a scope name is treated as itself, not as a prefix family. Omit to consolidate across all scopes"),
     force: z.boolean().default(false).describe("Set to true to force consolidation even if recent write count is below the automatic threshold"),
+    familyMatch: z.boolean().default(false).describe("Set to true to also consolidate child scopes sharing this prefix (e.g. 'memory' would additionally pull in 'memory:pivot'). Off by default: merging sibling scopes into one clustering round mixes unrelated material."),
   },
-  async ({ scope, force }) => {
+  async ({ scope, force, familyMatch }) => {
     const resolvedScope = scope || "project:default";
     const components = getComponents();
     const result = await runDream({
@@ -646,6 +647,10 @@ registerTool(
       scope: resolvedScope,
       force,
       kgStore: getKGStore(),
+      // MCP 调用方给的都是具体 scope 名，family 语义在这里是意外面：
+      // `dream({scope: "memory"})` 会连 `memory:pivot` 一起卷进去（2026-08-16 实测）。
+      // 默认改精确是**行为变更**，要 family 得显式要。
+      scopeMatch: familyMatch ? "family" : "exact",
     });
     return {
       content: [{ type: "text" as const, text: formatDreamResult(result) }],

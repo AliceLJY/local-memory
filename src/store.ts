@@ -9,7 +9,7 @@ import { dirname, join } from "node:path";
 import { logWarn } from "./stderr-log.js";
 import { readConsistencyInterval as envReadConsistencyInterval } from "./env-config.js";
 import type { DurableMemoryCategory } from "./memory-schema.js";
-import { matchesScopeFilter } from "./scope-policy.js";
+import { matchesScopeFilter, type ScopeMatchMode } from "./scope-policy.js";
 import { detectEmotionIfEnabled } from "./emotion-detector.js";
 import { withWriteLock } from "./distill-lock.js";
 import { incrementWriteCount } from "./activity-counter.js";
@@ -221,6 +221,27 @@ export function validateStoragePath(dbPath: string): string {
 // ============================================================================
 
 const TABLE_NAME = "memories";
+
+/**
+ * 把 scopeFilter 编译成 SQL 条件。**store 里所有 scope 过滤的唯一出处**
+ * （2026-08-16 收敛，此前同一条规则在 6 个方法里各抄了一遍）。
+ *
+ * `mode` 见 scope-policy.ts 的 ScopeMatchMode：默认 `family` = 历史行为（有冒号精确 /
+ * 无冒号前缀），`exact` = 调用方明说给的是具体 scope 名、一律精确。
+ * 应用层双检 `matchesScopeFilter(row, filter, mode)` 必须传同一个 mode，否则 SQL 收紧了
+ * 应用层又放行（或反之），两层判据打架。
+ */
+function scopeWhereClause(scopeFilter: string[], mode: ScopeMatchMode = "family"): string {
+  return scopeFilter
+    .map(scope => {
+      const safe = escapeSqlLiteral(scope);
+      if (mode === "exact") return `scope = '${safe}'`;
+      return scope.includes(":")
+        ? `scope = '${safe}'`
+        : `scope LIKE '${safe}%'`;
+    })
+    .join(" OR ");
+}
 
 export class MemoryStore implements MemoryStorePort {
   private db: LanceDB.Connection | null = null;
@@ -554,7 +575,13 @@ export class MemoryStore implements MemoryStorePort {
     return res.length > 0;
   }
 
-  async vectorSearch(vector: number[], limit = 5, minScore = 0.3, scopeFilter?: string[]): Promise<MemorySearchResult[]> {
+  async vectorSearch(
+    vector: number[],
+    limit = 5,
+    minScore = 0.3,
+    scopeFilter?: string[],
+    scopeMatch: ScopeMatchMode = "family",
+  ): Promise<MemorySearchResult[]> {
     await this.ensureInitialized();
 
     const safeLimit = clampInt(limit, 1, 20);
@@ -562,19 +589,11 @@ export class MemoryStore implements MemoryStorePort {
 
     let query = this.table!.vectorSearch(vector).distanceType('cosine').limit(fetchLimit);
 
-    // Apply scope filter if provided
-    // Support both exact match ("cc:abc123") and prefix match ("cc")
+    // Apply scope filter if provided. Default mode "family" = 历史行为（含冒号精确 /
+    // 无冒号前缀）；exact 由调用方显式声明。**必须下推到 SQL，不能事后在应用层滤**——
+    // top-k 在收窄前就被兄弟 scope 占满，滤完只剩残缺候选（2026-08-16 互审 C1）。
     if (scopeFilter && scopeFilter.length > 0) {
-      const scopeConditions = scopeFilter
-        .map(scope => {
-          const safe = escapeSqlLiteral(scope);
-          // If scope contains ":", treat as exact match; otherwise prefix match
-          return scope.includes(":")
-            ? `scope = '${safe}'`
-            : `scope LIKE '${safe}%'`;
-        })
-        .join(" OR ");
-      query = query.where(`(${scopeConditions})`);
+      query = query.where(`(${scopeWhereClause(scopeFilter, scopeMatch)})`);
     }
 
     const results = await query.toArray();
@@ -588,8 +607,8 @@ export class MemoryStore implements MemoryStorePort {
 
       const rowScope = (row.scope as string | undefined) ?? "";
 
-      // Double-check scope filter in application layer (prefix-aware)
-      if (!matchesScopeFilter(rowScope, scopeFilter)) {
+      // Double-check scope filter in application layer (same mode as the SQL above)
+      if (!matchesScopeFilter(rowScope, scopeFilter, scopeMatch)) {
         continue;
       }
 
@@ -626,17 +645,9 @@ export class MemoryStore implements MemoryStorePort {
       // Use FTS query type explicitly
       let searchQuery = this.table!.search(query, "fts").limit(safeLimit);
 
-      // Apply scope filter if provided (prefix-aware, same as vectorSearch)
+      // Apply scope filter if provided (family mode, same as vectorSearch's default)
       if (scopeFilter && scopeFilter.length > 0) {
-        const scopeConditions = scopeFilter
-          .map(scope => {
-            const safe = escapeSqlLiteral(scope);
-            return scope.includes(":")
-              ? `scope = '${safe}'`
-              : `scope LIKE '${safe}%'`;
-          })
-          .join(" OR ");
-        searchQuery = searchQuery.where(`(${scopeConditions})`);
+        searchQuery = searchQuery.where(`(${scopeWhereClause(scopeFilter)})`);
       }
 
       const results = await searchQuery.toArray();
@@ -725,7 +736,13 @@ export class MemoryStore implements MemoryStorePort {
     return true;
   }
 
-  async list(scopeFilter?: string[], category?: string, limit = 20, offset = 0): Promise<MemoryEntry[]> {
+  async list(
+    scopeFilter?: string[],
+    category?: string,
+    limit = 20,
+    offset = 0,
+    scopeMatch: ScopeMatchMode = "family",
+  ): Promise<MemoryEntry[]> {
     await this.ensureInitialized();
 
     let query = this.table!.query();
@@ -734,15 +751,9 @@ export class MemoryStore implements MemoryStorePort {
     const conditions: string[] = [];
 
     if (scopeFilter && scopeFilter.length > 0) {
-      const scopeConditions = scopeFilter
-        .map(scope => {
-          const safe = escapeSqlLiteral(scope);
-          return scope.includes(":")
-            ? `scope = '${safe}'`
-            : `scope LIKE '${safe}%'`;
-        })
-        .join(" OR ");
-      conditions.push(`((${scopeConditions}))`);
+      // 收窄必须在 SQL 里：limit 是在这之后下推的，事后过滤等于先截断再筛，
+      // 目标 scope 实际拿到多少行不可控（2026-08-16 互审 C1/K3）。
+      conditions.push(`((${scopeWhereClause(scopeFilter, scopeMatch)}))`);
     }
 
     if (category) {
@@ -801,15 +812,7 @@ export class MemoryStore implements MemoryStorePort {
 
     const conditions: string[] = [];
     if (scopeFilter && scopeFilter.length > 0) {
-      const scopeConditions = scopeFilter
-        .map(scope => {
-          const safe = escapeSqlLiteral(scope);
-          return scope.includes(":")
-            ? `scope = '${safe}'`
-            : `scope LIKE '${safe}%'`;
-        })
-        .join(" OR ");
-      conditions.push(`((${scopeConditions}))`);
+      conditions.push(`((${scopeWhereClause(scopeFilter)}))`);
     }
     if (category) {
       conditions.push(`category = '${escapeSqlLiteral(category)}'`);
@@ -962,21 +965,13 @@ export class MemoryStore implements MemoryStorePort {
     return result;
   }
 
-  async stats(scopeFilter?: string[]): Promise<MemoryStoreStats> {
+  async stats(scopeFilter?: string[], scopeMatch: ScopeMatchMode = "family"): Promise<MemoryStoreStats> {
     await this.ensureInitialized();
 
     let query = this.table!.query();
 
     if (scopeFilter && scopeFilter.length > 0) {
-      const scopeConditions = scopeFilter
-        .map(scope => {
-          const safe = escapeSqlLiteral(scope);
-          return scope.includes(":")
-            ? `scope = '${safe}'`
-            : `scope LIKE '${safe}%'`;
-        })
-        .join(" OR ");
-      query = query.where(`((${scopeConditions}))`);
+      query = query.where(`((${scopeWhereClause(scopeFilter, scopeMatch)}))`);
     }
 
     const results = await query.select(["scope", "category"]).toArray();
@@ -1294,15 +1289,10 @@ export class MemoryStore implements MemoryStorePort {
     const conditions: string[] = [];
 
     if (scopeFilter.length > 0) {
-      const scopeConditions = scopeFilter
-        .map(scope => {
-          const safe = escapeSqlLiteral(scope);
-          return scope.includes(":")
-            ? `scope = '${safe}'`
-            : `scope LIKE '${safe}%'`;
-        })
-        .join(" OR ");
-      conditions.push(`(${scopeConditions})`);
+      // family 模式（历史行为）。⚠️ 这是**破坏性**操作走前缀：`bulkDelete(["memory"])`
+      // 会连 `memory:pivot` 一起删。当前无生产 caller；要加 caller 请先显式传 exact
+      // （同 forgetByScope 的处理，2026-08-16）。
+      conditions.push(`(${scopeWhereClause(scopeFilter)})`);
     }
 
     if (beforeTimestamp) {

@@ -15,6 +15,7 @@
  */
 
 import type { MemoryStorePort } from "./memory-store-port.js";
+import type { ScopeMatchMode } from "./scope-policy.js";
 import type { LLMClient } from "./llm-client.js";
 import type { Embedder } from "./embedder.js";
 import { ConsolidationEngine, clusterAndConsolidate, DEFAULT_CONSOLIDATION_CONFIG, isDerivedInsight, type ConsolidationKGSource } from "./consolidation-engine.js";
@@ -67,6 +68,23 @@ export interface DreamConfig {
    *  这是缓解不是根治：scope 只增不减仍在（07-10 是 133、07-29 是 475、07-30 是 507），
    *  真解仍是 session scope TTL —— 只 dream 近 N 天活跃的。 */
   autoExcludeScopes: readonly string[];
+  /**
+   * 按策略**永不**巩固的 scope（2026-08-16 加）。与 autoExcludeScopes 是两件事，别混：
+   * 那个是"交给专用 schedule 跑"（deferred，别处会跑），这个是"根本不该被 dream 碰"
+   * （never，没有任何 schedule 会跑）。
+   *
+   * 判定在 runDream 内部而不是 `--auto` 的分拣里 —— CLI、weekly、MCP `dream` 工具
+   * 三条入口都必须受同一条策略约束，放在分拣里等于只拦住了其中一条。
+   *
+   * 首个成员 `memory:pivot`：手写提炼层（判断转折 / 决策 / 偏好 / 踩坑，每条带
+   * canonicalKey + pinned + 来源指针）。2026-08-16 实测它被 dream 碰出两类违例：
+   * 3b 往池里铸了 23 条无 canonicalKey / 无 pinned / 无来源的 LLM 派生行；3a 把 3 条
+   * 手写原件合并进 LLM 复述、复述当了 canonical。**提炼层再合成一层就是"摘要的摘要"**
+   * ——同 gather 不回喂派生 insight 的道理（见 :245 注释）。
+   * 要翻回"允许 3a 去重"，前置条件：派生行永不当 canonical（已修）+ pinned 不失活
+   * （未做，GC/3a 都不认 tag）+ 有 uptake 证据证明去重确有收益。
+   */
+  neverDreamScopes: readonly string[];
   /** GC config for prune phase */
   gc: AutoGcConfig;
 }
@@ -80,6 +98,7 @@ export const DEFAULT_DREAM_CONFIG: DreamConfig = {
   maxEntriesPerRun: 500,
   autoRunBudgetMs: 2 * 60 * 60 * 1000,
   autoExcludeScopes: ["memory"],
+  neverDreamScopes: ["memory:pivot"],
   gc: DEFAULT_AUTO_GC_CONFIG,
 };
 
@@ -179,8 +198,14 @@ async function runDreamInner(params: {
   activityStatsPath?: string;
   /** Optional KG evidence source for triple-overlap merging (null/absent = vector-only) */
   kgStore?: ConsolidationKGSource | null;
+  /**
+   * scope 匹配模式（2026-08-16 加）。**调度入口一律传 "exact"** —— 它们手里的是
+   * activity-stats 里的真实 scope 名或运维指定的具体 scope，不是 family selector。
+   * 缺省保持 "family" 只为兼容既有手动调用（`dream --scope cc` 想扫 `cc:*`）。
+   */
+  scopeMatch?: ScopeMatchMode;
 }): Promise<DreamResult> {
-  const { store, llm, embedder, scope, force = false } = params;
+  const { store, llm, embedder, scope, force = false, scopeMatch = "family" } = params;
   const config = { ...DEFAULT_DREAM_CONFIG, ...params.config };
   const statsCfg = params.activityStatsPath ? { statsPath: params.activityStatsPath } : undefined;
   const phases: DreamPhaseResult[] = [];
@@ -202,12 +227,30 @@ async function runDreamInner(params: {
   };
 
   // =========================================================================
+  // Phase 0: Policy gate — scopes that must never be consolidated
+  // =========================================================================
+  // 在写计数门槛**之前**判：策略排除与"今天写得够不够"无关，force 也不该越过它。
+  // 放在 runDream 内部 = CLI / weekly / MCP 三条入口同受约束（互审 C2）。
+  if (config.neverDreamScopes.includes(scope)) {
+    return {
+      ran: false,
+      reason: `policy_excluded (${scope} is in neverDreamScopes)`,
+      output: { kind: "skipped", reason: "policy_excluded", effectsWritten: 0 },
+      phases: [{
+        phase: "orient",
+        detail: `scope ${scope} 按策略不参与巩固（DreamConfig.neverDreamScopes）`,
+      }],
+      stats,
+    };
+  }
+
+  // =========================================================================
   // Phase 1: Orient — assess current memory state
   // =========================================================================
   const writeCount = getWriteCount(scope, statsCfg);
   stats.writesSinceLastDream = writeCount;
 
-  const storeStats = await store.stats([scope]);
+  const storeStats = await store.stats([scope], scopeMatch);
   stats.totalMemories = storeStats.totalCount ?? 0;
 
   if (!force && writeCount < config.minWritesForDream) {
@@ -231,7 +274,7 @@ async function runDreamInner(params: {
   // =========================================================================
   // Phase 2: Gather — collect active entries for consolidation
   // =========================================================================
-  const entries = await store.list([scope], undefined, config.maxEntriesPerRun, 0);
+  const entries = await store.list([scope], undefined, config.maxEntriesPerRun, 0, scopeMatch);
   const active = entries.filter(e => isActiveMemory(e.metadata));
   stats.activeMemories = active.length;
 
@@ -309,6 +352,9 @@ async function runDreamInner(params: {
       ...DEFAULT_CONSOLIDATION_CONFIG,
       clusterThreshold: config.clusterThreshold,
       maxEntriesPerRun: config.maxEntriesPerRun,
+      // 3a 自己重新取数（list + 两处 vectorSearch），gather 收窄了它不会跟着窄 ——
+      // 模式必须显式传进来，漏传就只修了一半（2026-08-16 互审 K3）。
+      scopeMatch,
     }, params.kgStore ?? null);
     const consolidation = await engine.run(scope);
     stats.dedupeClustersFound += consolidation.clustersFound;
@@ -421,6 +467,8 @@ export async function runDream(params: {
   activityStatsPath?: string;
   /** Optional KG evidence source for triple-overlap merging (null/absent = vector-only) */
   kgStore?: ConsolidationKGSource | null;
+  /** 见 runDreamInner 的同名参数：调度入口一律 "exact"，缺省 "family" 只为兼容手动调用。 */
+  scopeMatch?: ScopeMatchMode;
 }): Promise<DreamResult> {
   const outcome = await withLock(
     `dream-${params.scope}`,

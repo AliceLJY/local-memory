@@ -223,8 +223,14 @@ export async function forgetByScope(
   let failedCount = 0;
   let totalCascadeDemoted = 0;
 
-  // Fetch all entries in scope
-  const entries = await store.list([scope], undefined, 5000);
+  // Fetch all entries in scope.
+  //
+  // scopeMatch: "exact" —— **破坏性操作绝不做前缀展开**（2026-08-16 互审 Codex R3 提出）。
+  // 默认 family 语义下 `forgetByScope("memory")` 会连 `memory:pivot` 一起遗忘，而下面
+  // 的 KG 清理走的是精确 `scope = 'memory'`（kg-store.ts:506）—— 记忆行按家族删、KG 只
+  // 清一个 scope，两边还会不一致。当前无生产 caller，正因如此更要在有 caller 之前定死语义：
+  // 要清一整个家族，就显式枚举那些 scope 逐个调用。
+  const entries = await store.list([scope], undefined, 5000, 0, "exact");
 
   for (const entry of entries) {
     const result = await forgetMemory(deps, {

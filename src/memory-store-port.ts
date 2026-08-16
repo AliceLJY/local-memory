@@ -1,4 +1,5 @@
 import type { MemoryEntry, MemorySearchResult } from "./store.js";
+import type { ScopeMatchMode } from "./scope-policy.js";
 
 export interface MemoryStoreStats {
   totalCount: number;
@@ -18,8 +19,16 @@ export type MemoryStoreUpdate = {
 };
 
 export interface MemoryStorePort {
-  stats(scopeFilter?: string[]): Promise<MemoryStoreStats>;
-  list(scopeFilter?: string[], category?: string, limit?: number, offset?: number): Promise<MemoryEntry[]>;
+  /** scopeMatch 见 scope-policy.ts 的 ScopeMatchMode：缺省 "family"（历史行为，
+   *  无冒号 scope 按前缀），"exact" 由调用方在"我给的是一个具体 scope 名"时显式声明。 */
+  stats(scopeFilter?: string[], scopeMatch?: ScopeMatchMode): Promise<MemoryStoreStats>;
+  list(
+    scopeFilter?: string[],
+    category?: string,
+    limit?: number,
+    offset?: number,
+    scopeMatch?: ScopeMatchMode,
+  ): Promise<MemoryEntry[]>;
   /** 按 id 批量取真实向量。list()/listPage() 为性能恒返回 vector:[]（假空数组），
    *  任何要做相似度/聚类的消费者必须用这个回填——promote_scan 与 dream 3b 都栽过同一坑。 */
   getVectors(ids: string[]): Promise<Map<string, number[]>>;
@@ -52,5 +61,11 @@ export interface MemoryStorePort {
     }>,
     scopeFilter?: string[],
   ): Promise<number>;
-  vectorSearch(vector: number[], limit?: number, minScore?: number, scopeFilter?: string[]): Promise<MemorySearchResult[]>;
+  vectorSearch(
+    vector: number[],
+    limit?: number,
+    minScore?: number,
+    scopeFilter?: string[],
+    scopeMatch?: ScopeMatchMode,
+  ): Promise<MemorySearchResult[]>;
 }

@@ -20,6 +20,7 @@
 import type { MemoryEntry, MemorySearchResult } from "./store.js";
 import { deterministicId } from "./store.js";
 import type { MemoryStorePort } from "./memory-store-port.js";
+import type { ScopeMatchMode } from "./scope-policy.js";
 import { computeVersionGroupPatch, resolveGroupId } from "./version-manager.js";
 import { isActiveMemory, parseEvolution, buildSupersedeMetadata, patchEvolutionOnMeta } from "./memory-evolution.js";
 import { cosineSimilarity } from "./multi-vector.js";
@@ -46,6 +47,12 @@ export interface ConsolidationConfig {
   tripleJaccardThreshold?: number;
   /** KG evidence: both sides need at least this many triples to qualify (default 2) */
   minTriplesForEvidence?: number;
+  /**
+   * scope 过滤模式（2026-08-16 加）。默认 "family" = store 历史语义（无冒号按前缀）。
+   * dream 传 "exact"：它拿到的是一个具体 scope 名，前缀语义会把兄弟 scope
+   * （`memory` → `memory:pivot`）卷进同一批候选与 vectorSearch 结果。
+   */
+  scopeMatch?: ScopeMatchMode;
 }
 
 export const DEFAULT_CONSOLIDATION_CONFIG: ConsolidationConfig = {
@@ -184,11 +191,18 @@ export class ConsolidationEngine {
       maxEntriesPerRun,
       tripleJaccardThreshold = 0.5,
       minTriplesForEvidence = 2,
+      scopeMatch = "family",
     } = this.config;
 
     // 1. Fetch entries in scope
-    const entries = await this.store.list([scope], undefined, maxEntriesPerRun, 0);
-    const active = entries.filter(isActive);
+    const entries = await this.store.list([scope], undefined, maxEntriesPerRun, 0, scopeMatch);
+    // 派生 insight 不参与去重（2026-08-16 加，与 dream gather 的既有排除对齐）。
+    // 此前只有 gather（dream-pipeline.ts）排除派生物，3a 自己重新取数时不排除 ——
+    // 实测后果：`memory:pivot` 里 3 条手写原件被 3a 合并进 LLM 复述、复述当了 canonical
+    // （双方 importance 0.7 / accessCount 0，canonicalScore 打平时任取其一），
+    // 其中两条带 canonicalKey 与来源 tag，赢家是零来源的短复述。
+    // 派生物既不做 seed 也不做 member —— 摘要不该有资格顶掉它自己的原文。
+    const active = entries.filter(e => isActive(e) && !isDerivedInsight(e.metadata));
 
     if (active.length === 0) {
       return { originalCount: 0, clustersFound: 0, mergedCount: 0, relationsAdded: 0, tripleEvidenceMerges: 0, conflictsDetected: [], scope };
@@ -222,7 +236,7 @@ export class ConsolidationEngine {
         if (!full?.vector?.length) continue;
 
         const similar = await this.store.vectorSearch(
-          full.vector, 10, clusterThreshold, [scope],
+          full.vector, 10, clusterThreshold, [scope], scopeMatch,
         );
 
         // Seeds are active-only (above), but vectorSearch filters by scope alone, so
@@ -236,7 +250,10 @@ export class ConsolidationEngine {
           s => s.entry.id !== entry.id
             && !clustered.has(s.entry.id)
             && s.entry.category === entry.category
-            && isActive(s.entry),
+            && isActive(s.entry)
+            // vectorSearch 只按 scope 过滤，派生 insight 会从这里回到候选集里 ——
+            // seed 侧已在上面滤掉，member 侧必须同样滤（2026-08-16）。
+            && !isDerivedInsight(s.entry.metadata),
         );
 
         if (members.length === 0) continue;
@@ -284,7 +301,7 @@ export class ConsolidationEngine {
 
         // Get similarity scores relative to canonical
         const pairResults = await this.store.vectorSearch(
-          canonical.vector, memberEntries.length + 5, clusterThreshold, [scope],
+          canonical.vector, memberEntries.length + 5, clusterThreshold, [scope], scopeMatch,
         );
         const scoreMap = new Map<string, number>();
         for (const r of pairResults) scoreMap.set(r.entry.id, r.score);
@@ -734,8 +751,10 @@ export function formatConsolidationResult(result: ConsolidationResult): string {
  * captured from the outside world.
  *
  * Single source of truth for the two metadata flags: retrieval uses it to
- * collapse a derivative with its sources, and the dream gather uses it to keep
- * derivatives from being re-consolidated as if they were raw material.
+ * collapse a derivative with its sources, the dream gather uses it to keep
+ * derivatives from being re-consolidated as if they were raw material, and
+ * (2026-08-16) 3a uses it on both the seed side and the member side — a summary
+ * must never be eligible to become the canonical row over its own source.
  */
 export function isDerivedInsight(metadata: string | undefined): boolean {
   if (!metadata) return false;
