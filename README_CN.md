@@ -518,13 +518,13 @@ RecallNest 起源于 [memory-lancedb-pro](https://github.com/CortexReach/memory-
 | 项目 | 说明 |
 |------|------|
 | [babel-memory](https://github.com/AliceLJY/babel-memory) | BM25 多语言预处理——27+ 种语言，零依赖 |
-| [content-alchemy](https://github.com/AliceLJY/content-alchemy) | 5 阶段 AI 写作管线 |
-| [content-publisher](https://github.com/AliceLJY/content-publisher) | 图片生成 + 排版 + 微信公众号发布 |
-| [wechat-ai-bridge](https://github.com/AliceLJY/wechat-ai-bridge) | 在微信中运行 Claude Code / Codex / Gemini |
-| [telegram-ai-bridge](https://github.com/AliceLJY/telegram-ai-bridge) | Telegram Bot：Claude、Codex、Gemini |
+| content-alchemy *(private)* | 5 阶段 AI 写作管线 |
+| content-publisher *(private)* | 图片生成 + 排版 + 微信公众号发布 |
+| [wechat-ai-bridge](https://github.com/AliceLJY/wechat-ai-bridge) | 在微信中运行 Claude Code / Codex |
+| [telegram-ai-bridge](https://github.com/AliceLJY/telegram-ai-bridge) | Telegram Bot：Claude、Codex、Agy、Kimi |
 | [telegram-cli-bridge](https://github.com/AliceLJY/telegram-cli-bridge) | Telegram CLI 桥接 Gemini CLI |
 | [openclaw-tunnel](https://github.com/AliceLJY/openclaw-tunnel) | Docker ↔ 宿主机 CLI 桥接 |
-| [openclaw-config](https://github.com/AliceLJY/openclaw-config) | OpenClaw Bot 配置与记忆备份 |
+| openclaw-config *(private)* | OpenClaw Bot 配置与记忆备份 |
 | [digital-clone-skill](https://github.com/AliceLJY/digital-clone-skill) | 从语料构建数字分身 |
 | [claude-code-studio](https://github.com/AliceLJY/claude-code-studio) | Claude Code 多会话协作平台 |
 | [cc-genius](https://github.com/AliceLJY/cc-genius) | Web 版 Claude 客户端（PWA）—— 自托管，iPad 可用 |
