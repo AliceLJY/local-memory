@@ -23,6 +23,7 @@ import type { AuditLogger } from "./audit-log.js";
 import * as envConfig from "./env-config.js";
 import { isUsageSignalActive } from "./usage-tracker.js";
 import { acquireLock, releaseLock, getLastDistillTime, stampLock, lockPathForKey } from "./distill-lock.js";
+import { logInfo } from "./stderr-log.js";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -54,6 +55,7 @@ export const DEFAULT_AUTO_GC_CONFIG: AutoGcConfig = {
 // ---------------------------------------------------------------------------
 
 let lastGcTimestamp = 0;
+let lastVersionGroupRepairTimestamp = 0;
 
 // ---------------------------------------------------------------------------
 // Core
@@ -64,6 +66,7 @@ export interface GcResult {
   reason?: string;
   archivedCount: number;
   totalChecked: number;
+  dissolvedVersionGroups: number;
 }
 
 /**
@@ -85,38 +88,70 @@ export async function maybeRunGc(
   const stats = await store.stats();
   const totalMemories = stats.totalCount ?? 0;
 
-  // Condition 1: enough memories to warrant GC
-  if (totalMemories < config.minMemoryCount) {
-    return { triggered: false, reason: "below_memory_threshold", archivedCount: 0, totalChecked: 0 };
-  }
+  // Singleton version-group repair has its own persistent throttle. It must not be
+  // hidden behind minMemoryCount: a small store can lose one member of a pair too.
+  // Reuse the configured maintenance interval, but keep a separate timestamp so a
+  // repair-only pass does not postpone a later archive pass (or vice versa).
+  const repairStampPath = lockPathForKey("version-group-repair-last");
+  const lastRepair = Math.max(
+    lastVersionGroupRepairTimestamp,
+    getLastDistillTime({ lockPath: repairStampPath }),
+  );
+  const repairDue = totalMemories > 0
+    && (Date.now() - lastRepair) / 3_600_000 >= config.minHoursSinceLastGc;
 
-  // Condition 2: enough time since last GC. P0-1: the throttle is cross-process now —
-  // take the max of this process's in-memory timestamp and the shared gc-last stamp
-  // file's mtime. The old module-level var alone let each of the 11 mcp-server
-  // processes run gc on its own independent 24h clock.
+  // Archive GC retains its existing count and time gates. P0-1: the time throttle
+  // is cross-process, using the shared gc-last marker in addition to process state.
   const gcStampPath = lockPathForKey("gc-last");
   const lastGc = Math.max(lastGcTimestamp, getLastDistillTime({ lockPath: gcStampPath }));
   const hoursSinceLastGc = (Date.now() - lastGc) / 3_600_000;
-  if (hoursSinceLastGc < config.minHoursSinceLastGc) {
-    return { triggered: false, reason: "too_soon", archivedCount: 0, totalChecked: 0 };
+  const archiveSkipReason = totalMemories < config.minMemoryCount
+    ? "below_memory_threshold"
+    : hoursSinceLastGc < config.minHoursSinceLastGc
+      ? "too_soon"
+      : undefined;
+
+  // Nothing is due: preserve the old fast no-op path without taking a run lock.
+  if (!repairDue && archiveSkipReason) {
+    return { triggered: false, reason: archiveSkipReason, archivedCount: 0, totalChecked: 0, dissolvedVersionGroups: 0 };
   }
 
   // Concurrency guard: only one process scans the full corpus at a time. A process that
   // passed the throttle in the same instant loses the O_EXCL race here and skips.
   const gcRunLock = { lockPath: lockPathForKey("gc-run"), expireMs: 30 * 60_000 };
   if (!acquireLock(gcRunLock)) {
-    return { triggered: false, reason: "locked_by_another_process", archivedCount: 0, totalChecked: 0 };
+    return { triggered: false, reason: "locked_by_another_process", archivedCount: 0, totalChecked: 0, dissolvedVersionGroups: 0 };
   }
 
-  // All conditions met — run GC
-  lastGcTimestamp = Date.now(); // in-process immediate throttle
-
   try {
+    let dissolvedVersionGroups = 0;
+    if (repairDue) {
+      dissolvedVersionGroups = await store.repairSingletonVersionGroups();
+      lastVersionGroupRepairTimestamp = Date.now();
+      stampLock({ lockPath: repairStampPath });
+      if (dissolvedVersionGroups > 0) {
+        logInfo(`[INFO] Auto-GC dissolved ${dissolvedVersionGroups} singleton version group(s)`);
+      }
+    }
+
+    // A repair-only pass is still useful maintenance, but `triggered` continues to
+    // mean that the archive scan ran so existing callers keep their old semantics.
+    if (archiveSkipReason) {
+      return {
+        triggered: false,
+        reason: archiveSkipReason,
+        archivedCount: 0,
+        totalChecked: 0,
+        dissolvedVersionGroups,
+      };
+    }
+
+    lastGcTimestamp = Date.now(); // in-process immediate throttle
     const { archivedCount, totalChecked } = await runGcScan(store, config, retentionConfigDir, auditLogger);
     // Stamp completion into the shared throttle marker (create-or-touch → mtime = now)
     // so the other processes observe "last run" via getLastDistillTime.
     stampLock({ lockPath: gcStampPath });
-    return { triggered: true, archivedCount, totalChecked };
+    return { triggered: true, archivedCount, totalChecked, dissolvedVersionGroups };
   } finally {
     releaseLock(gcRunLock);
   }
@@ -278,9 +313,11 @@ async function runGcScan(
  */
 export function resetGcTimestamp(): void {
   lastGcTimestamp = 0;
+  lastVersionGroupRepairTimestamp = 0;
   try {
     releaseLock({ lockPath: lockPathForKey("gc-last") });
     releaseLock({ lockPath: lockPathForKey("gc-run") });
+    releaseLock({ lockPath: lockPathForKey("version-group-repair-last") });
   } catch {
     /* ignore — nothing to clear */
   }

@@ -14,6 +14,7 @@ import { detectEmotionIfEnabled } from "./emotion-detector.js";
 import { withWriteLock } from "./distill-lock.js";
 import { incrementWriteCount } from "./activity-counter.js";
 import type { MemoryStorePort, MemoryStoreStats, MemoryStoreUpdate } from "./memory-store-port.js";
+import { clearVersionGroupMetadata, planSingletonVersionGroupRepairs } from "./version-manager.js";
 
 // ============================================================================
 // Types
@@ -1281,6 +1282,82 @@ export class MemoryStore implements MemoryStorePort {
       }, { expireMs: 30_000 });
     }
     return written;
+  }
+
+  /**
+   * Dissolve version groups that have only one surviving member.
+   *
+   * The membership scan and metadata rewrite share the global store-write lock.
+   * Keeping both inside one critical section matters: planning during auto-GC and
+   * patching later could otherwise dismantle a group that gained a new member in
+   * between. Hard deletes that bypass the store may still create a new singleton
+   * after this pass; the next scheduled pass repairs it.
+   */
+  async repairSingletonVersionGroups(): Promise<number> {
+    await this.ensureInitialized();
+
+    return withWriteLock("store-write", async () => {
+      const membershipRows = await this.table!.query()
+        .select(["id", "metadata"])
+        .toArray();
+      const repairs = planSingletonVersionGroupRepairs(
+        membershipRows.map(row => ({
+          id: row.id as string,
+          metadata: (row.metadata as string) || "{}",
+        })),
+      );
+      if (repairs.length === 0) return 0;
+
+      let repaired = 0;
+      const BATCH = 200;
+      for (let i = 0; i < repairs.length; i += BATCH) {
+        const batch = repairs.slice(i, i + BATCH);
+        const expectedById = new Map(batch.map(item => [item.id, item.groupId]));
+        const conditions = batch
+          .map(item => `id = '${escapeSqlLiteral(item.id)}'`)
+          .join(" OR ");
+        const rows = await this.table!.query()
+          .where(conditions)
+          .limit(batch.length)
+          .toArray();
+
+        const toWrite: MemoryEntry[] = [];
+        for (const row of rows) {
+          const id = row.id as string;
+          const expectedGroupId = expectedById.get(id);
+          if (!expectedGroupId) continue;
+          let meta: Record<string, unknown>;
+          try {
+            const parsed: unknown = JSON.parse((row.metadata as string) || "{}");
+            meta = parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
+              ? (parsed as Record<string, unknown>)
+              : {};
+          } catch {
+            continue;
+          }
+          // The group id is rechecked against the locked, current row.
+          if (meta.version_group !== expectedGroupId) continue;
+          clearVersionGroupMetadata(meta, expectedGroupId);
+          toWrite.push({
+            id,
+            text: row.text as string,
+            vector: row.vector ? Array.from(row.vector as Iterable<number>) : [],
+            category: row.category as MemoryEntry["category"],
+            scope: (row.scope as string | undefined) ?? "",
+            importance: Number(row.importance),
+            timestamp: Number(row.timestamp),
+            metadata: JSON.stringify(meta),
+            language: (row.language as string) || "en",
+            fts_text: (row.fts_text as string) || (row.text as string),
+          });
+        }
+        if (toWrite.length === 0) continue;
+        // Matched rows only: a concurrent hard delete must never be resurrected.
+        const result = await this.table!.mergeInsert("id").whenMatchedUpdateAll().execute(toWrite);
+        repaired += result.numUpdatedRows;
+      }
+      return repaired;
+    }, { expireMs: 30 * 60_000 });
   }
 
   async bulkDelete(scopeFilter: string[], beforeTimestamp?: number): Promise<number> {

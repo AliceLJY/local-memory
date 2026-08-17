@@ -134,6 +134,7 @@ describe("auto-gc 批量归档的上限语义", () => {
     const batchCalls: number[] = [];
     const store = {
       async stats() { return { totalCount: 100, scopeCounts: {}, categoryCounts: {} }; },
+      async repairSingletonVersionGroups() { return 0; },
       async list() { return rows; },
       async listPage(opts: { limit?: number; offset?: number } = {}) {
         const { limit = 1000, offset = 0 } = opts;
@@ -162,5 +163,49 @@ describe("auto-gc 批量归档的上限语义", () => {
     const archived = rows.filter(r => (JSON.parse(r.metadata) as { evolution: { status: string } }).evolution.status === "archived");
     expect(archived.length).toBe(2); // 且真的写进去了（break 前 flush，不弃单）
     expect(batchCalls.reduce((a, b) => a + b, 0)).toBe(2);
+  });
+
+  it("即使低于归档数量门槛也会自愈 singleton version-group", async () => {
+    resetGcTimestamp();
+    let repairCalls = 0;
+    const store = {
+      async stats() { return { totalCount: 100, scopeCounts: {}, categoryCounts: {} }; },
+      async repairSingletonVersionGroups() { repairCalls++; return 1; },
+      async listPage() { return []; },
+      async patchMetadataBatch() { return 0; },
+    };
+
+    const result = await maybeRunGc(
+      store as unknown as Parameters<typeof maybeRunGc>[0],
+      { minMemoryCount: 1000, minHoursSinceLastGc: 0, decayScoreThreshold: 0.15, maxArchivePerRun: 100, minAgeDays: 30 },
+    );
+
+    expect(repairCalls).toBe(1);
+    expect(result.triggered).toBe(false);
+    expect(result.reason).toBe("below_memory_threshold");
+    expect(result.dissolvedVersionGroups).toBe(1);
+  });
+
+  it("单成员组自愈有独立节流，不会被每个 dream scope 重复全库扫描", async () => {
+    resetGcTimestamp();
+    let repairCalls = 0;
+    const store = {
+      async stats() { return { totalCount: 100, scopeCounts: {}, categoryCounts: {} }; },
+      async repairSingletonVersionGroups() { repairCalls++; return 0; },
+      async listPage() { return []; },
+      async patchMetadataBatch() { return 0; },
+    };
+    const config = {
+      minMemoryCount: 1000,
+      minHoursSinceLastGc: 24,
+      decayScoreThreshold: 0.15,
+      maxArchivePerRun: 100,
+      minAgeDays: 30,
+    };
+
+    await maybeRunGc(store as unknown as Parameters<typeof maybeRunGc>[0], config);
+    await maybeRunGc(store as unknown as Parameters<typeof maybeRunGc>[0], config);
+
+    expect(repairCalls).toBe(1);
   });
 });

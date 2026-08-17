@@ -141,6 +141,7 @@ function createScopeAwareStore(entries: MemoryEntry[]) {
     async stats(scopeFilter?: string[], scopeMatch: ScopeMatchMode = "family") {
       return { totalCount: select(scopeFilter, scopeMatch).length, scopeCounts: {}, categoryCounts: {} };
     },
+    async repairSingletonVersionGroups() { return 0; },
     async getById(id: string) {
       return stored.find(e => e.id === id) ?? null;
     },

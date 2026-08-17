@@ -29,9 +29,52 @@ export interface VersionGroupMetadata {
   version_created: string;
 }
 
+export interface SingletonVersionGroupRepair {
+  id: string;
+  groupId: string;
+}
+
 // ============================================================================
 // Core Functions
 // ============================================================================
+
+/**
+ * Plan repairs for version groups that have only one surviving member.
+ *
+ * Planning is pure so callers can take the membership snapshot under their
+ * own storage lock, then apply the returned metadata-only repairs atomically.
+ */
+export function planSingletonVersionGroupRepairs(
+  entries: Array<Pick<MemoryEntry, "id" | "metadata">>,
+): SingletonVersionGroupRepair[] {
+  const groups = new Map<string, { count: number; onlyMemberId: string }>();
+
+  for (const entry of entries) {
+    const meta = parseMetadata(entry.metadata);
+    const groupId = typeof meta.version_group === "string" ? meta.version_group : null;
+    if (!groupId) continue;
+
+    const current = groups.get(groupId);
+    if (current) current.count++;
+    else groups.set(groupId, { count: 1, onlyMemberId: entry.id });
+  }
+
+  return [...groups.entries()]
+    .filter(([, group]) => group.count === 1)
+    .map(([groupId, group]) => ({ id: group.onlyMemberId, groupId }));
+}
+
+/** Remove only the three fields that make an entry a version-group member. */
+export function clearVersionGroupMetadata(
+  meta: Record<string, unknown>,
+  expectedGroupId: string,
+): Record<string, unknown> {
+  if (meta.version_group !== expectedGroupId) return meta;
+  delete meta.version_group;
+  delete meta.version_rank;
+  delete meta.version_created;
+  return meta;
+}
 
 /**
  * 纯计算版：给一条 entry 的（已解析）metadata 打 version-group 三键，不写库。

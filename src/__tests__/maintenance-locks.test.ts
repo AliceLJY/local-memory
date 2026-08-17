@@ -48,6 +48,7 @@ describe("runDream cross-process lock", () => {
         bodyRan = true;
         return { totalCount: 100, scopeCounts: {}, categoryCounts: {} };
       },
+      repairSingletonVersionGroups: async () => 0,
       list: async () => [],
       listPage: async () => [],
       update: async () => null,
@@ -84,6 +85,7 @@ describe("runDream cross-process lock", () => {
     }));
     const store = {
       stats: async () => ({ totalCount: 100, scopeCounts: {}, categoryCounts: {} }),
+      repairSingletonVersionGroups: async () => 0,
       list: async () => entries,
       listPage: async () => [],
       update: async () => null,
@@ -125,6 +127,7 @@ describe("runDream cross-process lock", () => {
 
     const store = {
       stats: async () => ({ totalCount: 5, scopeCounts: {}, categoryCounts: {} }),
+      repairSingletonVersionGroups: async () => 0,
       // ⚠️ 2026-08-12 标注：这里 list 返回空数组，走的是 **completed_early 早退路径**，
       // 而早退路径 (dream-pipeline.ts:226) 的 resetWriteCount(scope, statsCfg) 一直是对的。
       // 本条测试因此从未覆盖「完整跑完」那条路径 —— 而 bug 恰恰在那条路径上（:301 漏传 scope）。
@@ -159,6 +162,7 @@ describe("maybeRunGc cross-process lock + throttle", () => {
   function makeStore(totalCount: number) {
     return {
       stats: async () => ({ totalCount, scopeCounts: {}, categoryCounts: {} }),
+      repairSingletonVersionGroups: async () => 0,
       listPage: async () => [] as unknown[],
       update: async () => null,
       patchMetadataBatch: async (patches: Array<{ id: string; patchFn: unknown }>) => patches.length,

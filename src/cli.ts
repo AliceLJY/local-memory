@@ -1655,7 +1655,13 @@ program
       const runGcBackstop = async (): Promise<void> => {
         try {
           const gc = await maybeRunGc(store, DEFAULT_DREAM_CONFIG.gc);
-          console.log(`[dream] 全库 GC 兜底: ${gc.triggered ? `archived ${gc.archivedCount}` : `skipped — ${gc.reason}`}`);
+          console.log(
+            `[dream] 全库 GC 兜底: ${gc.triggered
+              ? `archived ${gc.archivedCount}, dissolved version groups ${gc.dissolvedVersionGroups}`
+              : gc.dissolvedVersionGroups > 0
+                ? `dissolved version groups ${gc.dissolvedVersionGroups}; archive skipped — ${gc.reason}`
+              : `skipped — ${gc.reason}`}`,
+          );
         } catch (err) {
           console.error(`[dream] 全库 GC 兜底失败（不阻断本轮判定）: ${err instanceof Error ? err.message : String(err)}`);
         }

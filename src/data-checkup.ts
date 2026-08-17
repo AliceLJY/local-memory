@@ -130,7 +130,7 @@ function checkConflictBacklog(openConflictCount: number): CheckResult {
 }
 
 /** Check 5: Version group integrity — members should reference the same group ID. */
-function checkVersionGroups(entries: MemoryEntry[]): CheckResult {
+function checkVersionGroups(entries: Array<Pick<MemoryEntry, "id" | "metadata">>): CheckResult {
   const groups = new Map<string, { ids: string[]; ranks: number[] }>();
 
   for (const e of entries) {
@@ -292,7 +292,7 @@ function checkUsageDistribution(entries: MemoryEntry[]): CheckResult {
 }
 
 export interface CheckupDeps {
-  store: Pick<MemoryStore, "list" | "stats" | "getVectors">;
+  store: Pick<MemoryStore, "list" | "listPage" | "stats" | "getVectors">;
   openConflictCount: number;
   /** Optional override path for source-heartbeat.json (used in tests). */
   heartbeatPath?: string;
@@ -310,13 +310,27 @@ export async function runDataCheckup(deps: CheckupDeps): Promise<CheckupReport> 
   // 截断披露:库总量 > 已扫,说明只体检了最近 SCAN_LIMIT 条。
   const totalAvailable = (await deps.store.stats()).totalCount;
 
+  // Version-group membership must be checked against the whole corpus. Looking only
+  // at the newest SCAN_LIMIT rows turns a healthy pair into a fake singleton whenever
+  // its other member falls outside the sample. Keep this second pass lightweight by
+  // retaining only id + metadata and never loading vectors.
+  const VERSION_GROUP_PAGE_SIZE = 5000;
+  const versionEntries: Array<Pick<MemoryEntry, "id" | "metadata">> = [];
+  for (let offset = 0; ; offset += VERSION_GROUP_PAGE_SIZE) {
+    const page = await deps.store.listPage({ limit: VERSION_GROUP_PAGE_SIZE, offset });
+    for (const entry of page) {
+      versionEntries.push({ id: entry.id, metadata: entry.metadata });
+    }
+    if (page.length < VERSION_GROUP_PAGE_SIZE) break;
+  }
+
   return {
     checks: [
       checkVectorDimensions(entries),
       checkOrphanMemories(entries),
       checkTierDistribution(entries),
       checkConflictBacklog(deps.openConflictCount),
-      checkVersionGroups(entries),
+      checkVersionGroups(versionEntries),
       checkSourceHealth(deps.heartbeatPath),
       checkInterferenceDensity(entries),
       checkUsageDistribution(entries),

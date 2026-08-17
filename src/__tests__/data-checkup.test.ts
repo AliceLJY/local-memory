@@ -32,11 +32,17 @@ function makeEntry(overrides: Partial<MemoryEntry> & { id: string }): MemoryEntr
   };
 }
 
-function createMockStore(entries: MemoryEntry[]): Pick<MemoryStore, "list" | "stats" | "getVectors"> {
+function createMockStore(entries: MemoryEntry[]): Pick<MemoryStore, "list" | "listPage" | "stats" | "getVectors"> {
   return {
     // 复刻真实 store:list() 为性能不返回向量(vector: []),维度/干扰检查需经 getVectors 补回。
     // 旧 mock 直接返回带向量的 entry,与生产行为不符,曾掩盖维度检查在生产假报健康的 bug。
-    async list() { return entries.map(e => ({ ...e, vector: [] })); },
+    async list(_scope?: string[], _category?: string, limit = 20, offset = 0) {
+      return entries.slice(offset, offset + limit).map(e => ({ ...e, vector: [] }));
+    },
+    async listPage(opts: { limit?: number; offset?: number } = {}) {
+      const { limit = 1000, offset = 0 } = opts;
+      return entries.slice(offset, offset + limit).map(e => ({ ...e, vector: [] }));
+    },
     async stats() {
       return { totalCount: entries.length, scopeCounts: {}, categoryCounts: {} };
     },
@@ -47,7 +53,7 @@ function createMockStore(entries: MemoryEntry[]): Pick<MemoryStore, "list" | "st
       }
       return map;
     },
-  } as Pick<MemoryStore, "list" | "stats" | "getVectors">;
+  } as Pick<MemoryStore, "list" | "listPage" | "stats" | "getVectors">;
 }
 
 // ---------------------------------------------------------------------------
@@ -240,6 +246,28 @@ describe("runDataCheckup", () => {
     const vgCheck = report.checks.find(c => c.name === "version_groups")!;
     expect(vgCheck.status).toBe("warning");
     expect(vgCheck.detail).toContain("missing rank");
+  });
+
+  it("checks version groups against the full corpus when the 10k sample splits a healthy pair", async () => {
+    const pair = ["a", "b"].map(id => makeEntry({
+      id,
+      metadata: JSON.stringify({ version_group: "vg-split", version_rank: 1 }),
+    }));
+    const base = createMockStore(pair);
+    const store = {
+      ...base,
+      // Simulate the recent-sample boundary: only one member is visible to list(),
+      // while the paged full-corpus scan still sees both.
+      async list() { return [{ ...pair[0], vector: [] }]; },
+    };
+
+    const report = await runDataCheckup({ store, openConflictCount: 0 });
+
+    expect(report.totalEntries).toBe(1);
+    expect(report.totalAvailable).toBe(2);
+    const vgCheck = report.checks.find(c => c.name === "version_groups")!;
+    expect(vgCheck.status).toBe("ok");
+    expect(vgCheck.detail).toContain("all healthy");
   });
 
   it("handles empty database", async () => {

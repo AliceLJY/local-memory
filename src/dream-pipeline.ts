@@ -411,7 +411,9 @@ async function runDreamInner(params: {
   phases.push({
     phase: "prune",
     detail: gcResult.triggered
-      ? `${gcResult.archivedCount} entries archived`
+      ? `${gcResult.archivedCount} entries archived, ${gcResult.dissolvedVersionGroups} singleton version groups dissolved`
+      : gcResult.dissolvedVersionGroups > 0
+        ? `${gcResult.dissolvedVersionGroups} singleton version groups dissolved; archive skipped — ${gcResult.reason}`
       : `skipped — ${gcResult.reason}`,
   });
 

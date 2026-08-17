@@ -506,6 +506,7 @@ describe("F-2 integration: retention policy + auto-gc", () => {
     return {
       store: {
         stats: async () => ({ totalCount: data.size, scopeCounts: {}, categoryCounts: {} }),
+        repairSingletonVersionGroups: async () => 0,
         list: async () => Array.from(data.values()),
         listPage: async (opts: { limit?: number; offset?: number } = {}) => {
           const { limit = 1000, offset = 0 } = opts;
@@ -831,6 +832,7 @@ describe("F-1 integration: audit logger", () => {
     const rows = [{ id: "gc-1", text: "old", importance: 0.1, timestamp: oldTs, metadata: activeMeta, category: "events", scope: "project:test" }];
     const store = {
       async stats() { return { totalCount: 100, scopeCounts: {}, categoryCounts: {} }; },
+      async repairSingletonVersionGroups() { return 0; },
       async list() { return rows; },
       async listPage(opts: { limit?: number; offset?: number } = {}) {
         const { limit = 1000, offset = 0 } = opts;

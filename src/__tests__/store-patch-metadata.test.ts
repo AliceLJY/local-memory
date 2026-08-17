@@ -203,3 +203,33 @@ describe("MemoryStore.listPage", () => {
     expect(withVec.vector).toEqual([1, 0, 0]);
   });
 });
+
+describe("MemoryStore.repairSingletonVersionGroups", () => {
+  it("dissolves only singleton groups and preserves all unrelated metadata", async () => {
+    const store = createStore();
+    const singleton = await seed(store, {
+      text: "singleton",
+      metadata: JSON.stringify({
+        version_group: "vg-single",
+        version_rank: 1.4,
+        version_created: "2026-07-07T00:00:00.000Z",
+        marker: "keep",
+      }),
+    });
+    const pairA = await seed(store, {
+      text: "pair-a",
+      metadata: JSON.stringify({ version_group: "vg-pair", version_rank: 2, version_created: "2026-07-07T00:00:00.000Z" }),
+    });
+    const pairB = await seed(store, {
+      text: "pair-b",
+      metadata: JSON.stringify({ version_group: "vg-pair", version_rank: 1, version_created: "2026-07-07T00:00:00.000Z" }),
+    });
+
+    expect(await store.repairSingletonVersionGroups()).toBe(1);
+    const singletonMeta = JSON.parse((await store.getById(singleton.id))!.metadata!);
+    expect(singletonMeta).toEqual({ marker: "keep" });
+    expect(JSON.parse((await store.getById(pairA.id))!.metadata!).version_group).toBe("vg-pair");
+    expect(JSON.parse((await store.getById(pairB.id))!.metadata!).version_group).toBe("vg-pair");
+    expect(await store.repairSingletonVersionGroups()).toBe(0);
+  });
+});

@@ -79,6 +79,7 @@ function createMockStore(entries: MemoryEntry[]): MemoryStore {
         categoryCounts: {},
       };
     },
+    async repairSingletonVersionGroups() { return 0; },
     async store(entry: Partial<MemoryEntry>) {
       const full = {
         id: entry.id || `dream-${storeCounter++}`,

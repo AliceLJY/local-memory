@@ -59,6 +59,7 @@ describe("B-2: Archive Strategy", () => {
       return {
         store: {
           stats: async () => ({ totalCount: data.size, scopeCounts: {}, categoryCounts: {} }),
+          repairSingletonVersionGroups: async () => 0,
           list: async () => Array.from(data.values()),
           listPage: async (opts: { limit?: number; offset?: number } = {}) => {
             const { limit = 1000, offset = 0 } = opts;

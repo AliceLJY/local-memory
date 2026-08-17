@@ -14,6 +14,8 @@ import {
   computeVersionRank,
   deduplicateByVersionGroup,
   createVersionGroup,
+  clearVersionGroupMetadata,
+  planSingletonVersionGroupRepairs,
 } from "../version-manager.js";
 import type { MemoryEntry } from "../store.js";
 
@@ -209,5 +211,38 @@ describe("deduplicateByVersionGroup", () => {
 
     expect(deduped.length).toBe(1);
     expect(deduped[0].entry.id).toBe("only");
+  });
+});
+
+describe("singleton version-group repair", () => {
+  it("plans only groups with one surviving member", () => {
+    const singleton = makeEntry("solo", { version_group: "vg-single", version_rank: 1 });
+    const pairA = makeEntry("pair-a", { version_group: "vg-pair", version_rank: 2 });
+    const pairB = makeEntry("pair-b", { version_group: "vg-pair", version_rank: 1 });
+    const malformed = makeEntry("bad");
+    malformed.metadata = "{not-json";
+
+    expect(planSingletonVersionGroupRepairs([
+      singleton,
+      pairA,
+      pairB,
+      makeEntry("ungrouped"),
+      malformed,
+    ])).toEqual([{ id: "solo", groupId: "vg-single" }]);
+  });
+
+  it("clears only version-group keys and preserves unrelated metadata", () => {
+    const meta: Record<string, unknown> = {
+      version_group: "vg-single",
+      version_rank: 2.3,
+      version_created: "2026-07-07T00:00:00.000Z",
+      confidence: 0.9,
+      evolution: { status: "active" },
+    };
+
+    expect(clearVersionGroupMetadata(meta, "vg-single")).toEqual({
+      confidence: 0.9,
+      evolution: { status: "active" },
+    });
   });
 });

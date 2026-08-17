@@ -61,6 +61,10 @@ export interface MemoryStorePort {
     }>,
     scopeFilter?: string[],
   ): Promise<number>;
+  /** Remove version-group metadata from groups with only one surviving member.
+   *  Implementations should take one membership snapshot and apply repairs under
+   *  the same write lock so concurrent group creation cannot invalidate the plan. */
+  repairSingletonVersionGroups(): Promise<number>;
   vectorSearch(
     vector: number[],
     limit?: number,

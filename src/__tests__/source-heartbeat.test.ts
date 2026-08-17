@@ -48,10 +48,14 @@ function makeEntry(id: string): MemoryEntry {
   };
 }
 
-function createMockStore(entries: MemoryEntry[]): Pick<MemoryStore, "list" | "stats" | "getVectors"> {
+function createMockStore(entries: MemoryEntry[]): Pick<MemoryStore, "list" | "listPage" | "stats" | "getVectors"> {
   return {
     // 复刻真实 store:list() 为性能不返回向量,诊断检查经 getVectors 补回。
     async list() { return entries.map(e => ({ ...e, vector: [] })); },
+    async listPage(opts: { limit?: number; offset?: number } = {}) {
+      const { limit = 1000, offset = 0 } = opts;
+      return entries.slice(offset, offset + limit).map(e => ({ ...e, vector: [] }));
+    },
     async stats() {
       return { totalCount: entries.length, scopeCounts: {}, categoryCounts: {} };
     },
@@ -62,7 +66,7 @@ function createMockStore(entries: MemoryEntry[]): Pick<MemoryStore, "list" | "st
       }
       return map;
     },
-  } as Pick<MemoryStore, "list" | "stats" | "getVectors">;
+  } as Pick<MemoryStore, "list" | "listPage" | "stats" | "getVectors">;
 }
 
 // ---------------------------------------------------------------------------
