@@ -25,6 +25,15 @@ function buildResult(id: string, metadata: Record<string, unknown>): RetrievalRe
 }
 
 describe("memory output", () => {
+  it("renders a whole-day age next to every date so nobody has to subtract", () => {
+    const result = buildResult("abcd1234-0000-0000-0000-000000000009", { source: "agent" });
+    const search = formatSearchResults([result], { query: "concise", profile: "default" } as any);
+    expect(search).toContain("Date       Age   Retrieval Path");
+    expect(search).toMatch(/2026-03-16 \d+d\s+vector/);
+    const explain = formatExplainResults([result], { query: "concise", profile: "default" } as any);
+    expect(explain).toMatch(/2026-03-16 \(\d+d\)/);
+  });
+
   it("includes provenance in search results", () => {
     const output = formatSearchResults([
       buildResult("abcd1234-0000-0000-0000-000000000001", {

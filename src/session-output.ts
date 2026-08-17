@@ -1,5 +1,6 @@
 import type { ResumeContextResponse, SessionCheckpointRecord } from "./session-schema.js";
 import { cleanText } from "./context-composer-text.js";
+import { formatIsoAgeLabel } from "./age-label.js";
 
 function listBlock(label: string, items: string[]): string[] {
   if (items.length === 0) return [];
@@ -32,7 +33,7 @@ export function formatCheckpointSaved(record: SessionCheckpointRecord): string {
     `Checkpoint ${record.checkpointId.slice(0, 8)}`,
     `Session: ${record.sessionId}`,
     `Scope: ${record.resolvedScope}`,
-    `Updated: ${record.updatedAt}`,
+    `Updated: ${record.updatedAt} (${formatIsoAgeLabel(record.updatedAt)})`,
     `Summary: ${record.summary}`,
     ...listBlock("Decisions", record.decisions),
     ...listBlock("Open loops", record.openLoops),
@@ -48,7 +49,7 @@ export function formatCheckpointSummary(record: SessionCheckpointRecord | null):
     `Latest checkpoint`,
     `Session: ${record.sessionId}`,
     `Scope: ${record.resolvedScope}`,
-    `Updated: ${record.updatedAt}`,
+    `Updated: ${record.updatedAt} (${formatIsoAgeLabel(record.updatedAt)})`,
     `Summary: ${record.summary}`,
   ];
   if (record.nextActions.length > 0) {
@@ -123,7 +124,7 @@ export function formatResumeContext(response: ResumeContextResponse): string {
     if (response.latestCheckpoint.resolvedScope) {
       lines.push(`Scope: ${response.latestCheckpoint.resolvedScope}`);
     }
-    lines.push(`Updated: ${response.latestCheckpoint.updatedAt}`);
+    lines.push(`Updated: ${response.latestCheckpoint.updatedAt} (${formatIsoAgeLabel(response.latestCheckpoint.updatedAt)})`);
     lines.push(`Summary: ${response.latestCheckpoint.summary}`);
   }
 

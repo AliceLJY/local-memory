@@ -1,3 +1,4 @@
+import { formatAgeLabel } from "./age-label.js";
 import type { MemoryEntry } from "./store.js";
 import type { RetrievalResult } from "./retriever.js";
 import type { RetrievalProfileName } from "./retrieval-profiles.js";
@@ -41,6 +42,7 @@ export interface DistilledEvidence {
   source: string;
   scope: string;
   date: string;
+  age: string;
   retrievalPath: string;
   snippet: string;
 }
@@ -332,6 +334,7 @@ function buildSearchRow(index: number, query: string, result: RetrievalResult): 
     getTierLabel(result).padEnd(10),
     getSourceLabel(result).padEnd(7),
     getDateLabel(result.entry.timestamp),
+    formatAgeLabel(result.entry.timestamp).padEnd(5),
     getRetrievalPath(result).padEnd(20),
     getFileLabel(result),
     cleanSnippet(pickBestSnippet(query, result.entry.text), 120),
@@ -374,13 +377,13 @@ export function formatFullResults(
     `Profile : ${context.profile}`,
     `Hits    : ${results.length}`,
     "",
-    "#  ID       Score Category     Tier       Source  Date       Retrieval Path       File / Snippet",
-    "-- -------- ----- ------------ ---------- ------- ---------- -------------------- --------------",
+    "#  ID       Score Category     Tier       Source  Date       Age   Retrieval Path       File / Snippet",
+    "-- -------- ----- ------------ ---------- ------- ---------- ----- -------------------- --------------",
   ];
 
   for (let i = 0; i < results.length; i++) {
     const row = buildSearchRow(i, context.query, results[i]);
-    lines.push(`${row[0]} ${row[1]} ${row[2]} ${row[3]} ${row[4]} ${row[5]} ${row[6]} ${row[7]} ${row[8]} | ${row[9]}`);
+    lines.push(`${row[0]} ${row[1]} ${row[2]} ${row[3]} ${row[4]} ${row[5]} ${row[6]} ${row[7]} ${row[8]} ${row[9]} | ${row[10]}`);
     lines.push(`   prov : ${getProvenanceSummary(results[i])}`);
     // Full mode: append metadata details
     const meta = parseMetadata(results[i].entry);
@@ -424,13 +427,13 @@ export function formatSearchResults(
     `Profile : ${context.profile}`,
     `Hits    : ${results.length}`,
     "",
-    "#  ID       Score Category     Tier       Source  Date       Retrieval Path       File / Snippet",
-    "-- -------- ----- ------------ ---------- ------- ---------- -------------------- --------------",
+    "#  ID       Score Category     Tier       Source  Date       Age   Retrieval Path       File / Snippet",
+    "-- -------- ----- ------------ ---------- ------- ---------- ----- -------------------- --------------",
   ];
 
   for (let i = 0; i < results.length; i++) {
     const row = buildSearchRow(i, context.query, results[i]);
-    lines.push(`${row[0]} ${row[1]} ${row[2]} ${row[3]} ${row[4]} ${row[5]} ${row[6]} ${row[7]} ${row[8]} | ${row[9]}`);
+    lines.push(`${row[0]} ${row[1]} ${row[2]} ${row[3]} ${row[4]} ${row[5]} ${row[6]} ${row[7]} ${row[8]} ${row[9]} | ${row[10]}`);
     lines.push(`   prov : ${getProvenanceSummary(results[i])}`);
     // Freshness: only shown for memories that declared dependsOn (opt-in, cheap check).
     const fresh = evaluateEntryFreshness(results[i].entry.metadata, freshnessCache);
@@ -529,7 +532,7 @@ export function formatExplainResults(
     const session = getSessionLabel(result);
     const why = buildWhyMatched(context.query, result);
 
-    lines.push(`${i + 1}. ${result.entry.id.slice(0, 8)} | ${score} | ${getSourceLabel(result)} | ${getDateLabel(result.entry.timestamp)}`);
+    lines.push(`${i + 1}. ${result.entry.id.slice(0, 8)} | ${score} | ${getSourceLabel(result)} | ${getDateLabel(result.entry.timestamp)} (${formatAgeLabel(result.entry.timestamp)})`);
     lines.push(`   category: ${getCategoryLabel(result)}`);
     lines.push(`   tier    : ${getTierLabel(result)}`);
     lines.push(`   path    : ${retrieval}`);
@@ -592,6 +595,7 @@ export function summarizeResults(
       source: getSourceLabel(result),
       scope: result.entry.scope,
       date: getDateLabel(result.entry.timestamp),
+      age: formatAgeLabel(result.entry.timestamp),
       retrievalPath: getRetrievalPath(result),
       snippet: pickBestSnippet(context.query, normalizeRecallText(result)),
     });
@@ -654,7 +658,7 @@ export function distillResults(
 
   lines.push("", "Evidence");
   summary.evidence.forEach((item, index) => {
-    lines.push(`${index + 1}. ${item.source} | ${item.date} | ${item.retrievalPath} | ${item.snippet}`);
+    lines.push(`${index + 1}. ${item.source} | ${item.date} (${item.age}) | ${item.retrievalPath} | ${item.snippet}`);
   });
 
   lines.push("", "Reusable Memory Candidates");
