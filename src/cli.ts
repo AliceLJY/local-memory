@@ -40,6 +40,7 @@ import { runDoctor, formatDoctorResults } from "./doctor.js";
 import { persistCaseMemory, persistMemory, persistWorkflowPattern } from "./capture-engine.js";
 import { scanMemoryPromotions, buildPromoteScanDeps, formatPromoteScanResult } from "./memory-promotion.js";
 import { runDream, formatDreamResult, formatDreamMetrics, DEFAULT_DREAM_CONFIG, classifyDreamFailure, shouldBlockDreamRun, partitionAutoDreamScopes } from "./dream-pipeline.js";
+import { dreamBudgetMs } from "./env-config.js";
 import { listScopesAboveThreshold, pruneWriteCounts } from "./activity-counter.js";
 import { isTranscriptScope } from "./memory-boundaries.js";
 import { maybeRunGc } from "./auto-gc.js";
@@ -1684,7 +1685,7 @@ program
       // 把 07-25~27 三天的调度全堵死（上一次没结束，launchd 起不了新的）。
       // 天花板见 DreamConfig.autoRunBudgetMs 的注释——截断会让靠后 scope 系统性饿死，
       // 真解是 session scope TTL，不是把预算调大。
-      const budgetMs = Number(process.env.RECALLNEST_DREAM_BUDGET_MS ?? DEFAULT_DREAM_CONFIG.autoRunBudgetMs);
+      const budgetMs = dreamBudgetMs(DEFAULT_DREAM_CONFIG.autoRunBudgetMs);
       const deadline = Date.now() + budgetMs;
 
       let fatalFailures = 0;

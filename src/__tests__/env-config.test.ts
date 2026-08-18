@@ -21,6 +21,7 @@ const KEYS = [
   "RECALLNEST_RECALL_MODE",
   "RECALLNEST_UI_PORT",
   "RECALLNEST_API_PORT",
+  "RECALLNEST_DREAM_BUDGET_MS",
 ];
 
 const saved: Record<string, string | undefined> = {};
@@ -147,5 +148,44 @@ describe("env-config accessors are lazy (read at call time, never frozen)", () =
 
     delete process.env.RECALLNEST_EMOTION_SCORING;
     expect(envConfig.emotionScoring()).toBe(false);
+  });
+});
+
+describe("env-config dreamBudgetMs — the two silent failure modes it exists to stop", () => {
+  const FALLBACK = 2 * 60 * 60 * 1000;
+
+  it("falls back when unset", () => {
+    delete process.env.RECALLNEST_DREAM_BUDGET_MS;
+    expect(envConfig.dreamBudgetMs(FALLBACK)).toBe(FALLBACK);
+  });
+
+  it('empty string does NOT become 0 (old `?? default` let "" through → Number("") === 0 → every scope skipped)', () => {
+    process.env.RECALLNEST_DREAM_BUDGET_MS = "";
+    expect(envConfig.dreamBudgetMs(FALLBACK)).toBe(FALLBACK);
+    process.env.RECALLNEST_DREAM_BUDGET_MS = "   ";
+    expect(envConfig.dreamBudgetMs(FALLBACK)).toBe(FALLBACK);
+  });
+
+  it('non-numeric does NOT become NaN (NaN deadline makes `Date.now() > deadline` permanently false → budget guard gone)', () => {
+    for (const bad of ["2h", "abc", "30min", "1_000"]) {
+      process.env.RECALLNEST_DREAM_BUDGET_MS = bad;
+      const ms = envConfig.dreamBudgetMs(FALLBACK);
+      expect(Number.isFinite(ms)).toBe(true);
+      expect(ms).toBe(FALLBACK);
+      // The regression this guards: a NaN budget silently disables the deadline.
+      expect(Date.now() > Date.now() + ms).toBe(false);
+    }
+  });
+
+  it("rejects zero and negatives (they would expire the deadline instantly)", () => {
+    for (const bad of ["0", "-1", "-60000"]) {
+      process.env.RECALLNEST_DREAM_BUDGET_MS = bad;
+      expect(envConfig.dreamBudgetMs(FALLBACK)).toBe(FALLBACK);
+    }
+  });
+
+  it("accepts a valid override", () => {
+    process.env.RECALLNEST_DREAM_BUDGET_MS = "900000";
+    expect(envConfig.dreamBudgetMs(FALLBACK)).toBe(900_000);
   });
 });

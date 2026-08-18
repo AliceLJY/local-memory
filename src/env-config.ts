@@ -109,6 +109,27 @@ export const readConsistencyInterval = (): number | undefined => {
   return Number.isFinite(n) && n >= 0 ? n : 0;
 };
 
+/**
+ * Wall-clock budget (ms) for one `dream --auto` sweep.
+ *
+ * NOT a pure movement (unlike every accessor above): the original inline read in
+ * cli.ts was `Number(process.env.X ?? DEFAULT)`, which had two silent failure
+ * modes — `""` slipped past `??` and became **0** (every scope skipped, run is a
+ * no-op that still reports ok), and any non-numeric value became **NaN**, making
+ * the `Date.now() > deadline` guard permanently false. The second one silently
+ * reverts the very incident this budget exists to prevent: the 2026-07-24 sweep
+ * ran 4d15h and blocked three days of scheduled runs. Both are corrected here
+ * on purpose; do not "restore" the original parsing.
+ *
+ * Unset / empty / non-finite / <= 0 → caller's fallback.
+ */
+export const dreamBudgetMs = (fallbackMs: number): number => {
+  const raw = process.env.RECALLNEST_DREAM_BUDGET_MS;
+  if (raw === undefined || raw.trim() === "") return fallbackMs;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : fallbackMs;
+};
+
 // --- Raw env values (caller validates / clamps / falls back to config) ---
 
 export const recallModeRaw = (): string | undefined => process.env.RECALLNEST_RECALL_MODE;
