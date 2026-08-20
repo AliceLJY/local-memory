@@ -54,7 +54,8 @@
     "seed:continuity": "bun run seed:patterns && bun run seed:cases && bun run seed:memories",
     "smoke:claude-continuity": "bash integrations/claude-code/smoke-continuity.sh",
     "ui": "bun run src/ui-server.ts",
-    "api": "bun run src/api-server.ts"
+    "api": "bun run src/api-server.ts",
+    "gateway": "bun run src/gateway-server.ts"
   },
   "engines": {
     "node": ">=18.14.1"

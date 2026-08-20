@@ -47,6 +47,34 @@ RecallNest 的解法：**一个 LanceDB 驱动的记忆层，供你的编程 Age
 
 接一个新客户端不等于要改 RecallNest：够格的客户端自己写一行配置，能力受限的在 HTTP API 前面加一层薄网关。
 
+### 手机上的 AI app：只读网关
+
+HTTP API（`:4318`）只监听 `127.0.0.1`，并且会拒绝任何 Host 头不是本地的请求——这是**有意的**：它同时暴露写入路由（`/v1/store`、`/v1/checkpoint`），直接开到公网等于把写权限交出去。
+
+所以要让手机上的 AI app 读到同一份记忆，前面加一层只读网关：
+
+```bash
+openssl rand -hex 32 > ~/.config/recallnest/gateway-token
+chmod 600 ~/.config/recallnest/gateway-token
+
+bun run api        # 本机 API，:4318
+bun run gateway    # 只读网关，:8791 → 转发到 :4318
+```
+
+网关只放行读路由（`/recall`、`/search`、`/stats`、`/health`），**任何写路由一律 404**；Bearer token 常量时间比较、每分钟限流、请求与响应都有大小上限。把它放到隧道后面（Tailscale Serve/Funnel、Cloudflare Tunnel 等）即可从手机访问。
+
+```bash
+curl -X POST https://<你的隧道地址>/recall \
+  -H "Authorization: Bearer $(cat ~/.config/recallnest/gateway-token)" \
+  -H 'content-type: application/json' \
+  -d '{"query":"上次那个部署问题怎么解决的","limit":3,"allScopes":true}'
+```
+
+可选：配 `RECALLNEST_GATEWAY_FILE_ROOTS="notes=/abs/path,wiki=/abs/path"` 会多出一个 `GET /files/search`，用 ripgrep 只读检索你指定的 markdown 目录（查询词以 argv 传入，不经过 shell）。不配就没有这个路由。
+
+> 网关默认也只绑 `127.0.0.1`——把它暴露到公网是隧道的职责，请自行评估风险。
+
+
 
 ## 快速开始
 

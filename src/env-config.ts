@@ -137,3 +137,19 @@ export const recallModeRaw = (): string | undefined => process.env.RECALLNEST_RE
 export const uiPortRaw = (): string | undefined => process.env.RECALLNEST_UI_PORT;
 
 export const apiPortRaw = (): string | undefined => process.env.RECALLNEST_API_PORT;
+
+// --- Gateway (read-only front door; caller validates / clamps) ---
+
+export const gatewayPortRaw = (): string | undefined => process.env.RECALLNEST_GATEWAY_PORT;
+
+export const gatewayHostRaw = (): string | undefined => process.env.RECALLNEST_GATEWAY_HOST;
+
+export const gatewayTokenRaw = (): string | undefined => process.env.RECALLNEST_GATEWAY_TOKEN;
+
+export const gatewayRateMaxRaw = (): string | undefined => process.env.RECALLNEST_GATEWAY_RATE_MAX;
+
+export const gatewayFileRootsRaw = (): string | undefined => process.env.RECALLNEST_GATEWAY_FILE_ROOTS;
+
+export const gatewayRgRaw = (): string | undefined => process.env.RECALLNEST_GATEWAY_RG;
+
+export const apiUrlRaw = (): string | undefined => process.env.RECALLNEST_API_URL;

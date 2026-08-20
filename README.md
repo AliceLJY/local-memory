@@ -47,6 +47,34 @@ Two consequences worth stating plainly:
 
 Adding a client does not mean changing RecallNest. A capable client writes one config line; a limited one gets a thin gateway in front of the HTTP API.
 
+### AI apps on a phone: the read-only gateway
+
+The HTTP API (`:4318`) binds to `127.0.0.1` and rejects any request whose Host header is not local. That is **deliberate** — it also exposes write routes (`/v1/store`, `/v1/checkpoint`), so putting it on a public address would hand out write access.
+
+To let an AI app on your phone read the same memory, put a read-only gateway in front:
+
+```bash
+openssl rand -hex 32 > ~/.config/recallnest/gateway-token
+chmod 600 ~/.config/recallnest/gateway-token
+
+bun run api        # local API on :4318
+bun run gateway    # read-only gateway on :8791 → forwards to :4318
+```
+
+The gateway allows read routes only (`/recall`, `/search`, `/stats`, `/health`); **every write route is a 404**. Bearer token compared in constant time, per-minute rate limit, hard caps on request and response size. Put it behind a tunnel (Tailscale Serve/Funnel, Cloudflare Tunnel, …) to reach it from a phone.
+
+```bash
+curl -X POST https://<your-tunnel>/recall \
+  -H "Authorization: Bearer $(cat ~/.config/recallnest/gateway-token)" \
+  -H 'content-type: application/json' \
+  -d '{"query":"how did we fix that deploy issue","limit":3,"allScopes":true}'
+```
+
+Optional: set `RECALLNEST_GATEWAY_FILE_ROOTS="notes=/abs/path,wiki=/abs/path"` to add `GET /files/search`, a read-only ripgrep search over markdown directories you name (the query is passed as an argv element, never through a shell). Leave it unset and the route does not exist.
+
+> The gateway also binds to `127.0.0.1` by default — exposing it is the tunnel's job. Evaluate that risk yourself.
+
+
 
 ## Quick Start
 
