@@ -25,6 +25,11 @@
       "path": "auto",
       "glob": "*.md",
       "description": "Claude Code memory files"
+    },
+    "minis": {
+      "path": "~/Desktop/minis-outbox/ingest",
+      "glob": "*.jsonl",
+      "description": "Minis (iPhone) conversations, dropped here by the agent itself"
     }
   },
   "retrieval": {
@@ -36,6 +41,8 @@
     "hardMinScore": 0.3
   },
   "scopeRelations": {
-    "project:example-a": ["project:example-b"]
+    "project:example-a": [
+      "project:example-b"
+    ]
   }
 }
