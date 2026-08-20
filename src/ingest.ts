@@ -1867,7 +1867,11 @@ export async function ingestCCTranscripts(
             const chunk = dedupedChunks[j];
             const ext = extractions[j];
             toStore.push(buildIngestedEntry({
-              source: "cc",
+              // 必须跟 scope 前缀一致：memory-boundaries 有两道闸，isTranscriptScope 看 scope、
+              // isTranscriptSource 看这个字段。写死 "cc" 时降权仍然生效（cc 也在清单里），
+              // 所以错了不会报错、只会让「按来源过滤」静默失真——2026-08-20 接 minis 源时漏改这处，
+              // 库里出现 10 条 scope=minis: 而 source=cc 的记录。
+              source: scopePrefix,
               scope: `${scopePrefix}:${chunk.sessionId.slice(0, 8)}`,
               text: dedupedTexts[j],
               vector: dedupedVectors[j],

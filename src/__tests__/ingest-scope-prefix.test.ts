@@ -12,7 +12,7 @@
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { isTranscriptScope } from "../memory-boundaries.js";
+import { isTranscriptIngestSource, isTranscriptScope } from "../memory-boundaries.js";
 
 const config = JSON.parse(
   readFileSync(join(import.meta.dir, "..", "..", "config.json"), "utf8"),
@@ -51,6 +51,15 @@ describe("ingest 源的 scope 前缀登记", () => {
     expect(config.sources.minis).toBeDefined();
     expect(config.sources.minis.glob).toBe("*.jsonl");
     expect(isTranscriptScope("minis:9f3e7a21")).toBe(true);
+  });
+
+  it("同一个前缀也必须在 source 清单里登记（两道闸，漏一道就静默失真）", () => {
+    // isTranscriptScope 看 scope、isTranscriptSource 看条目的 source 字段。
+    // 只登记前者时降权仍然生效，错误不会报出来，只会让「按来源过滤」查不准。
+    for (const [name, prefix] of Object.entries(SOURCE_SCOPE_PREFIX)) {
+      if (prefix === null) continue;
+      expect(`${name}:${isTranscriptIngestSource(prefix)}`).toBe(`${name}:true`);
+    }
   });
 
   it("一条反向断言：没登记过的前缀不会被误判成 transcript", () => {
