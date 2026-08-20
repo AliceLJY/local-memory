@@ -2,9 +2,9 @@
 
 # RecallNest
 
-**Shared Memory Layer for Any MCP Client — Claude Code, Codex, Kimi, Antigravity (agy)**
+**Shared Memory Layer for Every AI Client — CLI agents, desktop apps, your own scripts**
 
-*One memory. Every terminal. Context that survives across windows.*
+*One memory. Every client. Context that survives across windows — and across machines.*
 
 A local-first memory system backed by LanceDB that turns scattered conversation history into reusable knowledge — shared across your coding agents, recalled automatically.
 
@@ -27,6 +27,25 @@ A local-first memory system backed by LanceDB that turns scattered conversation 
 Coding agents forget everything between windows. Your context — project configs, debugging decisions, entity mappings — is scattered across Claude Code, Codex, Kimi, Antigravity — and every other terminal you open — with no shared memory.
 
 RecallNest solves this: **a single LanceDB-backed memory layer that your coding agents read and write**. Context stored in one window is auto-recalled in another. Sessions checkpoint on exit and resume on start. Memory decays, evolves, and self-organizes — not just raw log storage.
+
+
+## Who Can Connect
+
+**The data layer does not know what your client looks like.** RecallNest exposes the same LanceDB store through three outlets, so the right one is picked per client — not per protocol.
+
+| What your client can do | Route | Verified with |
+|---|---|---|
+| Run a local command (CLI agent) | **MCP over stdio** | Claude Code, Codex, Kimi, Antigravity |
+| Run a local command (GUI app, MCP config filled by hand) | **MCP over stdio** | Doubao desktop — same shape as Cherry Studio / ChatBox |
+| Only speak HTTP | **HTTP API** | custom agents, scripts, cron |
+| Run on another machine | swap the stdio command for `ssh <host> recallnest-mcp` | four clients on a laptop reading one store on a home server |
+
+Two consequences worth stating plainly:
+
+- **Not tied to one protocol.** A GUI chat app that supports MCP config connects the same way a terminal agent does. A client that can only issue HTTP requests still reads the same memory.
+- **Not tied to one machine.** Because the MCP transport is stdio, the launch command is yours to define — point it at `ssh` and every client on every machine shares a single source of truth instead of each host growing its own database.
+
+Adding a client does not mean changing RecallNest. A capable client writes one config line; a limited one gets a thin gateway in front of the HTTP API.
 
 
 ## Quick Start
@@ -323,7 +342,7 @@ v2.2 hardened retrieval quality; v2.3 opens RecallNest to external data sources 
 
 RecallNest serves two interfaces:
 
-- **MCP** — for any MCP client: Claude Code, Codex, Kimi, Antigravity (native tool access)
+- **MCP (stdio)** — for any client that can launch a command: CLI agents (Claude Code, Codex, Kimi, Antigravity) and GUI apps that accept an MCP config (Doubao, Cherry Studio, ChatBox)
 - **HTTP API** — for custom agents, SDK-based apps, and any HTTP client
 
 ### Agent framework examples
@@ -501,7 +520,7 @@ Maintainers: see [Publishing RecallNest](https://github.com/AliceLJY/recallnest/
 RecallNest started as a fork of [memory-lancedb-pro](https://github.com/CortexReach/memory-lancedb-pro) and shares its core ideas around hybrid retrieval, decay modeling, and memory-as-engineering-system. The key difference:
 
 - **memory-lancedb-pro** is an OpenClaw plugin — it adds long-term memory to a single OpenClaw agent.
-- **RecallNest** is a standalone memory layer — it serves any MCP client (Claude Code, Codex, Kimi, Antigravity) simultaneously through MCP + HTTP API, with session continuity, structured assets, and conflict management built in.
+- **RecallNest** is a standalone memory layer — it serves CLI agents, GUI chat apps and plain HTTP callers simultaneously through MCP + HTTP API, with session continuity, structured assets, and conflict management built in.
 
 ## Credit
 

@@ -2,9 +2,9 @@
 
 # RecallNest
 
-**面向任意 MCP 客户端的共享记忆层 —— Claude Code、Codex、Kimi、Antigravity (agy)**
+**面向任意 AI 客户端的共享记忆层 —— CLI agent、桌面 app、你自己的脚本**
 
-*一套记忆，每个终端，上下文跨窗口延续。*
+*一套记忆，每个客户端，上下文跨窗口延续——也跨机器。*
 
 基于 LanceDB 的本地优先记忆系统，把散落在各个终端的对话历史沉淀为可复用知识，跨终端共享，自动召回。
 
@@ -27,6 +27,25 @@
 编程 Agent 每开一个窗口就失忆。项目配置、调试决策、实体映射——散落在 Claude Code、Codex、Kimi、Antigravity 以及你打开的每一个终端里，互相不通。
 
 RecallNest 的解法：**一个 LanceDB 驱动的记忆层，供你的编程 Agent 共读共写**。一个窗口存入的上下文，另一个窗口自动召回。会话退出时 checkpoint，启动时 resume。记忆会衰减、演化、自组织——不是简单的日志堆积。
+
+
+## 谁能接上
+
+**数据层不知道你的客户端长什么样。** RecallNest 把同一个 LanceDB 存储通过三个出口暴露出来，接法按客户端的能力选，而不是绑死在某一种协议上。
+
+| 你的客户端能做什么 | 走哪条 | 已验证 |
+|---|---|---|
+| 执行本地命令（CLI agent） | **MCP over stdio** | Claude Code、Codex、Kimi、Antigravity |
+| 执行本地命令（GUI app，手填 MCP 配置） | **MCP over stdio** | 豆包桌面端——与 Cherry Studio / ChatBox 同一形态 |
+| 只会发 HTTP 请求 | **HTTP API** | 自定义 agent、脚本、定时任务 |
+| 跑在另一台机器上 | 把 stdio 启动命令换成 `ssh <host> recallnest-mcp` | 笔记本上的四个客户端共读家里服务器上的同一个库 |
+
+两条值得直说的推论：
+
+- **不绑单一协议。** 支持填 MCP 配置的 GUI 聊天 app，接入方式和终端里的 agent 完全一样；只会发 HTTP 请求的客户端，读到的仍是同一份记忆。
+- **不绑单台机器。** 因为 MCP 传输走 stdio，启动命令由你定义——把它指向 `ssh`，每台机器上的每个客户端共用同一个真相源，而不是各自长出一个数据库。
+
+接一个新客户端不等于要改 RecallNest：够格的客户端自己写一行配置，能力受限的在 HTTP API 前面加一层薄网关。
 
 
 ## 快速开始
@@ -143,8 +162,8 @@ bun run src/ui-server.ts
 | 能力 | 说明 |
 |---|---|
 | **CC Plugin** | 一行命令装入 Claude Code，无需手动配置 MCP |
-| **共享索引** | 所有支持 MCP 的终端共用同一个 LanceDB 存储 |
-| **双通道接入** | MCP（stdio）给 CLI 工具 + HTTP API 给自定义 Agent |
+| **共享索引** | 所有客户端共用同一个 LanceDB 存储，跨机指向 `ssh` 即可共用真相源 |
+| **双通道接入** | MCP（stdio）给 CLI agent 与能填 MCP 配置的 GUI app + HTTP API 给只会发请求的客户端 |
 | **一键接入** | 集成脚本同时安装 MCP 和 continuity 规则 |
 
 ### 检索与连续性
@@ -322,7 +341,7 @@ v2.2 强化了检索质量；v2.3 通过标准 Connector 框架和运维健康�
 
 RecallNest 提供两种接口：
 
-- **MCP** —— 给任意 MCP 客户端使用：Claude Code、Codex、Kimi、Antigravity (agy)（原生工具访问）
+- **MCP（stdio）** —— 给任何能启动一条命令的客户端：CLI agent（Claude Code、Codex、Kimi、Antigravity）与能填 MCP 配置的 GUI app（豆包、Cherry Studio、ChatBox）
 - **HTTP API** —— 给自定义 Agent、SDK 应用和任何 HTTP 客户端使用
 
 ### Agent 框架示例
@@ -498,7 +517,7 @@ RecallNest 持续维护中。所有主要架构阶段已完成——完整路线
 RecallNest 起源于 [memory-lancedb-pro](https://github.com/CortexReach/memory-lancedb-pro) 的 fork，共享混合检索、衰减建模、记忆即系统的核心理念。关键区别：
 
 - **memory-lancedb-pro** 是 OpenClaw 插件——为单个 OpenClaw Agent 添加长期记忆。
-- **RecallNest** 是独立记忆层——通过 MCP + HTTP API 同时服务任意 MCP 客户端（Claude Code、Codex、Kimi、Antigravity (agy)），内建会话连续性、结构化资产和冲突管理。
+- **RecallNest** 是独立记忆层——通过 MCP + HTTP API 同时服务 CLI agent、GUI 聊天 app 与纯 HTTP 调用方，内建会话连续性、结构化资产和冲突管理。
 
 ## 致谢
 
