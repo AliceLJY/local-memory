@@ -1731,10 +1731,24 @@ export async function ingestCCTranscripts(
   store: MemoryStore,
   embedder: Embedder,
   sourcePath: string,
-  options: { limit?: number; verbose?: boolean; noDedup?: boolean; llm?: LLMClient | null; recentHours?: number } = {},
+  options: {
+    limit?: number;
+    verbose?: boolean;
+    noDedup?: boolean;
+    llm?: LLMClient | null;
+    recentHours?: number;
+    /**
+     * scope 前缀与来源标签。默认 "cc" —— 这个默认值是承重的：
+     * memory-boundaries.ts 的 TRANSCRIPT_SCOPE_PREFIXES 靠前缀把会话碎片降权到
+     * evidence 层，前缀写错等于让某个端的 shell 输出被当成"用户说过的话"。
+     * 新增来源时必须同时在那份清单里登记，别只在这里传个新字符串。
+     */
+    scopePrefix?: string;
+  } = {},
 ): Promise<IngestResult> {
+  const scopePrefix = options.scopePrefix ?? "cc";
   const result: IngestResult = {
-    source: "cc",
+    source: scopePrefix,
     filesProcessed: 0,
     chunksIngested: 0,
     chunksSkipped: 0,
@@ -1838,7 +1852,7 @@ export async function ingestCCTranscripts(
           // Without LLM: queue raw chunks for later extraction instead of storing garbage
           if (!options.llm) {
             queueForLaterExtraction(
-              dedupedChunks.map(c => ({ text: c.text, scope: `cc:${c.sessionId.slice(0, 8)}` }))
+              dedupedChunks.map(c => ({ text: c.text, scope: `${scopePrefix}:${c.sessionId.slice(0, 8)}` }))
             );
             result.chunksSkipped += dedupedTexts.length;
             continue;
@@ -1854,7 +1868,7 @@ export async function ingestCCTranscripts(
             const ext = extractions[j];
             toStore.push(buildIngestedEntry({
               source: "cc",
-              scope: `cc:${chunk.sessionId.slice(0, 8)}`,
+              scope: `${scopePrefix}:${chunk.sessionId.slice(0, 8)}`,
               text: dedupedTexts[j],
               vector: dedupedVectors[j],
               extraction: ext,

@@ -31,6 +31,25 @@ echo "=== $(date '+%Y-%m-%d %H:%M:%S') 增量更新开始 ===" >> "$LOG_FILE"
 
 cd "$SCRIPT_DIR" || exit 1
 
+# Minis 的目录在 ~/Desktop 下、走 iCloud，文件很可能只是占位符（读会报 EDEADLK）。
+# brctl download 是异步的：2026-08-20 实测 download 后立刻读仍失败、下一轮才成功，
+# 所以这里 download 完要等它真的落地，否则每天 3 点这一源都会静默读不到。
+MINIS_DIR="$HOME/Desktop/minis-outbox/ingest"
+if [ -d "$MINIS_DIR" ]; then
+  for f in "$MINIS_DIR"/*.jsonl; do
+    [ -e "$f" ] || continue
+    brctl download "$f" 2>/dev/null || true
+  done
+  for f in "$MINIS_DIR"/*.jsonl; do
+    [ -e "$f" ] || continue
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      head -c 1 "$f" >/dev/null 2>&1 && break
+      sleep 1
+    done
+  done
+fi
+
+
 # 用 timeout 命令限制运行时间（macOS 需要 gtimeout 或用 perl 替代）
 if command -v gtimeout &>/dev/null; then
   gtimeout "$TIMEOUT" bun run src/cli.ts ingest --source all >> "$LOG_FILE" 2>&1

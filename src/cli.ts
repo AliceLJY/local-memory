@@ -1363,7 +1363,7 @@ program
 program
   .command("ingest")
   .description("导入对话记录到索引")
-  .option("-s, --source <source>", "数据源: cc / codex / gemini / kimi / memory / desktop / all", "all")
+  .option("-s, --source <source>", "数据源: cc / codex / gemini / kimi / memory / desktop / minis / all", "all")
   .option("-l, --limit <n>", "限制处理文件数（调试用）")
   .option("-v, --verbose", "详细输出")
   .option("--no-dedup", "跳过向量去重")
@@ -1502,6 +1502,27 @@ program
           maybeWarnHighCCDedupRate(r);
         } else if (source === "desktop") {
           console.log("⚠️  Desktop 目录不存在，请先运行: bun scripts/pull-claude-desktop.ts");
+        }
+      }
+    }
+
+    // Minis (iPhone) —— 手机 agent 自己把对话写进这个目录，ingest 顺带扫走。
+    // 为什么是独立源而不是复用 desktop：scope 前缀决定了 memory-boundaries 怎么降权，
+    // 混在 cc: 里的话来源在库里就分辨不出来（那正是 2026-08-12 起挂着的缺口）。
+    if (source === "all" || source === "minis") {
+      const minisSource = config.sources.minis;
+      if (minisSource) {
+        const minisPath = resolveSourcePath(minisSource.path, "minis");
+        if (existsSync(minisPath)) {
+          console.log("📱 导入 Minis 对话...");
+          const r = await ingestCCTranscripts(store, embedder, minisPath, {
+            ...ingestOpts,
+            scopePrefix: "minis",
+          });
+          results.push(r);
+          console.log(`  ✅ Minis: ${formatIngestSummary(r)}`);
+        } else if (source === "minis") {
+          console.log(`⚠️  Minis 目录不存在: ${minisPath}`);
         }
       }
     }
