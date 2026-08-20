@@ -74,6 +74,8 @@ Optional: set `RECALLNEST_GATEWAY_FILE_ROOTS="notes=/abs/path,wiki=/abs/path"` t
 
 > The gateway also binds to `127.0.0.1` by default — exposing it is the tunnel's job. Evaluate that risk yourself.
 
+This is how the author connected [OpenMinis](https://github.com/OpenMinis/OpenMinis) on an iPhone: the phone app reaches the gateway over a Tailscale Funnel and queries the same memory store. The interesting part is what it reads back — its own history. Those conversations get exported, flow back, and are indexed, so a phone agent that cold-starts every time ends up with memory that survives its sessions.
+
 
 
 ## Quick Start

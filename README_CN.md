@@ -74,6 +74,8 @@ curl -X POST https://<你的隧道地址>/recall \
 
 > 网关默认也只绑 `127.0.0.1`——把它暴露到公网是隧道的职责，请自行评估风险。
 
+作者用这条路把 iPhone 上的 [OpenMinis](https://github.com/OpenMinis/OpenMinis) 接了上来：手机 app 经 Tailscale Funnel 打到网关，能查到同一份记忆库。有意思的是它查回的是**它自己**的历史——那些对话导出后回流、被索引，于是一个每次冷启动的手机 agent 有了跨会话的记忆。
+
 
 
 ## 快速开始
