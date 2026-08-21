@@ -253,10 +253,14 @@ weekly schedule**, not a manual invocation. A manual run only proves the code pa
 the scheduled path has its own failure modes and has failed independently before.
 
 - Next scheduled validation window: 2026-08-23
-- Pass condition: the scheduled `dream` run completes with `status=ok`, and its
-  exact-scope behavior matches what a manual run produces
+- Pass condition: the scheduled run enters and completes the exact `memory` scope,
+  with evidence that real eligible input was processed and that `memory:pivot` stayed
+  out of it. A no-op run proves nothing, and a manual invocation cannot stand in for
+  the scheduled one.
 - On pass: 3.0 implementation work unblocks
 - On hold: no 3.0 work starts; the gate is not waived for convenience
+- **This section is removed when 3.0 ships.** It records a gate, not a standing policy;
+  leaving it in place after the gate is spent would misdescribe the project.
 
 Rationale: 3.0 changes memory-layer behavior. Shipping it on top of an unvalidated
 consolidation path would make any later regression impossible to attribute.
