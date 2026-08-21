@@ -242,6 +242,25 @@ Planned work:
 
 Dependencies: none (all independent of each other, can be done in any order)
 
+## Release Gate: v3.0.0
+
+Status: **held on validation**
+
+The current shipping line is v2.6.x. The 3.0 line is not open yet.
+
+Gate: `dream` exact-scope consolidation must complete one clean cycle **under the real
+weekly schedule**, not a manual invocation. A manual run only proves the code path works;
+the scheduled path has its own failure modes and has failed independently before.
+
+- Next scheduled validation window: 2026-08-23
+- Pass condition: the scheduled `dream` run completes with `status=ok`, and its
+  exact-scope behavior matches what a manual run produces
+- On pass: 3.0 implementation work unblocks
+- On hold: no 3.0 work starts; the gate is not waived for convenience
+
+Rationale: 3.0 changes memory-layer behavior. Shipping it on top of an unvalidated
+consolidation path would make any later regression impossible to attribute.
+
 ## Principles
 
 - Local-first: all memory stays on your machine
