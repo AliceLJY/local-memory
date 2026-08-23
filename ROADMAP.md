@@ -28,7 +28,8 @@ What matters first is this: opening another window should not erase stable conte
 ### Already Done
 
 - Shared local LanceDB index
-- MCP server for any MCP client — Claude Code, Codex, Kimi, Antigravity, Gemini CLI (43 tools in 3 tiers)
+- MCP server for any MCP client — Claude Code, Codex, Kimi, Antigravity, Gemini CLI (44 tools in 3 tiers)
+- Six recognized transcript sources across ingest, scope boundaries and term resolution: `cc`, `codex`, `gemini`, `kimi`, `antigravity`, `minis`
 - HTTP API for custom agents (21 endpoints)
 - Ingestion from existing transcripts and memory files
 - Hybrid retrieval: vector + BM25 + reranking + 4 retrieval profiles
@@ -41,6 +42,8 @@ What matters first is this: opening another window should not erase stable conte
 - Continuity eval harness with seed cases and baseline reports
 - Setup scripts, diagnostics, and debugging UI
 - Explicit evidence -> durable promotion with provenance and `canonicalKey`
+- Automatic promotion scans: recurring downgraded evidence, and synthesized conclusions gated on their own validated evidence set
+- Retrieve audit rows carry the revision and provenance of every result served
 - Conflict candidates, review, audit, escalation, merge resolution, and audit export
 - Session Distiller: 3-layer conversation compression to durable memory
 - Conversation import from Claude Code, Claude.ai, ChatGPT, Slack, and plaintext
@@ -242,33 +245,26 @@ Planned work:
 
 Dependencies: none (all independent of each other, can be done in any order)
 
-## Release Gate: v3.0.0
+## Release Record: v3.0.0
 
-Status: **held on validation**
+The 3.0 gate is spent. It required `dream` exact-scope consolidation to complete one clean
+cycle **under the real weekly schedule** rather than a manual invocation, on the reasoning
+that a manual run only proves the code path works while the scheduled path has its own
+failure modes and had failed independently before.
 
-The current shipping line is v2.6.x. The 3.0 line is not open yet.
+- Validated: 2026-08-23, on the scheduled weekly run. The run entered and completed the
+  exact `memory` scope on real eligible input, with `memory:pivot` staying out of it.
+- Consequence: 3.0 implementation proceeded on a consolidation path with attributable
+  behaviour, so a later regression can be traced to a change rather than to unknown drift.
 
-Gate: `dream` exact-scope consolidation must complete one clean cycle **under the real
-weekly schedule**, not a manual invocation. A manual run only proves the code path works;
-the scheduled path has its own failure modes and has failed independently before.
-
-- Next scheduled validation window: 2026-08-23
-- Pass condition: the scheduled run enters and completes the exact `memory` scope,
-  with evidence that real eligible input was processed and that `memory:pivot` stayed
-  out of it. A no-op run proves nothing, and a manual invocation cannot stand in for
-  the scheduled one.
-- On pass: 3.0 implementation work unblocks
-- On hold: no 3.0 work starts; the gate is not waived for convenience
-- **This section is removed when 3.0 ships.** It records a gate, not a standing policy;
-  leaving it in place after the gate is spent would misdescribe the project.
-
-Rationale: 3.0 changes memory-layer behavior. Shipping it on top of an unvalidated
-consolidation path would make any later regression impossible to attribute.
+This entry replaces the gate section that stood here from 2026-08-22. The gate was a
+staged condition, not a standing policy — leaving it in place after it was spent would
+misdescribe the project.
 
 ## Principles
 
 - Local-first: all memory stays on your machine
-- Terminals in daily use come first: Claude Code, Codex, Kimi and Antigravity today; any MCP client works
+- Terminals in daily use come first: Claude Code, Codex, Kimi and Antigravity today, plus minis conversations flowing back from a phone; any MCP client works
 - Continuity over transcript hoarding: useful memory matters more than raw volume
 - Agent-agnostic at the interface layer: HTTP API and MCP remain the public surface
 - Measured evolution: use evals before tuning retrieval or memory policies

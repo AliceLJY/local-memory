@@ -10,9 +10,9 @@
 
 [![GitHub](https://img.shields.io/github/stars/AliceLJY/recallnest?style=social)](https://github.com/AliceLJY/recallnest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Runtime](https://img.shields.io/badge/Runtime-Bun_|_Node.js_18+-f9f1e1?logo=bun)](https://bun.sh)
+[![Runtime](https://img.shields.io/badge/Runtime-Bun_|_Node.js_22+-f9f1e1?logo=bun)](https://bun.sh)
 [![LanceDB](https://img.shields.io/badge/LanceDB-Vector+FTS-orange)](https://lancedb.com)
-[![MCP](https://img.shields.io/badge/MCP-43_tools-blue)](https://modelcontextprotocol.io)
+[![MCP](https://img.shields.io/badge/MCP-44_tools-blue)](https://modelcontextprotocol.io)
 [![CI](https://github.com/AliceLJY/recallnest/actions/workflows/ci.yml/badge.svg)](https://github.com/AliceLJY/recallnest/actions/workflows/ci.yml)
 [![CC Plugin](https://img.shields.io/badge/Claude_Code-Plugin-blueviolet)](https://github.com/AliceLJY/recallnest)
 
@@ -104,7 +104,7 @@ npm install -g recallnest      # 全局安装
 recallnest doctor
 ```
 
-支持 Node.js 18+（通过 tsx）或 Bun，无需 clone 仓库。
+支持 Node.js 22+（通过 tsx）或 Bun，无需 clone 仓库。
 
 ### 方式 C：手动安装
 
@@ -245,6 +245,60 @@ bun run src/ui-server.ts
 
 ---
 
+## v3.0 新增：一个受支持的运行时，和终于能被用起来的结论
+
+v3.0 是大版本，原因有两个：一个在安装时看得见，一个在记忆的行为里。
+
+**运行时边界提到了 Node 22。** RecallNest 一直带着 `openai@4`，它拽着
+`formdata-node` → `node-domexception` 这条弃用链。openai 从 v5 起每个版本都是零依赖，
+所以升到哪一版这条链都会消失 —— 但 v7 自己声明 `engines.node >= 22.0.0`，于是
+「抬 Node 边界」和「甩掉弃用依赖链」变成同一件事，而不是两件。`engines.node` 现在是
+`>=22`。这是本次大版本里唯一的破坏性改动。
+
+**合成出的结论终于能进稳定记忆。** `dream` 把 cluster insight 和 cross-memory pattern
+写在 evidence 层是有意的 —— 模型对自己记忆的再加工是通往源头的线索，不是压过源头的
+权威 —— 但稳定记忆的选取对 evidence 层一律拒收。后果是绝对的：一条合成结论无论证据
+多充分，下游都没法靠它。`promote_synthesis`（MCP）与 `recallnest promote-synthesis`
+（CLI）给了它一条路，判据是这条结论自己那份经过校验的证据集，而不是「重复出现几次」
+—— 合成物本身就是跨条目聚合，要求它重复是把一件事数了几次。合成行本身一个字不改；
+晋升写的是另一条 durable 记录，带 `promotedFrom` 指回去，走的是和其他晋升同一条通道、
+同一套 `canonicalKey` 去重。
+
+本次还有：
+
+- **retrieve 审计行会说清服务了什么。** 它以前只记查询词和命中数。而信念是就地修订的
+  —— id 不变、版本号加一、旧正文作为 `superseded` 行留下 —— 所以「memory X 被检索了」
+  这句话跨过任何一次信念变更都是有歧义的。现在每条结果的 id、版本、生命周期状态和
+  boundary 都记下来；列表有上限，而且**被截断时会说自己被截断了**。
+- **embeddings 与 chat completions 有了 HTTP 契约测试。** 此前所有测试都把 SDK client
+  换成桩函数，没有一条碰过 socket，传输层的回归会全绿着放过去。新测试驱动真的类、经真的
+  SDK、打到本地回环服务器，覆盖成功 / 错误 / 超时三态，以及默认 OpenAI 形态加上 Jina、
+  Qwen 兼容端点。零出网、零凭据。
+- **修复：被限流时反而会猛打对方。** 是上面那批测试当场查出来的。embedder 遇到
+  context-length 错误会分块重试，而分块器对短文本原样返回，判定「这是 context 错误」的
+  那条正则又会命中限流措辞 —— 于是一个 429 会拿同一段文本无限重打。实测 5 秒 61,000 多
+  个请求，对着一个正在叫我们慢一点的端点。现在失败是有界的。
+- **一个已知的召回缺口变成了能跑的回归。** 一条又长、又旧、很少被读的记忆，可能用它自己
+  正文里的原话都召不回，而短的、新的、被频繁读的条目排在它前面。这是排序问题不是过滤
+  问题 —— 那条记忆过了所有阈值，然后排最后一名。复现已经进仓；排序的修复不在本次。
+- **MCP 工具 44 个**（三层），此前 43 个。
+
+### 从 v2.6 升级
+
+- **需要 Node 22 或更新版本。** 用 Bun 的不受影响。这是本次唯一的破坏性改动。
+- 已有 LanceDB 数据原地打开，不需要导出导入。
+- `promote_synthesis` 默认 dry-run，不传 `dryRun=false` 不写任何东西。
+- `audit.jsonl` 里检索那类行变大了（它现在列出服务了哪几条）。轮转仍是手动的，接近
+  50 MB 时归档一下。
+
+### 关于 npm 历史的一句说明
+
+npm 上的 `recallnest@2.6.1` 是一次维护发布，发布时这个包还没有配置 Trusted Publishing，
+所以它不带构建 provenance。这是它当时怎么发的一个事实，不是包本身的缺陷，而且**无法追认**
+—— 同一个 npm 版本不能为了补 provenance 再发一次。
+
+---
+
 ## v2.6 新增：跨进程一致性与可靠分发
 
 v2.6 把 v2.5.4 以来的开发整理成一版可升级、可安装、版本口径一致的正式候选：
@@ -326,7 +380,7 @@ v2.2 强化了检索质量；v2.3 通过标准 Connector 框架和运维健康�
 │                      集成层                               │
 │  ┌─────────────────────┐  ┌────────────────────────────┐ │
 │  │  MCP Server         │  │  HTTP API Server           │ │
-│  │  43 个工具           │  │  21 个端点                  │ │
+│  │  44 个工具           │  │  21 个端点                  │ │
 │  └─────────┬───────────┘  └──────────┬─────────────────┘ │
 └────────────┼─────────────────────────┼───────────────────┘
              └──────────┬──────────────┘
@@ -387,7 +441,7 @@ RecallNest 提供两种接口：
 ---
 
 <details>
-<summary><strong>MCP 工具（43 个）</strong></summary>
+<summary><strong>MCP 工具（44 个）</strong></summary>
 
 | 工具 | 说明 |
 |------|------|
@@ -399,6 +453,7 @@ RecallNest 提供两种接口：
 | `store_case` | 存储问题-方案对 |
 | `promote_memory` | 显式升级 evidence 为持久记忆 |
 | `promote_scan` | 扫描近期 evidence，自动晋升合格记忆为持久存储 |
+| `promote_synthesis` | 扫描 dream 合成出的结论，把自身证据集撑得住的那些晋升为持久记忆 |
 | `list_conflicts` | 列出或查看冲突候选 |
 | `audit_conflicts` | 汇总过期/升级的冲突优先级 |
 | `escalate_conflicts` | 预览或应用冲突升级元数据 |

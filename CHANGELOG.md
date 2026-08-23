@@ -1,29 +1,190 @@
 # Changelog
 
-## Unreleased
+## v3.0.0 — Node 22, and conclusions that can be used (2026-08-24)
+
+Two things make this a major release: the runtime floor moves, and a synthesized
+conclusion can finally reach stable memory. Everything else here is either in service of
+those or was found while doing them.
+
+### Changed
+
+- **`engines.node` is now `>=22`** (was `>=18.14.1`). This is the only breaking change in
+  the release; Bun users are unaffected.
+- **`openai` migrated from `^4.0.0` to `^7.5.0`**, which removes the
+  `openai@4 → formdata-node@4.4.1 → node-domexception@1.0.0` deprecated chain from the
+  dependency tree. Every `openai` release since v5 has zero dependencies, so the chain
+  disappears on any upgrade — v7 was chosen because it declares `engines.node >= 22.0.0`,
+  making the Node floor and the dependency cleanup one decision instead of two. Verified
+  against the SDK rather than its migration guide: the guide documents the `httpAgent`
+  removal, the move to built-in `fetch`, and the Node 22 floor, but says nothing about the
+  three things this codebase actually depends on — `embeddings.create`, the second
+  `RequestOptions` argument on `chat.completions.create`, and the error classes exposed as
+  statics on the default export. All three hold.
+- **MCP tool count is 44**, up from 43 (`promote_synthesis`, governance tier).
 
 ### Added
 
-- **价值回溯 join key（MemOS C1，P0）**：`workflow_observe` 现在记 `readerId` 与 `recalledIds`，
-  补上了库里一直缺的 `(memory_id, outcome)` 配对——此前一边有结果没参与者（observation 不记 memory），
-  一边有参与者没结果（access-tracker 记命中不记任务成败）。新增 `src/recall-ledger.ts` 维护进程级
-  读者身份与检索命中账本；`resume_context` / `checkpoint_session` 的 managed observation 自动带上。
-  新增 CLI `memory-utility <id>`：查一条 memory 参与过的任务成功率。
-- **utility 效用列（P1）**：`src/memory-utility.ts` 按 outcome 查表（success +0.8 / corrected +0.2 /
-  missed −0.3 / failure −0.8）做加权回溯，30 天半衰期，**可为负**。落在 `metadata.utility`，
-  刻意**不写 importance**（那一列是阈值语义，≥0.95 触发永久免衰减，且 STC 已在写它）。
-  检索侧新增 `utilityWeight`（默认 0 = 关闭），只喂排序，不进 tier、不进 decay 豁免。
-- **晋升的跨来源判据（MemOS L1→L2，P2）**：`scanForPromotions` 新增 `minDistinctSources`（默认 2）。
-  数「几条相似 case」和数「几个不同 episode」差的是维度不是数字——同一个坑踩三次是一次经历的重复，
-  该走 failure-burst 反模式那条路。**带弃权路径**：拿不到来源指针时不判（全库 cases 仅 1.2% 带
-  `src:` tag，硬判会把「同一天解决的三个不同问题」误伤掉）。实际只在 `memory:pivot` 池生效。
+- **`promote_synthesis` (MCP) and `recallnest promote-synthesis` (CLI)** — a promotion road
+  for dream-synthesized conclusions. `buildDerivedBoundary` marks every cluster insight and
+  cross-memory pattern `layer: "evidence"` on purpose, and `shouldUseStableMemoryResult`
+  refuses the evidence layer, so a synthesized conclusion could never take part in stable
+  memory regardless of how well supported it was. Eligibility comes from the conclusion's
+  own validated evidence set — `synthesis_contract >= 2`, at least two distinct still-active
+  evidence memories — rather than from repetition, because a synthesis is already a
+  cross-entry aggregate. It abstains when the evidence cannot be resolved, counts every
+  rejection reason, defaults to dry-run, never modifies the synthesized row, and writes
+  through the existing `promoteMemory` path so `canonicalKey` dedup makes a re-run a
+  revision instead of a duplicate.
+- **Retrieve audit rows carry revision and provenance.** `retrieved[]` records each served
+  result's id, `evolution.version`, lifecycle status, and boundary layer/authority;
+  `retrievedTotal` appears when the capped list is shorter than the truth. Beliefs are
+  revised in place — the canonical id survives, the version increments, the old text
+  remains as a `superseded` row — so a row saying only `hits=N` could not distinguish a
+  current answer from a stale one after the fact.
+- **HTTP contract tests for embeddings and chat completions** (`openai-contract.test.ts`).
+  Every prior embedder/LLM test stubbed the SDK client, so none of them touched a socket
+  and a transport-level regression would have passed all of them. These drive the real
+  `Embedder` and `LLMClient` through the real SDK against a loopback `node:http` server,
+  covering success, error, and timeout for the default OpenAI request shape plus the Jina
+  (`task`/`normalized`/`dimensions`) and Qwen-compatible profiles. No network egress, no
+  vendor credentials, no paid calls.
+- **A repeatable regression for verbatim self-recall** (`verbatim-self-recall.test.ts`).
+  A long, older, rarely-read entry can fail to be recalled by words copied out of its own
+  body while short, fresh, frequently-read entries outrank it. The reproduction pins the
+  mechanism: the entry is *not* filtered — `hard_min_score`, `layer_admission` and
+  `noise_filter` each drop zero rows and its score clears the threshold — it is admitted
+  and then ranked last. The ranking fix is deliberately not in this release.
+- **`scripts/tier-exemption-snapshot.ts`** — captures tier and decay-exemption distribution
+  so "we did not change tiers" becomes checkable later rather than asserted.
+
+### Added — synthesis quality (generation side)
+
+Six changes to what `dream` produces, from a full diagnostic on 2026-08-22 whose core
+finding was that **derived memories had a lower conclusion density than their own input**:
+over the same 40–160 character band, with a deterministic regex and no LLM judge,
+hand-written pivots scored 40.4%, raw transcripts 25.1%, insights 14.4%, patterns 12.1%.
+Synthesis was subtracting.
+
+- **`cluster_insight` no longer routes through `generateL0`.** That prompt is a chunk
+  summariser — it asks for a one-line summary for retrieval and explicitly preserves ports,
+  IPs, URLs and file paths verbatim; it never asks for a conclusion, a cause, or a decision.
+  The new `synthesizeClusterInsight` goes through `synthesis-contract.ts`, asks for a
+  reusable conclusion, and **may abstain**. The old path's `if (!insight)` only fired when
+  the LLM call itself failed, so "this cluster is not worth keeping" had no way to be
+  expressed and all 2,427 rows were episode summaries by construction.
+- **`extractPattern` changed target concept and now requires evidence.** The old prompt
+  asked for recurring preferences, behavioural tendencies and values — a personality-profile
+  frame, which produced dispositional attribution in 56.1% of outputs against 1.4% in the
+  source material. The old prompt also claimed to want "at least 2 memories as supporting
+  evidence" while the implementation neither received nor checked any numbering, making the
+  sentence free. Two pieces of evidence is now a hard gate.
+- **`validateSynthesis` runs before anything is written.** The old path checked only
+  `response.length < 5`, which is how 28 memories ended up holding their own system prompt
+  as their body. `has` must be a boolean, length must be in range, the text must not echo
+  the prompt, and evidence numbers must refer to real, distinct cluster members. Failures
+  are counted by reason instead of collapsing into one `null`.
+- **Pattern and insight are decoupled.** `if (!insight) { continue; }` bound two different
+  target concepts to one fate: an abstaining insight meant pattern extraction never ran.
+  They now fail and abstain independently, and "this round produced nothing" is judged on
+  whether the cluster had any effect at all rather than on whether an insight existed.
+- **Derived rows carry an explicit `boundary`.** All 4,749 historical derivatives had none;
+  the retriever's `isEvidenceLayer` fell back to scope matching, so 96.4% were classified
+  correctly only because they happened to sit in a `cc:`/`codex:` scope — by luck of naming,
+  not by design. The remaining 173 sat in `memory`/`project:*` scopes and silently held
+  durable authority. Derived rows are `layer: "evidence"`, `authority: "distillation"`.
+- **`synthesis_contract` version stamp**, so "which code produced this output" stops being
+  a guess from timestamps. v2 adds a single-JSON-object constraint: v1 emitted multiple JSON
+  objects on 3.3% of calls (all with `finish_reason: stop`, unrelated to truncation), which
+  made the whole response unparsable; the same measurement after the constraint is 0.0%.
+
+### Added — memory utility (MemOS value backtracking)
+
+- **Value-backtracking join key (P0).** `workflow_observe` now records `readerId` and
+  `recalledIds`, supplying the `(memory_id, outcome)` pairing the database never had: one
+  side had outcomes without participants (observations did not record memories), the other
+  had participants without outcomes (the access tracker recorded hits but not task success).
+  New `src/recall-ledger.ts` keeps process-level reader identity and a retrieval-hit ledger;
+  managed observations from `resume_context` / `checkpoint_session` carry it automatically.
+  New CLI `memory-utility <id>` reports the success rate of tasks a memory took part in.
+- **`utility` column (P1).** `src/memory-utility.ts` weights outcomes (success +0.8 /
+  corrected +0.2 / missed −0.3 / failure −0.8) with a 30-day half-life; **it can be
+  negative**. It lands in `metadata.utility` and deliberately not in `importance`, which is
+  threshold-valued (≥0.95 grants permanent decay exemption) and already written by structured
+  memory. Retrieval gained `utilityWeight`, default 0 (off), feeding ranking only — not tier,
+  not decay exemption.
+- **Cross-source criterion for promotion (P2).** `scanForPromotions` gained
+  `minDistinctSources` (default 2). Counting "how many similar cases" and "how many distinct
+  episodes" differ in dimension, not degree — hitting the same problem three times is one
+  experience repeated, which belongs on the failure-burst path instead. It **abstains** when
+  source pointers are unavailable: only 1.2% of cases across the database carry a `src:` tag,
+  so judging strictly would mostly punish three different problems solved on one day.
 
 ### Fixed
 
-- 同一进程内多个 `AccessTracker` 不再各自伪造一个 reader。`createComponentResolver` 按 profile 缓存
-  components，一个会话开两个 profile 就凭空多出一个「读者」，虚抬 `distinctReaderCount` 和
-  skill-promotion 的 read boost；现在实现与 `access-tracker.ts` 自己的注释
-  （"one stdio MCP server process ≈ one CC session"）一致。
+- **A rate-limit reply could trigger an unbounded request storm.** Found by the new contract
+  tests. `embedSingle` retried a context-length error by chunking, and each chunk recursed
+  back into `embedSingle`, able to re-enter the same branch. Two facts made that
+  non-terminating: `smartChunk` returns short text unchanged, so the recursion re-embedded
+  the identical string and reproduced the identical error; and the gate
+  `/context|too long|exceed|length/i` also matches rate-limit wording — both
+  `"Rate limit exceeded"` and `"429 quota exceeded"` trigger chunking. Measured before the
+  fix: **61,724 requests in five seconds** against an endpoint asking us to slow down. The
+  batch path had the same shape. The missing terminating condition is now present: chunking
+  that cannot produce anything smaller than its input throws instead of recursing, and a
+  chunk's own embed call cannot re-enter the branch. After: 4 ms, one request, correct error.
+- **Multiple `AccessTracker` instances in one process no longer invent separate readers.**
+  `createComponentResolver` caches components per profile, so one session opening two
+  profiles produced a phantom second reader, inflating `distinctReaderCount` and the
+  skill-promotion read boost. The implementation now matches what `access-tracker.ts` says
+  about itself ("one stdio MCP server process ≈ one CC session").
+
+### Documentation
+
+- `docs/memory-boundary-contract.md` documents both promotion scans, why their eligibility
+  gates differ, and the abstention rule.
+- `retriever.ts` records that `candidatePoolSize` above 20 has never had any effect — both
+  candidate legs land in `store.ts`'s `clampInt(limit, 1, 20)`. The clamp has been there
+  since the first commit while the 2026-07-16 tuning only touched the retriever, so that
+  `30` was inert from the day it landed. Left alone deliberately: raising it means widening
+  the candidate pool, which was measured and rejected on 2026-08-22.
+
+### Upgrade notes
+
+- **Node 22 or newer is required.** This is the release's only breaking change.
+- Existing LanceDB data opens in place; no export/import step.
+- `promote_synthesis` defaults to dry-run and writes nothing until `dryRun=false`.
+- `audit.jsonl` retrieve rows are larger now that they list what was served. The list is
+  capped at 10 entries with `retrievedTotal` marking truncation. Rotation is still manual;
+  archive it if it approaches 50 MB.
+- `utilityWeight` defaults to 0 and `metadata.utility` is written only by an explicit
+  `memory-utility --apply` run, so the MemOS work above is **available but not yet acting on
+  anything**: at the time of this release `readerId`/`recalledIds` have no data and no row
+  carries `metadata.utility`, because the resident MCP server process predates those commits
+  and has not been restarted. This is the intended shadow period, not a defect.
+
+### Verification
+
+- 2,323 tests pass across 165 files, 0 fail (2,281 at the 3.0 gate → +14 contract, +6 audit
+  revision, +7 verbatim self-recall, +15 synthesis promotion, +1 tool-count contract).
+- The deprecated chain is absent from `npm ls`, `node_modules/`, `bun.lock` and
+  `package-lock.json`; installed `openai@7.5.0` reports zero dependencies and
+  `engines.node >= 22.0.0`.
+- SDK compatibility was measured, not assumed: 20 sandbox probes against v7.5.0 (9 API
+  surface, 11 loopback-HTTP runtime) plus a `tsc --strict` check of all five call sites,
+  with a deliberately-broken control run to confirm the type check actually reports errors.
+- `promote_synthesis` was exercised read-only against the live database: 52 contract-stamped
+  derivatives exist; `project:codex-self-evolution` yielded 10 candidates from 10 examined,
+  `project:antigravity-cli` 4 from 9 (5 below importance), `learnings` 3 from 4 (1 with too
+  few distinct sources). Nothing was written.
+- The verbatim self-recall and synthesis-promotion suites were both reverse-verified —
+  removing the behaviour each asserts turns the relevant tests red and no others.
+
+### A note on npm history
+
+`recallnest@2.6.1` was a maintenance release published before Trusted Publishing was
+configured for this package and therefore carries no build provenance. That describes how it
+was published; it is not retroactively fixable, since the same npm version cannot be
+republished to add provenance.
 
 ## v2.6.0 — Cross-process consistency and reliable distribution (2026-08-13)
 

@@ -252,4 +252,4 @@ WEEKLY CHECKUP:   memory_stats -> memory_lint -> dream (if needed)
 
 ---
 
-*RecallNest: 43 tools, 6 categories, one goal — nothing worth remembering should be forgotten.*
+*RecallNest: 44 tools, 6 categories, one goal — nothing worth remembering should be forgotten.*

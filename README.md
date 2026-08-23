@@ -10,9 +10,9 @@ A local-first memory system backed by LanceDB that turns scattered conversation 
 
 [![GitHub](https://img.shields.io/github/stars/AliceLJY/recallnest?style=social)](https://github.com/AliceLJY/recallnest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Runtime](https://img.shields.io/badge/Runtime-Bun_|_Node.js_18+-f9f1e1?logo=bun)](https://bun.sh)
+[![Runtime](https://img.shields.io/badge/Runtime-Bun_|_Node.js_22+-f9f1e1?logo=bun)](https://bun.sh)
 [![LanceDB](https://img.shields.io/badge/LanceDB-Vector+FTS-orange)](https://lancedb.com)
-[![MCP](https://img.shields.io/badge/MCP-43_tools-blue)](https://modelcontextprotocol.io)
+[![MCP](https://img.shields.io/badge/MCP-44_tools-blue)](https://modelcontextprotocol.io)
 [![CI](https://github.com/AliceLJY/recallnest/actions/workflows/ci.yml/badge.svg)](https://github.com/AliceLJY/recallnest/actions/workflows/ci.yml)
 [![CC Plugin](https://img.shields.io/badge/Claude_Code-Plugin-blueviolet)](https://github.com/AliceLJY/recallnest)
 
@@ -104,7 +104,7 @@ npm install -g recallnest      # install globally
 recallnest doctor
 ```
 
-Works with Node.js 18+ (via tsx) or Bun. No git clone needed.
+Works with Node.js 22+ (via tsx) or Bun. No git clone needed.
 
 ### Option C: Manual setup
 
@@ -245,6 +245,71 @@ bun run src/ui-server.ts
 
 ---
 
+## New in v3.0: A Supported Runtime, and Conclusions That Can Be Used
+
+v3.0 is a major release for one reason that shows up on install and one that shows up in
+how memory behaves.
+
+**The runtime boundary moved to Node 22.** RecallNest had been carrying `openai@4`, which
+pulls in the deprecated `formdata-node` → `node-domexception` chain. Every `openai` release
+since v5 has zero dependencies, so the chain disappears on any upgrade — but v7 declares
+`engines.node >= 22.0.0`, which makes "raise the Node floor" and "move off a deprecated
+dependency chain" the same piece of work rather than two. `engines.node` is now `>=22`.
+This is the breaking part of the major.
+
+**A synthesized conclusion can now reach stable memory.** `dream` writes cluster insights
+and cross-memory patterns on the evidence layer deliberately — a model re-reading its own
+memories is a lead to its sources, not authority over them — but stable-memory selection
+refuses the evidence layer outright. The consequence was absolute: no matter how well
+supported a synthesized conclusion was, nothing downstream could lean on it. `promote_synthesis`
+(MCP) and `recallnest promote-synthesis` (CLI) give it a road, gated on the conclusion's own
+validated evidence set rather than on repetition, because a synthesis is already a
+cross-entry aggregate. The synthesized row is never modified; promotion writes a separate
+durable entry carrying `promotedFrom` back to it, through the same path and the same
+`canonicalKey` dedup as every other promotion.
+
+Also in this release:
+
+- **Retrieve audit rows say what was served.** They used to record the query and a hit
+  count. Because beliefs are revised in place — the id stays, the version increments, the
+  old text survives as a `superseded` row — "memory X was retrieved" was ambiguous across
+  every belief change. Rows now carry each result's id, revision, lifecycle status, and
+  boundary. The list is capped, and a capped list says so.
+- **HTTP contract tests for embeddings and chat completions.** Every previous test stubbed
+  the SDK client, so nothing exercised a socket, and a transport-level regression would
+  have passed all of them. These drive the real classes through the real SDK against a
+  loopback server, covering success, error, and timeout for the default OpenAI shape plus
+  the Jina and Qwen-compatible profiles. No network egress, no vendor credentials.
+- **Fixed: a rate-limit reply could trigger an unbounded request storm.** Found by those
+  tests. The embedder retried a context-length error by chunking, the chunker returns short
+  text unchanged, and the gate that decided "this is a context error" also matched
+  rate-limit wording — so a 429 re-embedded the same text forever. Measured at over 61,000
+  requests in five seconds against an endpoint asking us to slow down. Failure is bounded now.
+- **A known recall gap is now a runnable regression.** A memory that is long, older, and
+  rarely read can fail to be recalled by words copied out of its own body, while short,
+  fresh, frequently-read entries outrank it. It is a ranking problem, not a filtering one —
+  the entry clears every threshold and then places last. The reproduction is checked in; the
+  ranking fix is not in this release.
+- **44 MCP tools** across three tiers, up from 43.
+
+### Upgrading from v2.6
+
+- **Node 22 or newer is required.** Bun users are unaffected. This is the only breaking
+  change in the release.
+- Existing LanceDB data is opened in place. No export or import step.
+- `promote_synthesis` defaults to dry-run and writes nothing until `dryRun=false`.
+- `audit.jsonl` rows for retrievals are larger now that they list what was served. Rotation
+  is still manual; archive it if it approaches 50 MB.
+
+### A note on npm history
+
+`recallnest@2.6.1` on npm was a maintenance release published before Trusted Publishing was
+configured for this package, so it carries no build provenance. That is a fact about how it
+was published, not a defect in the package, and it is not retroactively fixable — the same
+npm version cannot be republished to add provenance.
+
+---
+
 ## New in v2.6: Reliable Cross-Process Memory and Distribution
 
 v2.6 turns the development since v2.5.4 into a release-ready upgrade:
@@ -326,7 +391,7 @@ v2.2 hardened retrieval quality; v2.3 opens RecallNest to external data sources 
 │                   Integration Layer                       │
 │  ┌─────────────────────┐  ┌────────────────────────────┐ │
 │  │  MCP Server         │  │  HTTP API Server           │ │
-│  │  43 tools           │  │  21 endpoints              │ │
+│  │  44 tools           │  │  21 endpoints              │ │
 │  └─────────┬───────────┘  └──────────┬─────────────────┘ │
 └────────────┼─────────────────────────┼───────────────────┘
              └──────────┬──────────────┘
@@ -388,7 +453,7 @@ Examples live in [`integrations/examples/`](integrations/examples/):
 ---
 
 <details>
-<summary><strong>MCP Tools (43 tools)</strong></summary>
+<summary><strong>MCP Tools (44 tools)</strong></summary>
 
 | Tool | Description |
 |------|-------------|
@@ -400,6 +465,7 @@ Examples live in [`integrations/examples/`](integrations/examples/):
 | `store_case` | Store a reusable problem-solution pair as durable `cases` memory |
 | `promote_memory` | Explicitly promote evidence into durable memory |
 | `promote_scan` | Scan recent evidence and auto-promote qualifying memories into durable storage |
+| `promote_synthesis` | Scan dream-synthesized conclusions and promote the ones their own evidence set supports |
 | `list_conflicts` | List or inspect promotion conflict candidates |
 | `audit_conflicts` | Summarize stale/escalated conflict priorities |
 | `escalate_conflicts` | Preview or apply conflict escalation metadata |
