@@ -234,6 +234,15 @@ export const DEFAULT_RETRIEVAL_CONFIG: RetrievalConfig = {
   bm25Weight: 0.3,
   minScore: 0.3,
   rerank: "cross-encoder",
+  // ⚠️ 2026-08-23 查实：**这里超过 20 的部分从来没生效过**。两条候选腿最终都落到
+  // store.ts 的 `clampInt(limit, 1, 20)`（vectorSearch:588 / bm25Search:643），
+  // 路径是 retriever.ts:1109 算出 ceil(candidatePoolSize × multiplier) →
+  // runVectorSearch/runBM25Search(:1341/:1373) → store.*Search(limit) → 被压成 20。
+  // 那个 clamp 从初始提交 c10607a（2026-03-03）就在，而 07-16 调参（9374a4f）只改了本文件、
+  // 没碰 store.ts —— 所以这个 30 从落地当天就是空转。retrieval-profiles.ts 的 24/26/28 同理。
+  // **不要顺手去改那个 clamp**：动它等于扩候选池，而扩池方案已于 2026-08-22 跑 shadow 后被
+  // 实测否决（RecallNest memory:pivot `rejected-recall-widen-candidate-pool`，主犯认定订正为
+  // applyLayerAdmission 79.4% 而非 hard_min 13.5%）。要推翻它得先拿出那条否决记录要求的新证据。
   candidatePoolSize: 30,
   sourceDiversity: 1,
   recencyHalfLifeDays: 14,
