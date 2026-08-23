@@ -158,9 +158,12 @@ Synthesis was subtracting.
   archive it if it approaches 50 MB.
 - `utilityWeight` defaults to 0 and `metadata.utility` is written only by an explicit
   `memory-utility --apply` run, so the MemOS work above is **available but not yet acting on
-  anything**: at the time of this release `readerId`/`recalledIds` have no data and no row
-  carries `metadata.utility`, because the resident MCP server process predates those commits
-  and has not been restarted. This is the intended shadow period, not a defect.
+  anything**. The resident MCP server was restarted on 2026-08-24, so `readerId` is now being
+  written (verified end-to-end on a fresh server: a `workflow_observe` call landed an
+  observation carrying `readerId`); `recalledIds` only gets a value when a retrieval hit
+  actually occurs, and no row carries `metadata.utility` yet because `--apply` has not been
+  run. Real data therefore starts accumulating from this release forward, not before it.
+  This is the intended shadow period, not a defect.
 
 ### Verification
 
