@@ -130,6 +130,22 @@ export const dreamBudgetMs = (fallbackMs: number): number => {
   return Number.isFinite(n) && n > 0 ? n : fallbackMs;
 };
 
+/**
+ * dream 合成（cluster insight / cross-memory pattern）专用模型，覆盖 config.llm.model。
+ *
+ * 独立于全局模型的理由（2026-08-23）：合成是全库唯一一处「产物质量直接决定库的
+ * 可用性」的 LLM 调用 —— 它写进去的东西会被当成记忆检索出来，而 ingest 侧的
+ * smartExtract 只是给原文打标签，错了还能回原文。三臂实验里模型贡献了约 1/3 的
+ * 改善（同提示词下 32.3% → 45.2%），把这一档单独抬上去，不必让全库调用一起涨价。
+ *
+ * 未设 / 空串 → 用 config.llm.model（即全局默认），保持老行为。
+ */
+export const synthesisModel = (): string | undefined => {
+  const raw = process.env.RECALLNEST_SYNTHESIS_MODEL;
+  const trimmed = raw?.trim();
+  return trimmed ? trimmed : undefined;
+};
+
 // --- Raw env values (caller validates / clamps / falls back to config) ---
 
 export const recallModeRaw = (): string | undefined => process.env.RECALLNEST_RECALL_MODE;

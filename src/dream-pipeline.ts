@@ -167,6 +167,13 @@ export interface DreamResult {
     semanticClustersFound: number;
     insightsGenerated: number;
     patternsExtracted: number;
+    /** 3b 合成里模型判定「这簇没有可提炼结论」的次数（insight + pattern 合计）。
+     *  2026-08-23 起才可能非 0——在此之前合成没有弃权路径，每个合格簇必写一条。
+     *  它要和 insightsGenerated 一起读：0 insight + 高弃权 = 今天确实没料，
+     *  0 insight + 0 弃权 = 合成这一步压根没跑起来，两者完全不同。 */
+    synthesisAbstained: number;
+    /** 3b 合成产物在写库前被校验拦下的次数（提示词回声 / evidence 不合法 / 长度越界）。 */
+    synthesisRejected: number;
     mergedCount: number;
     archivedCount: number;
     /** 3a 去重路径新建的关联数。此前引擎返回了但被 dream 丢弃，导致「只加了关联」
@@ -219,6 +226,8 @@ async function runDreamInner(params: {
     semanticClustersFound: 0,
     insightsGenerated: 0,
     patternsExtracted: 0,
+    synthesisAbstained: 0,
+    synthesisRejected: 0,
     mergedCount: 0,
     archivedCount: 0,
     relationsAdded: 0,
@@ -387,6 +396,8 @@ async function runDreamInner(params: {
       stats.clustersFound += clusterResult.clustersFound;
       stats.insightsGenerated = clusterResult.insightsGenerated;
       stats.patternsExtracted = clusterResult.patternsExtracted;
+      stats.synthesisAbstained = clusterResult.synthesisAbstained;
+      stats.synthesisRejected = clusterResult.synthesisRejected;
     }
   }, { onBusy: "skip", expireMs: 600_000 });
 
@@ -399,6 +410,9 @@ async function runDreamInner(params: {
       ? `${stats.dedupeClustersFound} dedupe-clusters (${stats.mergedCount} merged), `
         + `${stats.semanticClustersFound} semantic-clusters -> `
         + `${stats.insightsGenerated} insights, ${stats.patternsExtracted} patterns`
+        // 弃权与校验拦截跟着一起报：没有它们，「合成认真看过但确实没料」和
+        // 「合成根本没跑」在这一行里长得一模一样——这正是本文件反复吃过的亏。
+        + `（弃权 ${stats.synthesisAbstained}，校验拦下 ${stats.synthesisRejected}）`
       : `skipped — another process holds the consolidate lock for scope ${scope}`,
   });
 
@@ -492,6 +506,8 @@ export async function runDream(params: {
       semanticClustersFound: 0,
       insightsGenerated: 0,
       patternsExtracted: 0,
+      synthesisAbstained: 0,
+      synthesisRejected: 0,
       mergedCount: 0,
       archivedCount: 0,
       relationsAdded: 0,

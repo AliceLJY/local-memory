@@ -22,6 +22,7 @@ const KEYS = [
   "RECALLNEST_UI_PORT",
   "RECALLNEST_API_PORT",
   "RECALLNEST_DREAM_BUDGET_MS",
+  "RECALLNEST_SYNTHESIS_MODEL",
 ];
 
 const saved: Record<string, string | undefined> = {};
@@ -187,5 +188,24 @@ describe("env-config dreamBudgetMs — the two silent failure modes it exists to
   it("accepts a valid override", () => {
     process.env.RECALLNEST_DREAM_BUDGET_MS = "900000";
     expect(envConfig.dreamBudgetMs(FALLBACK)).toBe(900_000);
+  });
+});
+
+describe("env-config synthesisModel — dream 合成的模型旋钮", () => {
+  it("未设 → undefined（调用方回落到 config.llm.model，保持老行为）", () => {
+    delete process.env.RECALLNEST_SYNTHESIS_MODEL;
+    expect(envConfig.synthesisModel()).toBeUndefined();
+  });
+
+  it("空串 / 纯空白也算未设，不会把模型名设成空字符串", () => {
+    for (const blank of ["", "   ", "\t"]) {
+      process.env.RECALLNEST_SYNTHESIS_MODEL = blank;
+      expect(envConfig.synthesisModel()).toBeUndefined();
+    }
+  });
+
+  it("正常值去空白后返回", () => {
+    process.env.RECALLNEST_SYNTHESIS_MODEL = "  qwen-plus  ";
+    expect(envConfig.synthesisModel()).toBe("qwen-plus");
   });
 });

@@ -16,6 +16,19 @@
 import OpenAI from "openai";
 import { logInfo } from "./stderr-log.js";
 import { isEmotionScoringEnabled } from "./memory-schema.js";
+import { synthesisModel } from "./env-config.js";
+import {
+  CLUSTER_INSIGHT_PROMPT,
+  CLUSTER_PATTERN_PROMPT,
+  allocateClusterBudget,
+  numberClusterTexts,
+  parseSynthesisJson,
+  validateSynthesis,
+  type SynthesisVerdict,
+} from "./synthesis-contract.js";
+
+/** dream 合成单次调用的超时。离线批处理，宽松换稳定，见 `runSynthesis` 处的注释。 */
+const SYNTHESIS_TIMEOUT_MS = 60_000;
 
 // ============================================================================
 // LME-9: Circuit Breaker — LLM 降级策略
@@ -691,31 +704,64 @@ export class LLMClient {
     }
   }
 
+  // --------------------------------------------------------------------------
+  // dream 合成（契约见 synthesis-contract.ts）
+  //
+  // 这两个方法一起取代了原来的「`generateL0` 当 insight 用 + `extractPattern` 找性格
+  // 模式」。三点结构性差别，不是提示词微调：
+  //   1. 有弃权路径 —— 炼不出结论时返回 `abstained`，不再硬凑一句进库；
+  //   2. 强制 evidence 编号 —— 说不出出处的结论不写库；
+  //   3. 输入按成员等额分配预算 —— 不再让簇的前 2,000 字吃光整个上下文。
+  // 三者都在 `SynthesisVerdict` 里有形状，调用方据此分开计数，不再退化成一个 null。
+  // --------------------------------------------------------------------------
+
   /**
-   * HP-5: Extract cross-memory pattern from a cluster of related memories.
-   * Asks LLM whether the cluster reveals an implicit recurring theme,
-   * preference, or behavior not stated in any single memory.
-   *
-   * @returns Pattern text if found, null if no pattern or LLM failure.
+   * 从一簇相关记忆里提炼一条**可复用结论**（规则/因果/决策/踩坑/判断转折）。
+   * 提炼不出来返回 `abstained` —— 这条路径是新的，老 `generateL0` 只会在 LLM 失败时
+   * 不产出，「这簇不值得留」从来没有表达方式。
    */
-  async extractPattern(clusterTexts: string[]): Promise<string | null> {
-    if (clusterTexts.length < 3) return null;
+  async synthesizeClusterInsight(clusterTexts: string[]): Promise<SynthesisVerdict> {
+    return this.runSynthesis(clusterTexts, CLUSTER_INSIGHT_PROMPT, "conclusion", 1);
+  }
 
-    const numbered = clusterTexts.map((t, i) => `[${i + 1}] ${t}`).join("\n");
-    const result = await this.chatJson<{ hasPattern: boolean; pattern?: string }>(
-      "你是记忆模式发现助手。分析以下一组相关记忆，判断它们是否暗示了某个跨条目的隐含模式——" +
-      "例如反复出现的偏好、行为倾向、价值观或循环主题。\n\n" +
-      "规则：\n" +
-      "- 只发现真正跨条目的模式，而非单条记忆已经明确表达的内容\n" +
-      "- 模式必须有至少 2 条记忆作为证据支撑\n" +
-      "- 如果没有发现有意义的模式，返回 hasPattern: false\n" +
-      "- 模式描述不超过 150 字，简洁且可操作\n" +
-      '- 输出 JSON：{"hasPattern": true, "pattern": "描述..."} 或 {"hasPattern": false}',
-      `记忆条目（共${clusterTexts.length}条）：\n${numbered}`,
-    );
+  /**
+   * 从一簇相关记忆里提炼**跨条目才成立**的结论。
+   * evidence ≥2 是定义性要求：只有一条支撑的东西按定义不是跨条目模式。
+   */
+  async synthesizeClusterPattern(clusterTexts: string[]): Promise<SynthesisVerdict> {
+    if (clusterTexts.length < 3) return { status: "abstained" };
+    return this.runSynthesis(clusterTexts, CLUSTER_PATTERN_PROMPT, "pattern", 2);
+  }
 
-    if (!result || !result.hasPattern || !result.pattern) return null;
-    return result.pattern;
+  private async runSynthesis(
+    clusterTexts: string[],
+    system: string,
+    textField: string,
+    minEvidence: number,
+  ): Promise<SynthesisVerdict> {
+    if (clusterTexts.length === 0) return { status: "abstained" };
+
+    const budgeted = allocateClusterBudget(clusterTexts);
+    const user = `记忆条目（共 ${clusterTexts.length} 条）：\n${numberClusterTexts(budgeted)}`;
+    // max_tokens 放宽到 400：默认的 500 是给整段回复的，而这里只要一个小 JSON；
+    // 给足余量是为了避免 evidence 数组被截断——截断的 JSON 会整条判 unparsable，
+    // 一条本可用的结论就这么丢了。
+    // max_tokens 沿用默认 500，不另设：2026-08-23 实测 60 次合成调用 finish_reason
+    // 全为 stop、completion_tokens 最大仅 132，输出侧根本够不到上限。
+    const raw = await this.chatRaw(system, user, {
+      model: synthesisModel(),
+      // 默认 15s 是给 2,000 字输入定的。等额预算后单次输入可达 12,000 字，更强的
+      // 合成模型也更慢；沿用 15s 会把「模型正在正常工作」误判成失败，而 dream 是
+      // 离线批处理，等一会儿不影响任何人。
+      timeoutMs: SYNTHESIS_TIMEOUT_MS,
+    });
+
+    return validateSynthesis({
+      parsed: parseSynthesisJson(raw),
+      textField,
+      memberCount: clusterTexts.length,
+      minEvidence,
+    });
   }
 
   /**
@@ -843,24 +889,39 @@ export class LLMClient {
   // --------------------------------------------------------------------------
 
   private async chat(system: string, user: string): Promise<string | null> {
+    return this.chatRaw(system, user);
+  }
+
+  /**
+   * `chat()` 的可调版：允许按调用点覆盖模型与 token 上限，其余行为（熔断、超时、
+   * 温度、异常语义）完全一致。
+   *
+   * 加这一层而不是给 `chat()` 加参数，是为了让「默认调用」的形状一个字不变 ——
+   * 现有十来个调用点不该因为合成这一处的需要而被动改签名。
+   */
+  private async chatRaw(
+    system: string,
+    user: string,
+    opts?: { model?: string; maxTokens?: number; timeoutMs?: number },
+  ): Promise<string | null> {
     // LME-9: Circuit breaker — short-circuit when LLM is down
     if (!this.breaker.canAttempt()) {
       return null;
     }
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+    const timeout = setTimeout(() => controller.abort(), opts?.timeoutMs ?? this.timeoutMs);
 
     try {
       const response = await this.client.chat.completions.create(
         {
-          model: this.model,
+          model: opts?.model || this.model,
           messages: [
             { role: "system", content: system },
             { role: "user", content: user },
           ],
           temperature: this.temperature,
-          max_tokens: 500,
+          max_tokens: opts?.maxTokens ?? 500,
         },
         { signal: controller.signal },
       );

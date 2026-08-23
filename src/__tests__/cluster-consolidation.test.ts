@@ -3,10 +3,13 @@ import { describe, expect, it } from "bun:test";
 import {
   clusterAndConsolidate,
   deduplicateByClusterInsight,
+  SYNTHESIS_CONTRACT_VERSION,
   type ClusterConsolidationResult,
 } from "../consolidation-engine.js";
+import { extractBoundaryMetadata } from "../memory-boundaries.js";
 import type { MemoryEntry, MemoryStore } from "../store.js";
 import type { LLMClient } from "../llm-client.js";
+import type { SynthesisVerdict } from "../synthesis-contract.js";
 import type { Embedder } from "../embedder.js";
 import { cosineSimilarity } from "../multi-vector.js";
 
@@ -84,19 +87,32 @@ function createMockStore(seed: MemoryEntry[] = []) {
   return { store, stored, updates, metaById };
 }
 
-/** Create a mock LLM that returns a fixed insight string (or null to simulate failure) */
+/**
+ * Create a mock LLM that returns a fixed insight string (or null to simulate abstention).
+ *
+ * 2026-08-23：合成接口从「返回 string|null」换成 `SynthesisVerdict`（产出 / 弃权 /
+ * 校验不过三态）。这个 helper 保留旧的字符串签名，把 null 映射成 `abstained` ——
+ * 既有 30 多条断言测的是聚类与写库行为，不该因为合成签名换代而全部重写。
+ * 三态本身另有直接断言（见文件末尾「合成契约」一节）。
+ */
+function synthOk(text: string, evidence: number[] = [1, 2]): SynthesisVerdict {
+  return { status: "ok", output: { text, evidence } };
+}
+
 function createMockLLM(
   insightFn: (text: string) => string | null,
   patternFn?: (texts: string[]) => string | null,
-): Pick<LLMClient, "generateL0" | "extractPattern"> {
+): Pick<LLMClient, "synthesizeClusterInsight" | "synthesizeClusterPattern"> {
   return {
-    async generateL0(text: string) {
-      return insightFn(text);
+    async synthesizeClusterInsight(texts: string[]) {
+      const out = insightFn(texts.join("\n---\n"));
+      return out === null ? { status: "abstained" } : synthOk(out);
     },
-    async extractPattern(texts: string[]) {
-      return patternFn ? patternFn(texts) : null;
+    async synthesizeClusterPattern(texts: string[]) {
+      const out = patternFn ? patternFn(texts) : null;
+      return out === null ? { status: "abstained" } : synthOk(out);
     },
-  } as Pick<LLMClient, "generateL0" | "extractPattern">;
+  } as Pick<LLMClient, "synthesizeClusterInsight" | "synthesizeClusterPattern">;
 }
 
 /** Create a mock embedder that returns a fixed vector */
@@ -378,11 +394,11 @@ describe("clusterAndConsolidate", () => {
 
     const { store, stored } = createMockStore();
     const llm = {
-      async generateL0(_text: string): Promise<string | null> {
+      async synthesizeClusterInsight(_texts: string[]): Promise<SynthesisVerdict> {
         throw new Error("Request was aborted.");
       },
-      async extractPattern(_texts: string[]): Promise<string | null> {
-        return null;
+      async synthesizeClusterPattern(_texts: string[]): Promise<SynthesisVerdict> {
+        return { status: "abstained" };
       },
     };
     const embedder = createMockEmbedder();
@@ -420,13 +436,13 @@ describe("clusterAndConsolidate", () => {
     const { store, stored } = createMockStore();
     let call = 0;
     const llm = {
-      async generateL0(_text: string): Promise<string | null> {
+      async synthesizeClusterInsight(_texts: string[]): Promise<SynthesisVerdict> {
         call++;
         if (call === 1) throw new Error("Request was aborted.");
-        return "第二个簇的 insight";
+        return synthOk("第二个簇的 insight");
       },
-      async extractPattern(_texts: string[]): Promise<string | null> {
-        return null;
+      async synthesizeClusterPattern(_texts: string[]): Promise<SynthesisVerdict> {
+        return { status: "abstained" };
       },
     };
     const embedder = createMockEmbedder();
@@ -458,10 +474,10 @@ describe("clusterAndConsolidate", () => {
 
     const { store, stored } = createMockStore();
     const llm = {
-      async generateL0(_text: string): Promise<string | null> {
-        return "insight 正常产出";
+      async synthesizeClusterInsight(_texts: string[]): Promise<SynthesisVerdict> {
+        return synthOk("insight 正常产出");
       },
-      async extractPattern(_texts: string[]): Promise<string | null> {
+      async synthesizeClusterPattern(_texts: string[]): Promise<SynthesisVerdict> {
         throw new Error("Request was aborted.");
       },
     };
@@ -993,5 +1009,228 @@ describe("deduplicateByClusterInsight (LC-P2)", () => {
 
     const deduped = deduplicateByClusterInsight(results);
     expect(deduped.length).toBe(2); // Both pass through
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 2026-08-23 合成契约上线带来的三件行为改动
+// ---------------------------------------------------------------------------
+
+/** 造一个三成员簇（向量足够接近，一定聚成一簇）。 */
+function trioEntries(): MemoryEntry[] {
+  return [
+    makeEntry({ id: "a", text: "记录 A", vector: [0.9, 0.1, 0], importance: 0.8 }),
+    makeEntry({ id: "b", text: "记录 B", vector: [0.88, 0.12, 0], importance: 0.7 }),
+    makeEntry({ id: "c", text: "记录 C", vector: [0.92, 0.08, 0], importance: 0.6 }),
+  ];
+}
+
+const trioParams = { minClusterSize: 3, clusterThreshold: 0.75 };
+
+describe("合成弃权路径（老 generateL0 完全没有这条路）", () => {
+  it("模型判定「没料可炼」时不写库，且记进 synthesisAbstained", async () => {
+    const { store, stored } = createMockStore();
+    const llm = {
+      async synthesizeClusterInsight(): Promise<SynthesisVerdict> { return { status: "abstained" }; },
+      async synthesizeClusterPattern(): Promise<SynthesisVerdict> { return { status: "abstained" }; },
+    };
+
+    const result = await clusterAndConsolidate({
+      entries: trioEntries(),
+      embedder: createMockEmbedder(),
+      llm: llm as unknown as LLMClient,
+      store,
+      scope: "project:test",
+      extractPatterns: true,
+      ...trioParams,
+    });
+
+    expect(stored.length).toBe(0);
+    expect(result.insightsGenerated).toBe(0);
+    expect(result.patternsExtracted).toBe(0);
+    expect(result.synthesisAbstained).toBe(2); // insight + pattern 各一次
+    expect(result.synthesisRejected).toBe(0);
+    expect(result.llmFailures).toBe(0); // 弃权不是失败
+    expect(result.clustersConsolidated).toBe(1); // 簇确实处理过
+  });
+
+  it("校验不过的输出不写库，且与弃权分开计数", async () => {
+    const { store, stored } = createMockStore();
+    const llm = {
+      async synthesizeClusterInsight(): Promise<SynthesisVerdict> {
+        return { status: "rejected", reason: "prompt-echo" };
+      },
+      async synthesizeClusterPattern(): Promise<SynthesisVerdict> {
+        return { status: "rejected", reason: "evidence-too-few" };
+      },
+    };
+
+    const result = await clusterAndConsolidate({
+      entries: trioEntries(),
+      embedder: createMockEmbedder(),
+      llm: llm as unknown as LLMClient,
+      store,
+      scope: "project:test",
+      extractPatterns: true,
+      ...trioParams,
+    });
+
+    expect(stored.length).toBe(0);
+    expect(result.synthesisRejected).toBe(2);
+    expect(result.synthesisAbstained).toBe(0);
+    expect(result.llmFailures).toBe(0); // 拿到回复了，只是不合契约——不是调用失败
+  });
+});
+
+describe("pattern 与 insight 解耦（R5）", () => {
+  it("insight 弃权时 pattern 照常抽取——改前这簇的 pattern 根本不会被执行", async () => {
+    const { store, stored } = createMockStore();
+    const llm = {
+      async synthesizeClusterInsight(): Promise<SynthesisVerdict> { return { status: "abstained" }; },
+      async synthesizeClusterPattern(): Promise<SynthesisVerdict> {
+        return { status: "ok", output: { text: "跨条目结论", evidence: [1, 2] } };
+      },
+    };
+
+    const result = await clusterAndConsolidate({
+      entries: trioEntries(),
+      embedder: createMockEmbedder(),
+      llm: llm as unknown as LLMClient,
+      store,
+      scope: "project:test",
+      extractPatterns: true,
+      ...trioParams,
+    });
+
+    expect(result.insightsGenerated).toBe(0);
+    expect(result.patternsExtracted).toBe(1);
+    expect(stored.length).toBe(1);
+    expect(stored[0].text).toBe("跨条目结论");
+  });
+
+  it("insight 抛异常时 pattern 仍然跑（两者独立失败）", async () => {
+    const { store } = createMockStore();
+    const llm = {
+      async synthesizeClusterInsight(): Promise<SynthesisVerdict> { throw new Error("Request was aborted."); },
+      async synthesizeClusterPattern(): Promise<SynthesisVerdict> {
+        return { status: "ok", output: { text: "跨条目结论", evidence: [1, 2] } };
+      },
+    };
+
+    const result = await clusterAndConsolidate({
+      entries: trioEntries(),
+      embedder: createMockEmbedder(),
+      llm: llm as unknown as LLMClient,
+      store,
+      scope: "project:test",
+      extractPatterns: true,
+      ...trioParams,
+    });
+
+    expect(result.llmFailures).toBe(1);
+    expect(result.insightsGenerated).toBe(0);
+    expect(result.patternsExtracted).toBe(1);
+  });
+
+  it("只有 pattern 产出的一轮不算零产出轮次（否则早停会提前触发）", async () => {
+    // 6 个成员分成两簇，insight 全弃权、pattern 全产出。
+    // 若沿用旧判据（没有 insight = 零产出），连续两簇就会触发 diminishing_returns 早停。
+    const entries = [
+      makeEntry({ id: "a1", text: "簇一 A", vector: [0.9, 0.1, 0] }),
+      makeEntry({ id: "a2", text: "簇一 B", vector: [0.88, 0.12, 0] }),
+      makeEntry({ id: "a3", text: "簇一 C", vector: [0.92, 0.08, 0] }),
+      makeEntry({ id: "b1", text: "簇二 A", vector: [0, 0.9, 0.1] }),
+      makeEntry({ id: "b2", text: "簇二 B", vector: [0, 0.88, 0.12] }),
+      makeEntry({ id: "b3", text: "簇二 C", vector: [0, 0.92, 0.08] }),
+    ];
+    const { store } = createMockStore();
+    const llm = {
+      async synthesizeClusterInsight(): Promise<SynthesisVerdict> { return { status: "abstained" }; },
+      async synthesizeClusterPattern(): Promise<SynthesisVerdict> {
+        return { status: "ok", output: { text: "跨条目结论", evidence: [1, 2] } };
+      },
+    };
+
+    const result = await clusterAndConsolidate({
+      entries,
+      embedder: createMockEmbedder(),
+      llm: llm as unknown as LLMClient,
+      store,
+      scope: "project:test",
+      extractPatterns: true,
+      ...trioParams,
+    });
+
+    expect(result.clustersFound).toBe(2);
+    expect(result.patternsExtracted).toBe(2);
+    expect(result.earlyStop).toBeUndefined();
+  });
+});
+
+describe("派生物的 boundary 层级（补的是「靠 scope 命名侥幸判对」那一刀）", () => {
+  it("insight 与 pattern 都显式落 evidence 层，不靠 scope 名字推断", async () => {
+    const { store, stored } = createMockStore();
+    const llm = createMockLLM(() => "一条结论", () => "一条跨条目结论");
+
+    await clusterAndConsolidate({
+      entries: trioEntries(),
+      embedder: createMockEmbedder(),
+      llm: llm as unknown as LLMClient,
+      store,
+      // 刻意用非 transcript scope：改前这里会静默拿到 durable 权威
+      scope: "project:test",
+      extractPatterns: true,
+      ...trioParams,
+    });
+
+    expect(stored.length).toBe(2);
+    for (const row of stored) {
+      const meta = JSON.parse(row.metadata!) as { boundary?: { layer?: string; authority?: string } };
+      expect(meta.boundary?.layer).toBe("evidence");
+      expect(meta.boundary?.authority).toBe("distillation");
+    }
+  });
+
+  it("检索侧读得到这个 boundary（与 extractBoundaryMetadata 对得上，不是写了个没人认的字段）", async () => {
+    const { store, stored } = createMockStore();
+    const llm = createMockLLM(() => "一条结论");
+
+    await clusterAndConsolidate({
+      entries: trioEntries(),
+      embedder: createMockEmbedder(),
+      llm: llm as unknown as LLMClient,
+      store,
+      scope: "project:test",
+      ...trioParams,
+    });
+
+    // coerceBoundaryMetadata 对 layer/authority/conflictPolicy 三项都做白名单校验，
+    // 任一项写错就整个返回 null —— 所以这条断言同时验了三项都合法。
+    const boundary = extractBoundaryMetadata(stored[0].metadata);
+    expect(boundary).not.toBeNull();
+    expect(boundary!.layer).toBe("evidence");
+  });
+
+  it("evidence 编号被翻译成真实的源记忆 id 存下来", async () => {
+    const { store, stored } = createMockStore();
+    const llm = {
+      async synthesizeClusterInsight(): Promise<SynthesisVerdict> {
+        return { status: "ok", output: { text: "一条结论", evidence: [1, 3] } };
+      },
+      async synthesizeClusterPattern(): Promise<SynthesisVerdict> { return { status: "abstained" }; },
+    };
+
+    await clusterAndConsolidate({
+      entries: trioEntries(),
+      embedder: createMockEmbedder(),
+      llm: llm as unknown as LLMClient,
+      store,
+      scope: "project:test",
+      ...trioParams,
+    });
+
+    const meta = JSON.parse(stored[0].metadata!) as { evidenceMemories?: string[]; synthesis_contract?: number };
+    expect(meta.evidenceMemories).toEqual(["a", "c"]); // 1-based → 第 1、第 3 个成员
+    expect(meta.synthesis_contract).toBe(SYNTHESIS_CONTRACT_VERSION);
   });
 });

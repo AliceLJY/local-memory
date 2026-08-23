@@ -27,6 +27,9 @@ import { cosineSimilarity } from "./multi-vector.js";
 import type { LLMClient } from "./llm-client.js";
 import type { Embedder } from "./embedder.js";
 import { logWarn } from "./stderr-log.js";
+import { DURABLE_MEMORY_CATEGORIES, type DurableMemoryCategory } from "./memory-schema.js";
+import { getConflictPolicyForCategory, type MemoryBoundaryMetadata } from "./memory-boundaries.js";
+import type { SynthesisVerdict } from "./synthesis-contract.js";
 
 // ---------------------------------------------------------------------------
 // Config & Types
@@ -127,6 +130,53 @@ const MENTION_BOOST_CAP = 1.1;
 function parseMetadata(entry: MemoryEntry): Record<string, unknown> {
   if (!entry.metadata) return {};
   try { return JSON.parse(entry.metadata); } catch { return {}; }
+}
+
+/**
+ * 合成契约版本号。写进每条派生物的 metadata，用来把「新契约的产物」和历史存量分开。
+ *
+ * 存在的理由是可评估性：两把确定性判据（结论连接词率 / 性向归因率）要在改动前后
+ * 做对照，而库里 4,500+ 条老产物和新产物混在一张表里、`cluster_insight` 标记完全
+ * 相同。没有这个标记，"改完之后的产物质量"这个问题就只能靠时间戳去猜。
+ *
+ * **提示词属于契约，改了就要推版本号**——否则前后两批产物混在同一个标记下，
+ * 「这个数字是哪版代码跑出来的」又变成了猜。v2（2026-08-23 当日）= v1 加上
+ * 「只输出一个 JSON 对象」的约束：v1 实测有 3.3% 的调用会一口气吐出多个 JSON
+ * 对象、整条判 unparsable（finish_reason 全为 stop，与 token 截断无关），
+ * 补这一句后同口径实测降到 0.0%。
+ */
+export const SYNTHESIS_CONTRACT_VERSION = 2;
+
+/**
+ * 派生物（cluster insight / cross-memory pattern）的边界声明。
+ *
+ * 为什么必须显式写（2026-08-22 查实）：4,749 条历史派生物**全部没有 boundary 字段**。
+ * 检索侧 `retriever.ts` 的 `isEvidenceLayer` 在缺字段时回退到 `isTranscriptScope(scope)`，
+ * 于是其中 96.4% 因为恰好落在 `cc:` / `codex:` scope 而被判成 evidence —— **靠 scope
+ * 命名侥幸判对，不是靠设计**。剩下 173 条落在 `memory` / `project:*` 这类非 transcript
+ * scope 上，静默拿到了 durable 权威：一句 LLM 复述，在检索里和手写结论平起平坐。
+ *
+ * 定成 evidence 而不是 durable：这是模型对既有记忆的再加工，不是从外部世界捕获的
+ * 事实，也不是人拍板的结论。它可以作为线索被检索到，但不该压过它自己的源。
+ * authority 取 `distillation`（它确实是提炼产物），与 layer 一起才说得全 ——
+ * 「是什么来源」和「有多大权威」是两个问题。
+ */
+export function buildDerivedBoundary(category: string): MemoryBoundaryMetadata {
+  const durable = toDurableCategory(category);
+  return {
+    layer: "evidence",
+    authority: "distillation",
+    conflictPolicy: getConflictPolicyForCategory(durable),
+    originalCategory: durable,
+    note: "Dream-synthesized derivative: a lead to its sources, never authority over them.",
+  };
+}
+
+/** 簇的多数票类目可能落在 legacy 值上；边界字段只认 durable 六类，兜底到 events。 */
+function toDurableCategory(category: string): DurableMemoryCategory {
+  return (DURABLE_MEMORY_CATEGORIES as readonly string[]).includes(category)
+    ? category as DurableMemoryCategory
+    : "events";
 }
 
 function isActive(entry: MemoryEntry): boolean {
@@ -447,6 +497,21 @@ export interface ClusterConsolidationResult {
    * 「LLM 全程不可用」和「今天没料可炼」会长得一模一样。
    */
   llmFailures: number;
+  /**
+   * 模型自己判定「这簇没有可提炼结论」的次数（insight + pattern 合计）。
+   *
+   * 2026-08-23 加。在此之前**这个数按构造只能是 0** —— 老 `generateL0` 没有弃权路径，
+   * 每个合格簇必写一条。所以它不是锦上添花的计量，而是新契约是否真在生效的直接读数：
+   * 长期为 0 意味着模型又在硬凑了。诊断实测同批簇上一个合格提示词弃权约 22.5%。
+   */
+  synthesisAbstained: number;
+  /**
+   * 写库前校验拦下的次数（提示词回声 / evidence 不合法 / 长度越界 / JSON 解析不出）。
+   *
+   * 与 `llmFailures` 分开：那个是「没拿到回复」，这个是「拿到了但不合契约」。
+   * 老路径两者都不计 —— 于是 28 条系统提示词原文安静地进了库。
+   */
+  synthesisRejected: number;
 }
 
 /**
@@ -492,6 +557,8 @@ export async function clusterAndConsolidate(params: {
     patternsExtracted: 0,
     entriesLinked: 0,
     llmFailures: 0,
+    synthesisAbstained: 0,
+    synthesisRejected: 0,
   };
 
   // Filter to active entries with vectors
@@ -555,34 +622,11 @@ export async function clusterAndConsolidate(params: {
       break;
     }
 
-    // Generate insight via LLM from cluster member texts
-    //
-    // 单个 cluster 的 LLM 失败不该炸掉整个 scope。llm-client 的 chat() 在 catch 里是
-    // `throw err`（记完熔断计数后原样抛），所以 15s AbortController 超时会一路冒到
-    // runDream 之外 —— 2026-08-09 memory 轮次连挂两次正是这条路径：memory 是最大
-    // scope、cluster 最多，撞上一次超时的概率接近 1，且两次挂的位置不同（不是某对
-    // 内容有毒，是这一阶段本来就没有防护）。隔壁 llm-consolidation.ts:68 的同类调用
-    // 一直有 try/catch，本处缺的是同一层保护。
-    //
-    // 吸收成 null 而不是新开一条分支：generateL0 返回 null（熔断打开 / 空响应）本来
-    // 就是合法路径，下面 `if (!insight)` 已经按「零产出轮次」处理。失败另计 llmFailures，
-    // 避免吸收变静默。
-    const combinedText = cluster.map(m => m.text).join("\n---\n");
-    let insight: string | null;
-    try {
-      insight = await llm.generateL0(combinedText);
-    } catch (err) {
-      result.llmFailures++;
-      logWarn(`[WARN] cluster insight LLM 调用失败，本簇跳过: ${err instanceof Error ? err.message : String(err)}`);
-      insight = null;
-    }
-
-    if (!insight) {
-      // CC-9: No insight produced — this is a zero-yield round
-      consecutiveLowYield++;
-      result.clustersConsolidated++;
-      continue;
-    }
+    // 每簇共用的三个量，2026-08-23 从 insight 分支里提上来。
+    // 提上来是 pattern 解耦的前置条件：以前 bestCat / maxImportance / sortedSourceIds
+    // 都算在 `if (!insight) continue` 之后，pattern 想独立跑就拿不到它们。
+    const memberTexts = cluster.map(m => m.text);
+    const sortedSourceIds = cluster.map(m => m.id).slice().sort();
 
     // Determine category (majority vote from cluster members)
     const catCounts = new Map<string, number>();
@@ -601,70 +645,122 @@ export async function clusterAndConsolidate(params: {
     // Importance = max of cluster members
     const maxImportance = Math.max(...cluster.map(m => m.importance));
 
-    // Embed the insight text
-    const insightVector = await params.embedder.embedPassage(insight);
+    /**
+     * 一次合成调用的统一入口：吸收异常、把三种结局（产出 / 弃权 / 校验不过）分别计数。
+     *
+     * 单个 cluster 的 LLM 失败不该炸掉整个 scope。llm-client 的 chat() 在 catch 里是
+     * `throw err`（记完熔断计数后原样抛），所以 AbortController 超时会一路冒到
+     * runDream 之外 —— 2026-08-09 memory 轮次连挂两次正是这条路径：memory 是最大
+     * scope、cluster 最多，撞上一次超时的概率接近 1，且两次挂的位置不同（不是某对
+     * 内容有毒，是这一阶段本来就没有防护）。
+     *
+     * 吸收成 `abstained` 而不是新开一条分支：调用方对「本簇这一侧没有产出」的处理
+     * 本来就一样。失败另计 llmFailures、校验不过另计 synthesisRejected，避免吸收变静默。
+     */
+    const runSynthesis = async (
+      label: string,
+      call: () => Promise<SynthesisVerdict>,
+    ): Promise<SynthesisVerdict> => {
+      let verdict: SynthesisVerdict;
+      try {
+        verdict = await call();
+      } catch (err) {
+        result.llmFailures++;
+        logWarn(`[WARN] ${label} LLM 调用失败，本簇跳过: ${err instanceof Error ? err.message : String(err)}`);
+        return { status: "abstained" };
+      }
+      if (verdict.status === "abstained") {
+        result.synthesisAbstained++;
+      } else if (verdict.status === "rejected") {
+        result.synthesisRejected++;
+        // 打出来的是**原因**不是「失败了」：`prompt-echo` 说明模型在回声提示词，
+        // `evidence-out-of-range` 说明它在编造编号，两者要采取的动作完全不同。
+        logWarn(`[WARN] ${label} 输出未通过写库前校验（${verdict.reason}），本簇该侧不写库`);
+      }
+      return verdict;
+    };
 
-    // Store the insight as a new memory. P0-2/P1-2: derive a deterministic id from the
-    // (sorted) source member ids so re-running dream/consolidate on the same cluster
-    // upserts the same insight row instead of appending a near-duplicate each run
-    // (the highest-frequency dup-id source). Cross-run stable because sourceIds are stable.
-    const sortedSourceIds = cluster.map(m => m.id).slice().sort();
-    const insightEntry = await store.store({
-      id: deterministicId(scope, `cluster-insight:${sortedSourceIds.join(",")}`),
-      text: insight,
-      vector: insightVector,
-      category: bestCat,
-      scope,
-      importance: maxImportance,
-      metadata: JSON.stringify({
-        evolution: {
-          status: "active",
-          version: 1,
-          accessCount: 0,
-          lastAccessedAt: null,
-          supersededBy: null,
-          consolidatedInto: null,
-          sourceMemories: cluster.map(m => m.id),
-          validFrom: Date.now(),
-          validUntil: null,
-        },
-        cluster_insight: true,
-      }),
-    });
+    /** 派生物统一的边界声明。见下方 buildDerivedBoundary 的注释。 */
+    const derivedBoundary = buildDerivedBoundary(bestCat);
 
-    result.insightsGenerated++;
+    let effectsThisCluster = 0;
 
-    // Mark source memories as consolidated_into (but keep them active).
-    // 2026-08-14 批量化：N 次逐条 update → 1 次 patchMetadataBatch。patchFn 在锁内
-    // 以最新 meta 为底座，pattern 段随后的 contributedToPattern 批不会再把这里写的
-    // consolidatedInto 抹掉（旧路径的 Bug-2：两段都从同一个旧内存串起底 patch）。
-    // 本批独立于 pattern 批提交：pattern 路径失败时 insight 的源链接已落库（保持
-    // 旧异常语义 —— insight 源链接从来不等 pattern）。
-    result.entriesLinked += await store.patchMetadataBatch(
-      cluster.map(member => ({
-        id: member.id,
-        patchFn: (meta: Record<string, unknown>) => patchEvolutionOnMeta(meta, {
-          consolidatedInto: insightEntry.id,
-          // Keep status active — still individually searchable
+    // ---- cluster insight ---------------------------------------------------
+    const insightVerdict = await runSynthesis("cluster insight", () =>
+      llm.synthesizeClusterInsight(memberTexts));
+
+    if (insightVerdict.status === "ok") {
+      const { text: insight, evidence } = insightVerdict.output;
+
+      // Embed the insight text
+      const insightVector = await params.embedder.embedPassage(insight);
+
+      // Store the insight as a new memory. P0-2/P1-2: derive a deterministic id from the
+      // (sorted) source member ids so re-running dream/consolidate on the same cluster
+      // upserts the same insight row instead of appending a near-duplicate each run
+      // (the highest-frequency dup-id source). Cross-run stable because sourceIds are stable.
+      const insightEntry = await store.store({
+        id: deterministicId(scope, `cluster-insight:${sortedSourceIds.join(",")}`),
+        text: insight,
+        vector: insightVector,
+        category: bestCat,
+        scope,
+        importance: maxImportance,
+        metadata: JSON.stringify({
+          evolution: {
+            status: "active",
+            version: 1,
+            accessCount: 0,
+            lastAccessedAt: null,
+            supersededBy: null,
+            consolidatedInto: null,
+            sourceMemories: cluster.map(m => m.id),
+            validFrom: Date.now(),
+            validUntil: null,
+          },
+          cluster_insight: true,
+          boundary: derivedBoundary,
+          synthesis_contract: SYNTHESIS_CONTRACT_VERSION,
+          /** 模型自己指认的支撑源（sourceMemories 的子集）。空集进不来——校验挡在前面。 */
+          evidenceMemories: evidence.map(i => cluster[i - 1]?.id).filter((id): id is string => Boolean(id)),
         }),
-      })),
-      [scope],
-    );
+      });
+
+      result.insightsGenerated++;
+      effectsThisCluster++;
+
+      // Mark source memories as consolidated_into (but keep them active).
+      // 2026-08-14 批量化：N 次逐条 update → 1 次 patchMetadataBatch。patchFn 在锁内
+      // 以最新 meta 为底座，pattern 段随后的 contributedToPattern 批不会再把这里写的
+      // consolidatedInto 抹掉（旧路径的 Bug-2：两段都从同一个旧内存串起底 patch）。
+      // 本批独立于 pattern 批提交：pattern 路径失败时 insight 的源链接已落库（保持
+      // 旧异常语义 —— insight 源链接从来不等 pattern）。
+      result.entriesLinked += await store.patchMetadataBatch(
+        cluster.map(member => ({
+          id: member.id,
+          patchFn: (meta: Record<string, unknown>) => patchEvolutionOnMeta(meta, {
+            consolidatedInto: insightEntry.id,
+            // Keep status active — still individually searchable
+          }),
+        })),
+        [scope],
+      );
+    }
 
     result.clustersConsolidated++;
 
-    // HP-5: Cross-memory pattern extraction
+    // ---- HP-5: Cross-memory pattern extraction ------------------------------
+    //
+    // 2026-08-23 解耦：这一段不再挂在 insight 成功之后。原路径是
+    // `if (!insight) { ...; continue; }`，于是 insight 一旦弃权或失败，pattern 抽取
+    // 根本不执行 —— 两个目标概念不同的合成被绑成一条命。改后两者独立失败、独立弃权：
+    // 「这簇没有单条结论」和「这簇没有跨条目模式」是两个判断，没有理由互相代表。
     if (extractPatterns && cluster.length >= 3) {
-      // 同上：pattern 抽取失败也只丢这一簇的 pattern，不连坐已经写好的 insight。
-      let patternText: string | null;
-      try {
-        patternText = await llm.extractPattern(cluster.map(m => m.text));
-      } catch (err) {
-        result.llmFailures++;
-        logWarn(`[WARN] pattern 抽取 LLM 调用失败，本簇跳过: ${err instanceof Error ? err.message : String(err)}`);
-        patternText = null;
-      }
-      if (patternText) {
+      const patternVerdict = await runSynthesis("cross-memory pattern", () =>
+        llm.synthesizeClusterPattern(memberTexts));
+
+      if (patternVerdict.status === "ok") {
+        const { text: patternText, evidence } = patternVerdict.output;
         // 与同函数上方的 cluster insight 取同一个值：派生物继承源里最高的 importance，
         // 不额外加成。原本这里是 maxImportance + 0.1，会让 LLM 抽出的 pattern 比它的
         // 任何一条源记忆都重要——而 importance >= 0.95 在本仓库里是「人工 pin」的专用
@@ -696,6 +792,10 @@ export async function clusterAndConsolidate(params: {
             },
             cross_memory_pattern: true,
             source_cluster_size: cluster.length,
+            // pattern 恒为 patterns 类目，边界单独构造，不跟 insight 的多数票类目走。
+            boundary: buildDerivedBoundary("patterns"),
+            synthesis_contract: SYNTHESIS_CONTRACT_VERSION,
+            evidenceMemories: evidence.map(i => cluster[i - 1]?.id).filter((id): id is string => Boolean(id)),
           }),
         });
 
@@ -712,11 +812,18 @@ export async function clusterAndConsolidate(params: {
         );
 
         result.patternsExtracted++;
+        effectsThisCluster++;
       }
     }
 
-    // CC-9: Successful insight generated — reset diminishing returns counter
-    consecutiveLowYield = 0;
+    // CC-9: 本簇两侧都没写出东西才算零产出轮次。
+    // 判据从「insight 有没有」换成「这一簇有没有任何副作用」—— 解耦之后 insight 弃权
+    // 而 pattern 产出是合法结局，把它算成零产出会让早停提前触发、白扔掉后面的簇。
+    if (effectsThisCluster === 0) {
+      consecutiveLowYield++;
+    } else {
+      consecutiveLowYield = 0;
+    }
   }
 
   return result;
