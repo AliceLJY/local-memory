@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`embedding.timeoutMs` — an opt-in per-request timeout for the embedding client**
+  (config.json, or `RECALLNEST_EMBEDDING_TIMEOUT_MS`, which wins over the file so one
+  deployment can bound itself without editing a shared config). **Default behavior is
+  unchanged**: with neither set, no `timeout` is passed to the SDK at all and the client
+  keeps its own default — 600s in `openai` v7 — exactly as in every release through
+  v3.0.0. The knob exists because that default stacks badly: the SDK retries twice on its
+  own and `Embedder` retries twice more, so a black-holed endpoint issues **9 requests for
+  a single `embedPassage` call** (measured against a loopback endpoint that never answers),
+  putting the worst case at roughly 90 minutes. Lowering the default for everyone was
+  rejected instead of shipped — bulk embedding of long documents is legitimately slow, and
+  a global cut would turn working ingests into failures — so the timeout is only ever
+  shortened by a caller that asks. Non-finite, zero and negative values are ignored rather
+  than throwing, so a typo degrades to the old behavior instead of to an embedder that
+  aborts every request. Covered by the loopback suite (abort within the configured budget)
+  and by `runtime-config-embedding.test.ts` (config.json → client, env precedence, and a
+  whole-client comparison against the pre-change construction expression proving the unset
+  path is unchanged).
+
 ## v3.0.0 — Node 22, and conclusions that can be used (2026-08-24)
 
 Two things make this a major release: the runtime floor moves, and a synthesized

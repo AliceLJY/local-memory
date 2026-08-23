@@ -149,9 +149,11 @@ afterEach(async () => {
 
 /**
  * Swap in a client built exactly like the production one, plus a short timeout and no
- * SDK-level retries. Embedder has no timeout knob of its own, so this is the only way to
- * exercise the timeout branch in bounded time; `maxRetries: 0` isolates recallnest's own
- * retry policy from the SDK's so the request count is unambiguous.
+ * SDK-level retries. Embedder now has an `EmbeddingConfig.timeoutMs` knob (see the
+ * "configurable timeout" describe block, which drives it through the real config path),
+ * but these older cases keep injecting a client directly because they also need
+ * `maxRetries: 0` — that isolates recallnest's own retry policy from the SDK's so the
+ * request count is unambiguous, and `maxRetries` is deliberately not configurable.
  */
 function useBoundedClient(embedder: Embedder, baseURL: string, timeoutMs: number): void {
   (embedder as unknown as { client: OpenAI }).client = new OpenAI({
@@ -376,6 +378,119 @@ describe("OpenAI-compatible embeddings contract", () => {
     expect(caught).toBeInstanceOf(OpenAI.APIConnectionTimeoutError);
     expect(caught).toBeInstanceOf(OpenAI.APIConnectionError);
   }, 15_000);
+});
+
+// ---------------------------------------------------------------------------
+// Configurable embedding timeout
+// ---------------------------------------------------------------------------
+
+/** The `timeout` the SDK itself picks when we pass none. Read live so this suite keeps
+ *  asserting "unchanged from the SDK default" rather than a hard-coded 600000 that would
+ *  quietly stop meaning that after an SDK upgrade. */
+function sdkDefaultTimeout(): number {
+  return (new OpenAI({ apiKey: "test-key-not-a-real-credential" }) as unknown as { timeout: number })
+    .timeout;
+}
+
+function clientTimeoutOf(embedder: Embedder): number {
+  return (embedder as unknown as { client: { timeout: number } }).client.timeout;
+}
+
+const baseEmbedderConfig = {
+  provider: "openai-compatible" as const,
+  apiKey: "test-key-not-a-real-credential",
+  model: "text-embedding-3-small",
+  dimensions: 3,
+};
+
+describe("EmbeddingConfig.timeoutMs — configurable, opt-in, old behavior by default", () => {
+  it("unset leaves the SDK default in place", () => {
+    const embedder = new Embedder({ ...baseEmbedderConfig });
+
+    expect(clientTimeoutOf(embedder)).toBe(sdkDefaultTimeout());
+  });
+
+  it("unset produces a client indistinguishable from the one the old code built", () => {
+    // Stronger than checking `timeout` alone, which only proves the one property this
+    // change happened to think about. The reference client below is constructed with
+    // *literally the pre-change expression* from embedder.ts:
+    //     new OpenAI({ apiKey, ...(baseURL ? { baseURL } : {}) })
+    // so comparing the SDK's whole resolved scalar surface is the mechanical form of
+    // "unset behaves exactly as before" — a stray option leaking in through the new
+    // conditional spread would show up here even if it were not `timeout`.
+    const apiKey = "test-key-not-a-real-credential";
+    const baseURL = "http://127.0.0.1:9/v1";
+
+    const viaEmbedder = (
+      new Embedder({ ...baseEmbedderConfig, baseURL }) as unknown as { client: OpenAI }
+    ).client;
+    const preChange = new OpenAI({ apiKey, ...(baseURL ? { baseURL } : {}) });
+
+    const scalarSurface = (client: OpenAI): Record<string, unknown> => {
+      const record = client as unknown as Record<string, unknown>;
+      return Object.fromEntries(
+        Object.keys(record)
+          .filter((k) => typeof record[k] !== "function" && typeof record[k] !== "object")
+          .sort()
+          .map((k) => [k, record[k]])
+      );
+    };
+
+    expect(scalarSurface(viaEmbedder)).toEqual(scalarSurface(preChange));
+    // Guards the comparison itself: an empty or single-key surface would make the
+    // assertion above pass vacuously after any SDK refactor.
+    expect(Object.keys(scalarSurface(preChange)).length).toBeGreaterThanOrEqual(4);
+  });
+
+  it("explicitly passing undefined is the same as omitting the field", () => {
+    const embedder = new Embedder({ ...baseEmbedderConfig, timeoutMs: undefined });
+
+    expect(clientTimeoutOf(embedder)).toBe(sdkDefaultTimeout());
+  });
+
+  it("a valid value reaches the client", () => {
+    const embedder = new Embedder({ ...baseEmbedderConfig, timeoutMs: 1_234 });
+
+    expect(clientTimeoutOf(embedder)).toBe(1_234);
+  });
+
+  it("garbage values fall back to the SDK default instead of arming a broken timeout", () => {
+    // 0 / negative would abort every request immediately, NaN would poison the SDK's own
+    // comparison — both are worse than the 600s this knob exists to shorten. A typo in
+    // config.json must degrade to the old behavior, not to a dead embedder.
+    for (const bad of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      const embedder = new Embedder({ ...baseEmbedderConfig, timeoutMs: bad });
+      expect(clientTimeoutOf(embedder)).toBe(sdkDefaultTimeout());
+    }
+  });
+
+  it("aborts a hanging endpoint within the configured budget", async () => {
+    const mock = await endpoint(HANG);
+
+    // No client injection here — unlike useBoundedClient above, this drives the real
+    // config path end to end, which is what proves the knob is actually wired up.
+    const embedder = new Embedder({
+      ...baseEmbedderConfig,
+      baseURL: mock.baseURL,
+      timeoutMs: 100,
+    });
+
+    const startedAt = Date.now();
+    await expect(embedder.embedPassage("never answered")).rejects.toThrow();
+    const elapsed = Date.now() - startedAt;
+
+    // Bounded failure is the contract. Without the knob this same call inherits the SDK's
+    // 600s default, and Embedder's own 2 transient retries stack on top of the SDK's 2 —
+    // so the pre-change worst case is measured in tens of minutes, not seconds.
+    expect(elapsed).toBeLessThan(15_000);
+
+    // Lower bound guards the upper bound's meaning: a call that died instantly (refused
+    // socket, bad URL, config never reaching the client) would also satisfy "< 15s" while
+    // proving nothing about the timeout. Requiring at least one full budget shows the
+    // client really waited on a black-holed endpoint and then gave up on its own clock.
+    expect(elapsed).toBeGreaterThanOrEqual(100);
+    expect(mock.requests.length).toBeGreaterThanOrEqual(3);
+  }, 30_000);
 });
 
 // ---------------------------------------------------------------------------

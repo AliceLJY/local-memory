@@ -23,6 +23,7 @@ const KEYS = [
   "RECALLNEST_API_PORT",
   "RECALLNEST_DREAM_BUDGET_MS",
   "RECALLNEST_SYNTHESIS_MODEL",
+  "RECALLNEST_EMBEDDING_TIMEOUT_MS",
 ];
 
 const saved: Record<string, string | undefined> = {};
@@ -207,5 +208,38 @@ describe("env-config synthesisModel — dream 合成的模型旋钮", () => {
   it("正常值去空白后返回", () => {
     process.env.RECALLNEST_SYNTHESIS_MODEL = "  qwen-plus  ";
     expect(envConfig.synthesisModel()).toBe("qwen-plus");
+  });
+});
+
+describe("env-config embeddingTimeoutMs — embedding 客户端的超时旋钮", () => {
+  it("未设 → undefined（调用方回落到 config.json，最终回落到 SDK 默认，老行为不变）", () => {
+    delete process.env.RECALLNEST_EMBEDDING_TIMEOUT_MS;
+    expect(envConfig.embeddingTimeoutMs()).toBeUndefined();
+  });
+
+  it("空串 / 纯空白算未设，不会变成 Number('') === 0 那种「立即超时」", () => {
+    for (const blank of ["", "   ", "\t"]) {
+      process.env.RECALLNEST_EMBEDDING_TIMEOUT_MS = blank;
+      expect(envConfig.embeddingTimeoutMs()).toBeUndefined();
+    }
+  });
+
+  it("非数字 → undefined，不会变成 NaN 传给 SDK", () => {
+    for (const bad of ["30s", "abc", "1_000", "60000ms"]) {
+      process.env.RECALLNEST_EMBEDDING_TIMEOUT_MS = bad;
+      expect(envConfig.embeddingTimeoutMs()).toBeUndefined();
+    }
+  });
+
+  it("0 与负数 → undefined（否则每次 embed 都会被立刻 abort，比不设更糟）", () => {
+    for (const bad of ["0", "-1", "-60000"]) {
+      process.env.RECALLNEST_EMBEDDING_TIMEOUT_MS = bad;
+      expect(envConfig.embeddingTimeoutMs()).toBeUndefined();
+    }
+  });
+
+  it("正常值原样返回", () => {
+    process.env.RECALLNEST_EMBEDDING_TIMEOUT_MS = "60000";
+    expect(envConfig.embeddingTimeoutMs()).toBe(60_000);
   });
 });

@@ -27,6 +27,11 @@ export interface LocalMemoryConfig {
     dimensions?: number;
     taskQuery?: string;
     taskPassage?: string;
+    /**
+     * Per-request timeout (ms) for the embedding client. Omit to keep the SDK default
+     * (600s in openai v7); `RECALLNEST_EMBEDDING_TIMEOUT_MS` overrides this.
+     */
+    timeoutMs?: number;
   };
   llm?: {
     apiKey: string;
@@ -156,6 +161,10 @@ export function createComponents(config: LocalMemoryConfig, profileName?: string
     dimensions: config.embedding.dimensions,
     taskQuery: config.embedding.taskQuery,
     taskPassage: config.embedding.taskPassage,
+    // Env wins over config.json so a single deployment can bound its embed calls
+    // without editing the shared file. Both unset → no `timeout` reaches the SDK,
+    // which is the behavior every release through v3.0.0 had.
+    timeoutMs: envConfig.embeddingTimeoutMs() ?? config.embedding.timeoutMs,
   };
 
   const embedder = createEmbedder(embeddingConfig);

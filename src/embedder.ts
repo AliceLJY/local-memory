@@ -103,6 +103,24 @@ export interface EmbeddingConfig {
   normalized?: boolean;
   /** Enable automatic chunking for documents exceeding context limits (default: true) */
   chunking?: boolean;
+
+  /**
+   * Per-request timeout (ms) handed to the OpenAI-compatible client.
+   *
+   * **Unset is the default and keeps the historical behavior**: no `timeout` key is
+   * passed to the SDK at all, so the client falls back to its own default (600s in
+   * openai v7). That default is deliberately left alone — bulk embedding of long
+   * documents is legitimately slow, and lowering it globally would turn working
+   * ingests into failures.
+   *
+   * Worth setting on latency-sensitive callers: the SDK default stacks with the SDK's
+   * own 2 retries *and* Embedder's 2 transient retries, so a black-holed endpoint can
+   * hold a single embed call for far longer than any caller expects.
+   *
+   * Non-finite or non-positive values are ignored (treated as unset) rather than
+   * throwing, matching how `env-config.ts` validates its other numeric knobs.
+   */
+  timeoutMs?: number;
 }
 
 // Known embedding model dimensions
@@ -205,9 +223,15 @@ export class Embedder {
     // Enable auto-chunking by default for better handling of long documents
     this._autoChunk = config.chunking !== false;
 
+    const timeoutMs =
+      typeof config.timeoutMs === "number" && Number.isFinite(config.timeoutMs) && config.timeoutMs > 0
+        ? config.timeoutMs
+        : undefined;
+
     this.client = new OpenAI({
       apiKey: resolvedApiKey,
       ...(config.baseURL ? { baseURL: config.baseURL } : {}),
+      ...(timeoutMs !== undefined ? { timeout: timeoutMs } : {}),
     });
 
     this.dimensions = getVectorDimensions(config.model, config.dimensions);

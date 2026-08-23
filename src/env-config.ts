@@ -146,6 +146,24 @@ export const synthesisModel = (): string | undefined => {
   return trimmed ? trimmed : undefined;
 };
 
+/**
+ * Per-request timeout (ms) for the embedding client, overriding `embedding.timeoutMs`
+ * in config.json.
+ *
+ * Exists so the timeout can be set per deployment (the resident MCP server, a one-off
+ * CLI ingest) without editing the shared config file — the same reason
+ * `RECALLNEST_LAYER_ADMISSION` lives here.
+ *
+ * Unset / empty / non-finite / <= 0 → undefined, i.e. fall through to config.json and
+ * ultimately to the SDK default. **Not setting it anywhere keeps the old behavior.**
+ */
+export const embeddingTimeoutMs = (): number | undefined => {
+  const raw = process.env.RECALLNEST_EMBEDDING_TIMEOUT_MS;
+  if (raw === undefined || raw.trim() === "") return undefined;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : undefined;
+};
+
 // --- Raw env values (caller validates / clamps / falls back to config) ---
 
 export const recallModeRaw = (): string | undefined => process.env.RECALLNEST_RECALL_MODE;
