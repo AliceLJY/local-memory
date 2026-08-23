@@ -9,7 +9,7 @@
  * Tool tiers:
  * - core: Always exposed (7 tools)
  * - advanced: Exposed by default, includes core (30 tools)
- * - full: All tools including governance (43 tools)
+ * - full: All tools including governance (44 tools)
  *
  * Control: RECALLNEST_MCP_TIER=core|advanced|full
  */
@@ -79,6 +79,7 @@ const TOOL_TIERS: Record<string, ToolTier> = {
   distill_session: "advanced",
   scan_skill_promotions: "governance",
   promote_scan: "governance",
+  promote_synthesis: "governance",
   manage_alias: "governance",
   forget_memory: "advanced",
 

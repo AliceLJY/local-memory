@@ -8,7 +8,13 @@ import { formatConflictAudit, formatConflictClusters, formatConflictEscalation, 
 import { ConflictStatusSchema } from "./conflict-schema.js";
 import { ConsolidationEngine, formatConsolidationResult } from "./consolidation-engine.js";
 import { archiveDirtyBriefAsset, listDirtyBriefAssets } from "./memory-assets.js";
-import { scanMemoryPromotions, buildPromoteScanDeps, formatPromoteScanResult } from "./memory-promotion.js";
+import {
+  scanMemoryPromotions,
+  scanSynthesisPromotions,
+  buildPromoteScanDeps,
+  formatPromoteScanResult,
+  formatSynthesisPromoteResult,
+} from "./memory-promotion.js";
 import { aliasMapFilePath, expandQuery, explainUserAliases, listUserAliases, removeUserAlias, upsertUserAlias } from "./query-expander.js";
 import { recordSkillOutcome } from "./skill-engine.js";
 import { scanForPromotions, formatPromotionResult } from "./skill-promotion.js";
@@ -480,6 +486,30 @@ registerTool(
       content: [{
         type: "text" as const,
         text: formatPromoteScanResult(result),
+      }],
+    };
+  },
+);
+
+registerTool(
+  "promote_synthesis",
+  "Scan dream-synthesized conclusions (cluster insights and cross-memory patterns, which are written on the evidence layer and therefore excluded from stable memory) and promote the well-supported ones into a durable copy. Eligibility comes from the conclusion's own validated evidence set, not from repetition. Default dry-run (no writes); when dryRun=false it writes durable entries through the same promote path as promote_memory, so canonicalKey dedup makes re-runs a revision rather than a duplicate. The synthesized row itself is never modified.",
+  {
+    scope: z.string().min(1).max(160).describe("Scope to scan, e.g. memory"),
+    dryRun: z.boolean().default(true).describe("When true (default), only report candidates without writing"),
+    minDistinctEvidence: z.number().int().min(2).max(20).default(2).describe("Min distinct, still-active evidence memories behind the conclusion"),
+    minImportance: z.number().min(0).max(1).default(0.6).describe("Min importance of the synthesized conclusion itself"),
+  },
+  async ({ scope, dryRun, minDistinctEvidence, minImportance }) => {
+    const { store, embedder } = getComponents();
+    const kgExtractor = getKGExtractor();
+    const deps = buildPromoteScanDeps({ store, embedder, conflictStore, kgExtractor });
+    const result = await scanSynthesisPromotions(deps, scope, { dryRun, minDistinctEvidence, minImportance });
+
+    return {
+      content: [{
+        type: "text" as const,
+        text: formatSynthesisPromoteResult(result),
       }],
     };
   },

@@ -38,7 +38,13 @@ import {
 } from "./ingest.js";
 import { runDoctor, formatDoctorResults } from "./doctor.js";
 import { persistCaseMemory, persistMemory, persistWorkflowPattern } from "./capture-engine.js";
-import { scanMemoryPromotions, buildPromoteScanDeps, formatPromoteScanResult } from "./memory-promotion.js";
+import {
+  scanMemoryPromotions,
+  scanSynthesisPromotions,
+  buildPromoteScanDeps,
+  formatPromoteScanResult,
+  formatSynthesisPromoteResult,
+} from "./memory-promotion.js";
 import { runDream, formatDreamResult, formatDreamMetrics, DEFAULT_DREAM_CONFIG, classifyDreamFailure, shouldBlockDreamRun, partitionAutoDreamScopes } from "./dream-pipeline.js";
 import { dreamBudgetMs } from "./env-config.js";
 import { listScopesAboveThreshold, pruneWriteCounts } from "./activity-counter.js";
@@ -704,6 +710,28 @@ program
       ...(Number.isFinite(minImportance) ? { minImportance } : {}),
     });
     console.log(formatPromoteScanResult(result));
+  });
+
+program
+  .command("promote-synthesis")
+  .description("扫描 dream 合成出的结论（evidence 层），把证据充分的那些晋升出一份 durable 副本")
+  .requiredOption("--scope <scope>", "要扫描的 scope，如 memory")
+  .option("--apply", "执行晋升；默认 dry-run 只预览")
+  .option("--min-evidence <n>", "最少几条仍存活的不同证据（默认 2）", "2")
+  .option("--min-importance <n>", "合成条目自身的最低 importance（默认 0.6）", "0.6")
+  .action(async (options) => {
+    const config = loadConfig();
+    const { store, embedder } = createComponents(config);
+    const conflictStore = new ConflictCandidateStore();
+    const deps = buildPromoteScanDeps({ store, embedder, conflictStore });
+    const minDistinctEvidence = Number(options.minEvidence);
+    const minImportance = Number(options.minImportance);
+    const result = await scanSynthesisPromotions(deps, options.scope, {
+      dryRun: !options.apply,
+      ...(Number.isFinite(minDistinctEvidence) ? { minDistinctEvidence } : {}),
+      ...(Number.isFinite(minImportance) ? { minImportance } : {}),
+    });
+    console.log(formatSynthesisPromoteResult(result));
   });
 
 program

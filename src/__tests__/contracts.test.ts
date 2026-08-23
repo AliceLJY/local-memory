@@ -185,7 +185,7 @@ describe("MCP registry contract", () => {
   it("keeps registered tool count and tier header in sync", () => {
     const source = readFileSync(join(import.meta.dir, "..", "mcp-server.ts"), "utf8");
     const header = source.slice(0, source.indexOf("const TOOL_TIERS"));
-    // P3-B: the 43 registerTool(...) calls now live in the tier modules; mcp-server.ts
+    // P3-B: the 44 registerTool(...) calls now live in the tier modules; mcp-server.ts
     // still owns TOOL_TIERS and the tier-count header comment above it.
     const registeredTools = ["mcp-tools-core", "mcp-tools-advanced", "mcp-tools-governance"]
       .flatMap((name) =>
@@ -208,7 +208,7 @@ describe("MCP registry contract", () => {
       return Number(match![1]);
     };
 
-    expect(registeredTools).toHaveLength(43);
+    expect(registeredTools).toHaveLength(44);
     expect(missingTier).toEqual([]);
     expect(headerCount("core")).toBe(coreCount);
     expect(headerCount("advanced")).toBe(defaultCount);

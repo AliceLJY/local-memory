@@ -180,6 +180,44 @@ Promotion rules:
 - if the promoted text disagrees with an existing durable record for the same `canonicalKey`, RecallNest stores an open conflict candidate instead of silently overwriting the durable record
 - if the promotion would reuse a `canonicalKey` that is already owned by another durable category, RecallNest stores an open conflict candidate instead of creating a second durable owner
 
+### Automatic promotion scans
+
+Two scans find promotion candidates without a human naming them one at a time. Both
+default to dry-run, both write through `promote_memory`'s path (so `canonicalKey` dedup
+makes a re-run a revision rather than a duplicate), and neither modifies the source row.
+
+| Scan | Finds | Eligibility |
+|---|---|---|
+| `promote_scan` / `recallnest promote-scan` | transcript-downgraded profile/preferences | the same fact recurs across N clustered evidence rows at high enough importance |
+| `promote_synthesis` / `recallnest promote-synthesis` | dream-synthesized conclusions (cluster insights, cross-memory patterns) | the conclusion's own validated evidence set — N distinct sources that are still active |
+
+The two gates differ on purpose. Recurrence is the right question for a downgraded fact:
+seeing it in several separate places is what makes it look stable. It is the wrong
+question for a synthesis, which is *already* a cross-entry aggregate — requiring the dream
+to reach the same conclusion three times would be counting one thing three ways. What a
+synthesis carries instead is its support set, so that is what gets checked.
+
+`promote_synthesis` closes a gap that used to be absolute. `buildDerivedBoundary` stamps
+every synthesized derivative `layer: "evidence"` deliberately — a model re-reading its own
+memories is a lead to its sources, not authority over them — and
+`shouldUseStableMemoryResult` refuses the evidence layer. So before this scan existed, a
+synthesized conclusion could never take part in stable memory no matter how well
+supported it was. Promotion does not relax the boundary; it produces a separate durable
+entry that carries `promotedFrom` back to the synthesis, leaving the evidence readable as
+evidence.
+
+Eligibility is deliberately narrow:
+
+- `synthesis_contract` must be at least version 2. Derivatives written before the contract
+  were never validated for abstention, evidence, or prompt echo, so promoting them would
+  launder unchecked model output into durable memory.
+- `evidenceMemories` must resolve to at least `minDistinctEvidence` (default 2) distinct
+  memories that are still active. Duplicates count once; superseded sources do not count.
+- When the declared evidence cannot be resolved at all, the scan **abstains** rather than
+  promoting on an unchecked claim, and reports it under `evidence_unresolvable`.
+- Every rejection reason is counted and printed, so "found nothing" and "filtered
+  everything out" never look the same from outside.
+
 Conflict handling entry points:
 
 - MCP: `list_conflicts`, `resolve_conflict`
@@ -208,6 +246,7 @@ Current implementation:
 - [conflict-store.ts](../src/conflict-store.ts): persists conflict candidates outside the main LanceDB index
 - [context-composer.ts](../src/context-composer.ts): startup continuity ignores evidence-only stable recall
 - [memory-boundaries.ts](../src/memory-boundaries.ts): shared boundary resolution and read guards
+- [memory-promotion.ts](../src/memory-promotion.ts): both promotion scans — recurring downgraded evidence, and synthesized conclusions with a validated evidence set
 - [workflow-observation-store.ts](../src/workflow-observation-store.ts): persists dedicated append-only workflow observations outside regular memory
 - [workflow-observation-engine.ts](../src/workflow-observation-engine.ts): computes workflow health reports and evidence packs without touching durable recall
 
