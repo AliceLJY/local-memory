@@ -328,7 +328,15 @@ export class Embedder {
     }
   }
 
-  private async embedSingle(text: string, task?: string): Promise<number[]> {
+  /**
+   * @param allowChunkRetry - False for texts that are already chunks. Without it the
+   *   context-error branch below can re-enter itself forever: `smartChunk` returns the
+   *   input unchanged when it already fits, so re-embedding that chunk reproduces the
+   *   same provider error and chunks again. The regex that gates the branch also matches
+   *   rate-limit wording ("quota exceeded", "Rate limit exceeded"), which turned a 429
+   *   into an unbounded request storm against a paid endpoint.
+   */
+  private async embedSingle(text: string, task?: string, allowChunkRetry = true): Promise<number[]> {
     if (!text || text.trim().length === 0) {
       throw new Error("Cannot embed empty text");
     }
@@ -352,13 +360,20 @@ export class Embedder {
       const errorMsg = error instanceof Error ? error.message : String(error);
       const isContextError = /context|too long|exceed|length/i.test(errorMsg);
 
-      if (isContextError && this._autoChunk) {
+      if (isContextError && this._autoChunk && allowChunkRetry) {
         try {
           logInfo(`Document exceeded context limit (${errorMsg}), attempting chunking...`);
           const chunkResult = smartChunk(text, this._model);
-          
+
           if (chunkResult.chunks.length === 0) {
             throw new Error(`Failed to chunk document: ${errorMsg}`);
+          }
+
+          // Terminating condition: the chunker hands short text straight back, so a
+          // single chunk identical to the input means splitting cannot help. Retrying it
+          // would reproduce the same error and recurse.
+          if (chunkResult.chunks.length === 1 && chunkResult.chunks[0] === text) {
+            throw new Error(`Chunking cannot reduce this input: ${errorMsg}`);
           }
 
           // Embed all chunks in parallel
@@ -366,7 +381,7 @@ export class Embedder {
           const chunkEmbeddings = await Promise.all(
             chunkResult.chunks.map(async (chunk, idx) => {
               try {
-                const embedding = await this.embedSingle(chunk, task);
+                const embedding = await this.embedSingle(chunk, task, false);
                 return { embedding };
               } catch (chunkError) {
                 logWarn(`Failed to embed chunk ${idx}:`, chunkError);
@@ -468,7 +483,7 @@ export class Embedder {
 
               // Embed all chunks in parallel, then average.
               const embeddings = await Promise.all(
-                chunkResult.chunks.map((chunk) => this.embedSingle(chunk, task))
+                chunkResult.chunks.map((chunk) => this.embedSingle(chunk, task, false))
               );
 
               const avgEmbedding = embeddings.reduce(
