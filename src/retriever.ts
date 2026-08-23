@@ -40,7 +40,7 @@ import { isKGModeEnabled } from "./kg-extractor.js";
 import { detectEntities } from "./query-entity-detector.js";
 import { buildGraph, pprTraverse } from "./ppr-traversal.js";
 import { logInfo } from "./stderr-log.js";
-import type { AuditLogger } from "./audit-log.js";
+import { AUDIT_RETRIEVED_CAP, type AuditLogger } from "./audit-log.js";
 import { parseEmotion, isEmotionScoringEnabled } from "./memory-schema.js";
 import { parseNarrative, isNarrativeModeEnabled } from "./narrative-schema.js";
 import type { EmotionMetadata } from "./memory-schema.js";
@@ -918,12 +918,28 @@ export class MemoryRetriever {
 
     // F-1: Audit log — record retrieve operation (non-blocking, silent on failure)
     try {
-      this.auditLogger?.log({
-        operation: "retrieve",
-        scope: context.scopeFilter?.[0],
-        actor: context.source || "manual",
-        details: `query="${context.query.slice(0, 80)}" hits=${results.length}`,
-      });
+      if (this.auditLogger) {
+        const retrieved = results.slice(0, AUDIT_RETRIEVED_CAP).map((r) => {
+          const evo = parseEvolution(r.entry.metadata, r.entry.timestamp);
+          const boundary = extractBoundaryMetadata(r.entry.metadata);
+          return {
+            id: r.entry.id.slice(0, 8),
+            rev: evo.version,
+            st: evo.status,
+            ...(boundary?.layer ? { ly: boundary.layer } : {}),
+            ...(boundary?.authority ? { au: boundary.authority } : {}),
+          };
+        });
+        this.auditLogger.log({
+          operation: "retrieve",
+          scope: context.scopeFilter?.[0],
+          actor: context.source || "manual",
+          details: `query="${context.query.slice(0, 80)}" hits=${results.length}`,
+          ...(retrieved.length > 0 ? { retrieved } : {}),
+          // Only when the list is short of the truth — a truncated list must look truncated.
+          ...(results.length > retrieved.length ? { retrievedTotal: results.length } : {}),
+        });
+      }
     } catch {
       // Audit must never block retrieval
     }
