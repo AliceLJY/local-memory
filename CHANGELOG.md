@@ -164,8 +164,10 @@ Synthesis was subtracting.
 
 ### Verification
 
-- 2,323 tests pass across 165 files, 0 fail (2,281 at the 3.0 gate → +14 contract, +6 audit
-  revision, +7 verbatim self-recall, +15 synthesis promotion, +1 tool-count contract).
+- 2,324 tests pass across 165 files, 0 fail (2,281 at the 3.0 gate → +14 contract, +6 audit
+  revision, +8 verbatim self-recall, +15 synthesis promotion). Verified under three
+  feature-flag combinations, including the CI default, after CI caught one assertion
+  that had been reading the developer's local `.env` rather than product behaviour.
 - The deprecated chain is absent from `npm ls`, `node_modules/`, `bun.lock` and
   `package-lock.json`; installed `openai@7.5.0` reports zero dependencies and
   `engines.node >= 22.0.0`.

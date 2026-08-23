@@ -179,11 +179,27 @@ describe("verbatim self-recall: what the fixture guarantees", () => {
     // This is the part that must never regress into an actual filter. Losing a
     // verbatim-matching memory to a ranking is bad; dropping it at a threshold would be
     // worse, and would need a different fix.
-    for (const name of ["hard_min_score", "layer_admission", "noise_filter"]) {
+    for (const name of ["hard_min_score", "noise_filter"]) {
       const stage = stages.find((s) => s.name === name);
       expect(stage, `stage ${name} missing from trace`).toBeDefined();
       expect(stage?.droppedCount, `stage ${name} dropped rows`).toBe(0);
     }
+
+    // `layer_admission` is env-gated: applyLayerAdmission returns before touching the
+    // trace when RECALLNEST_LAYER_ADMISSION is off, which is the default. Asserting it
+    // unconditionally would only be asserting the developer's local .env — so check it
+    // when it ran, and rely on the whole-result assertion below when it did not.
+    const admission = stages.find((s) => s.name === "layer_admission");
+    if (admission) expect(admission.droppedCount, "layer admission dropped rows").toBe(0);
+  });
+
+  it("returns every candidate — nothing is removed on the way through", async () => {
+    // The environment-independent form of the claim above: whatever stages ran, the
+    // result set still holds all of them, so no gate removed the target.
+    const { results } = await retrieveWithTrace(DISTRACTOR_COUNT + 1);
+
+    expect(results).toHaveLength(DISTRACTOR_COUNT + 1);
+    expect(results.some((r) => r.entry.id === TARGET_ID)).toBe(true);
   });
 
   it("keeps the target's final score above the hard minimum", async () => {
