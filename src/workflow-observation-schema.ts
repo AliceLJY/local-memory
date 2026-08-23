@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { boundedStringSchema, identifierSchema, normalizedStringListSchema, optionalBoundedStringSchema } from "./schema-utils.js";
+import { RECALLED_IDS_CAP } from "./recall-ledger.js";
 
 export const WORKFLOW_OBSERVATION_OUTCOMES = [
   "success",
@@ -10,6 +11,27 @@ export const WORKFLOW_OBSERVATION_OUTCOMES = [
 ] as const;
 
 export const WorkflowObservationOutcomeSchema = z.enum(WORKFLOW_OBSERVATION_OUTCOMES);
+
+/**
+ * P0 join key：这次任务用到过哪些记忆。
+ *
+ * 超上限**截断而不报错**——观测层的第一守则是别把上报挡回去，一条记多了的
+ * observation 也远好过一条写不进去的。
+ * // simplified: capped, best-effort join signal — 不是账目，别拿它做审计口径。
+ * 需要完整读取轨迹时查 audit.jsonl 的 retrieve 记录。
+ */
+const recalledIdsSchema = z.array(z.string().trim().min(1).max(128))
+  .transform((items) => {
+    const deduped: string[] = [];
+    const seen = new Set<string>();
+    for (const item of items) {
+      if (seen.has(item)) continue;
+      seen.add(item);
+      deduped.push(item);
+    }
+    return deduped.slice(0, RECALLED_IDS_CAP);
+  })
+  .optional();
 
 export const WorkflowObservationInputSchema = z.object({
   workflowId: identifierSchema("workflowId", 120),
@@ -24,6 +46,10 @@ export const WorkflowObservationInputSchema = z.object({
   recordedAt: z.string().datetime().default(() => new Date().toISOString()),
   skillId: optionalBoundedStringSchema(128),
   idempotencyKey: optionalBoundedStringSchema(160),
+  /** P0 join key（会话级）：上报这条 observation 的读者身份，对应 memory metadata 的 readerIds。 */
+  readerId: optionalBoundedStringSchema(64),
+  /** P0 join key（任务级，更精确）：本次任务窗口内被检索返回过的 memory id。 */
+  recalledIds: recalledIdsSchema,
 });
 
 export const WorkflowObservationRecordSchema = WorkflowObservationInputSchema.extend({

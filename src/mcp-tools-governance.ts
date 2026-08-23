@@ -15,6 +15,7 @@ import { scanForPromotions, formatPromotionResult } from "./skill-promotion.js";
 import { buildWorkflowEvidence, buildWorkflowObservationRecord, inspectWorkflowDashboard, inspectWorkflowHealth } from "./workflow-observation-engine.js";
 import { formatWorkflowEvidencePack, formatWorkflowHealthDashboard, formatWorkflowHealthReport, formatWorkflowObservationSaved } from "./workflow-observation-output.js";
 import { WorkflowObservationOutcomeSchema } from "./workflow-observation-schema.js";
+import { PROCESS_READER_ID, recentRecallHits } from "./recall-ledger.js";
 import type { ToolRegistryDeps } from "./mcp-tool-deps.js";
 import { withLock } from "./distill-lock.js";
 
@@ -36,8 +37,14 @@ registerTool(
     tools: z.array(z.string().min(1).max(60)).max(6).default([]).describe("Optional tools involved"),
     skillId: z.string().min(1).max(128).optional().describe("Optional skill id to bump. When present and outcome is success, the skill's successCount increments; otherwise failureCount increments. Missing/corrupt skills are skipped silently (does not block observation write)."),
     idempotencyKey: z.string().min(1).max(160).optional().describe("Optional stable request key; repeated saves with the same key replace the prior observation"),
+    recalledIds: z.array(z.string().min(1).max(128)).max(64).optional().describe("Optional memory ids this task actually used. Omit to auto-fill from what this session retrieved in the last 30 minutes — that auto-fill is what makes (memory, outcome) value back-propagation possible."),
   },
-  async ({ workflowId, outcome, summary, scope, source, signal, task, tags, tools, skillId, idempotencyKey }) => {
+  async ({ workflowId, outcome, summary, scope, source, signal, task, tags, tools, skillId, idempotencyKey, recalledIds }) => {
+    // P0 join key：不传就用本进程的检索账本自动补。这一步是价值回溯的前提——
+    // 少了它，库里就只剩「有结果没参与者」和「有参与者没结果」两堆对不上的数据。
+    const resolvedRecalledIds = recalledIds && recalledIds.length > 0
+      ? recalledIds
+      : recentRecallHits();
     const record = buildWorkflowObservationRecord({
       workflowId,
       outcome,
@@ -50,6 +57,8 @@ registerTool(
       tools,
       skillId,
       idempotencyKey,
+      readerId: PROCESS_READER_ID,
+      ...(resolvedRecalledIds.length > 0 ? { recalledIds: resolvedRecalledIds } : {}),
     });
     const stored = await workflowObservationStore.save(record);
 
@@ -378,11 +387,13 @@ registerTool(
   {
     scope: z.string().min(1).max(160).describe("Project scope to scan for promotion candidates"),
     minOccurrences: z.number().min(2).max(20).default(3).describe("Minimum similar cases to trigger a promotion suggestion"),
+    minDistinctSources: z.number().min(1).max(10).default(2).describe("How many DIFFERENT sources (episodes) a cluster must span. Counting similar entries is not the same as counting distinct experiences — the same pothole hit three times is one experience, not a rule. Set 1 to disable this check. Abstains (never rejects) when the entries carry no source pointer."),
   },
-  async ({ scope, minOccurrences }) => {
+  async ({ scope, minOccurrences, minDistinctSources }) => {
     const { store } = getComponents();
     const result = await scanForPromotions(store, scope, {
       minCaseOccurrences: minOccurrences,
+      minDistinctSources,
     });
 
     return {

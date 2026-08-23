@@ -11,6 +11,7 @@
 
 import type { MemoryStore } from "./store.js";
 import { evaluateTierChange, resolveTier, type MemoryTier } from "./decay-engine.js";
+import { PROCESS_READER_ID, recordRecallHits } from "./recall-ledger.js";
 import { logInfo, logWarn } from "./stderr-log.js";
 
 // ============================================================================
@@ -70,7 +71,10 @@ export class AccessTracker {
     private config: AccessTrackerConfig = DEFAULT_ACCESS_TRACKER_CONFIG,
     readerId?: string,
   ) {
-    this.readerId = readerId ?? `r-${crypto.randomUUID().slice(0, 8)}`;
+    // 默认取进程级身份，不是每个实例各随机一个：components 按 profile 缓存，
+    // 一个会话开两个 profile 就会伪造出两个 reader，既污染 distinctReaderCount
+    // 也让 workflow observation 的 readerId join 对不上（见 recall-ledger.ts 抬头）。
+    this.readerId = readerId ?? PROCESS_READER_ID;
   }
 
   /**
@@ -136,6 +140,11 @@ export class AccessTracker {
     if (ids.length === 0) return;
 
     const now = Date.now();
+
+    // P0 join key：先记账本再过闸。账本回答「agent 看到过哪些条目」，
+    // 下面的 novelty/cooldown 闸回答「哪些值得强化半衰期」——两个问题，
+    // 用后者过滤前者会把最常被读到的条目系统性排除在 join 之外。
+    recordRecallHits(ids, now);
 
     for (let i = 0; i < ids.length; i++) {
       const id = ids[i];

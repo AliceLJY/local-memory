@@ -65,6 +65,7 @@ import { WorkflowObservationOutcomeSchema } from "./workflow-observation-schema.
 import { buildWorkflowEvidence, buildWorkflowObservationRecord, inspectWorkflowDashboard, inspectWorkflowHealth } from "./workflow-observation-engine.js";
 import { formatWorkflowEvidencePack, formatWorkflowHealthDashboard, formatWorkflowHealthReport, formatWorkflowObservationSaved } from "./workflow-observation-output.js";
 import { WorkflowObservationStore } from "./workflow-observation-store.js";
+import { applyUtilityToMeta, computeMemoryUtility, formatMemoryUtility } from "./memory-utility.js";
 import {
   applyWorkflowObservationScopeSuggestions,
   formatWorkflowObservationScopeReview,
@@ -2029,6 +2030,92 @@ program
 // ─── doctor ──────────────────────────────────────────────────────────────────
 
 program
+  .command("memory-utility")
+  .description("价值回溯：查一条 memory 参与过的任务成功率与 utility（不传 id 时按 scope 批量）")
+  .argument("[memoryId]", "memory id（完整 UUID 或前缀）")
+  .option("--scope <scope>", "批量模式：扫这个 scope 下的条目")
+  .option("--category <category>", "批量模式：只看这个 category")
+  .option("--limit <n>", "批量模式扫描上限", "500")
+  .option("--min-samples <n>", "批量模式只列出有效样本量 ≥ 此值的条目", "0")
+  .option("--links <n>", "展示最近 N 条参与记录", "5")
+  .option("--apply", "把算出的 utility 写回 metadata（默认只读，不写）")
+  .option("--observations-dir <dir>", "从指定目录读 workflow observations（默认生产目录）")
+  .option("--json", "输出 JSON")
+  .action(async (memoryId, options) => {
+    const { store } = createComponents(loadConfig());
+    const observationStore = options.observationsDir
+      ? new WorkflowObservationStore(expandHome(options.observationsDir))
+      : new WorkflowObservationStore();
+    // 全量拉 observation：join 要看的是历史全集，不是最近 200 条。
+    const observations = await observationStore.listRecent({ limit: 100_000 });
+    const showLinks = Number(options.links) || 0;
+
+    if (memoryId) {
+      const entry = await store.getById(memoryId);
+      if (!entry) {
+        console.error(`未找到 memory: ${memoryId}`);
+        process.exitCode = 1;
+        return;
+      }
+      const summary = computeMemoryUtility(entry, observations);
+      if (options.apply) {
+        await store.patchMetadata(entry.id, (meta) => applyUtilityToMeta(meta, summary));
+      }
+      if (options.json) {
+        console.log(JSON.stringify({ ...summary, applied: Boolean(options.apply) }, null, 2));
+        return;
+      }
+      console.log(formatMemoryUtility(summary, { showLinks }));
+      console.log(`  observations 池: ${observations.length} 条`);
+      if (options.apply) console.log("  已写回 metadata.utility");
+      return;
+    }
+
+    if (!options.scope) {
+      console.error("需要 <memoryId> 或 --scope");
+      process.exitCode = 1;
+      return;
+    }
+
+    const limit = Number(options.limit) || 500;
+    const minSamples = Number(options.minSamples) || 0;
+    const entries = await store.listPage({
+      scopeFilter: [options.scope],
+      category: options.category,
+      limit,
+      offset: 0,
+    });
+
+    const summaries = entries
+      .map((entry) => computeMemoryUtility(entry, observations))
+      .filter((s) => s.effectiveSamples >= minSamples && s.total > 0)
+      .sort((a, b) => (b.utility ?? 0) - (a.utility ?? 0));
+
+    if (options.apply) {
+      for (const summary of summaries) {
+        await store.patchMetadata(summary.memoryId, (meta) => applyUtilityToMeta(meta, summary));
+      }
+    }
+
+    if (options.json) {
+      console.log(JSON.stringify({ scanned: entries.length, matched: summaries.length, summaries }, null, 2));
+      return;
+    }
+
+    console.log(`scope=${options.scope} 扫描 ${entries.length} 条，其中 ${summaries.length} 条有参与记录`);
+    console.log(`observations 池: ${observations.length} 条`);
+    for (const summary of summaries.slice(0, 20)) {
+      const utility = summary.utility === null ? "  null" : summary.utility.toFixed(4).padStart(7);
+      console.log(
+        `${utility}  samples=${summary.effectiveSamples.toFixed(2).padStart(6)}`
+        + `  exact=${String(summary.exactCount).padStart(3)} session=${String(summary.sessionCount).padStart(3)}`
+        + `  ${summary.memoryId.slice(0, 8)}`,
+      );
+    }
+    if (options.apply) console.log(`已写回 ${summaries.length} 条的 metadata.utility`);
+  });
+
+program
   .command("workflow-observe")
   .description("记录一条 workflow primitive observation，作为自进化观测层的 append-only 输入")
   .argument("<workflowId>", "workflow primitive id，如 resume_context / checkpoint_session")
@@ -2041,9 +2128,14 @@ program
   .option("--tags <tags>", "逗号分隔 tags")
   .option("--tools <tools>", "逗号分隔 tools")
   .option("--idempotency-key <key>", "同一请求重试时用于替换旧 observation 的稳定键")
+  .option("--reader-id <id>", "P0 join key：读者身份（默认本进程）。CLI 每次是新进程，跨会话关联要显式传")
+  .option("--recalled-ids <ids>", "P0 join key：逗号分隔的 memory id，本次任务实际用到的记忆")
   .option("--json", "输出 JSON")
   .action(async (workflowId, summary, options) => {
     const store = new WorkflowObservationStore();
+    // CLI 是一次性进程，检索账本必然是空的（这次进程没检索过），所以不做自动补，
+    // 只认显式传入——自动补在这里只会写出一个恒空的字段，看着像记了其实没记。
+    const recalledIds = splitCsvOption(options.recalledIds);
     const record = buildWorkflowObservationRecord({
       workflowId,
       summary,
@@ -2055,6 +2147,8 @@ program
       tags: splitCsvOption(options.tags),
       tools: splitCsvOption(options.tools),
       idempotencyKey: options.idempotencyKey,
+      readerId: options.readerId,
+      ...(recalledIds.length > 0 ? { recalledIds } : {}),
     });
     const stored = await store.save(record);
     if (options.json) {

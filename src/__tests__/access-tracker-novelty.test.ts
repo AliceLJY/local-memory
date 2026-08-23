@@ -268,6 +268,12 @@ describe("distinct-reader bookkeeping", () => {
   });
 
   it("dedups same reader and unions different readers", async () => {
+    // 2026-08-23 语义订正：同进程内的多个 AccessTracker 现在共享一个 readerId。
+    // 旧版每个实例各随机一个，与本文件测的那句注释（access-tracker.ts:63
+    // "one stdio MCP server process ≈ one CC session"）直接矛盾——components 按
+    // profile 缓存，同一个会话开两个 profile 就凭空多出一个"读者"，
+    // 把 distinctReaderCount 抬高、进而虚抬 skill-promotion 的 readBoost。
+    // 所以「不同读者」这一半改用显式 readerId 表达（跨进程/跨会话的真实形态）。
     const entries = [makeEntry("a")];
     const store = createMockStore(entries);
     const t1 = new AccessTracker(store as any, { ...DEFAULT_ACCESS_TRACKER_CONFIG, flushIntervalMs: 1, cooldownMs: 0 });
@@ -276,14 +282,28 @@ describe("distinct-reader bookkeeping", () => {
     t1.recordAccess(["a"]);
     await t1.flush(); // same reader twice → still 1 distinct
 
-    const t2 = new AccessTracker(store as any, { ...DEFAULT_ACCESS_TRACKER_CONFIG, flushIntervalMs: 1, cooldownMs: 0 });
+    const t2 = new AccessTracker(store as any, { ...DEFAULT_ACCESS_TRACKER_CONFIG, flushIntervalMs: 1, cooldownMs: 0 }, "r-second99");
     t2.recordAccess(["a"]);
-    await t2.flush(); // second reader → 2 distinct
+    await t2.flush(); // genuinely different reader → 2 distinct
 
     const meta = JSON.parse(store.data.get("a")!.metadata!) as Record<string, unknown>;
     expect(meta.accessCount).toBe(3);
     expect((meta.readerIds as string[]).sort()).toEqual([t1.readerId, t2.readerId].sort());
     expect(meta.distinctReaderCount).toBe(2);
+  });
+
+  it("does not inflate distinct readers when one session builds several trackers", async () => {
+    // 这是上面那条订正保护的东西：同一会话的两个 profile 不该被数成两个读者。
+    const entries = [makeEntry("a")];
+    const store = createMockStore(entries);
+    const cfg = { ...DEFAULT_ACCESS_TRACKER_CONFIG, flushIntervalMs: 1, cooldownMs: 0 };
+    for (const tracker of [new AccessTracker(store as any, cfg), new AccessTracker(store as any, cfg)]) {
+      tracker.recordAccess(["a"]);
+      await tracker.flush();
+    }
+    const meta = JSON.parse(store.data.get("a")!.metadata!) as Record<string, unknown>;
+    expect((meta.readerIds as string[]).length).toBe(1);
+    expect(meta.distinctReaderCount).toBe(1);
   });
 
   it("saturates readerIds at READER_ID_CAP without growing the array", async () => {

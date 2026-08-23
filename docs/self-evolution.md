@@ -43,6 +43,32 @@ Observe → Inspect → Health → Evidence → Fix / Test
 
 That boundary is deliberate: self-evolution needs operational telemetry, not more noisy durable memory.
 
+### Value back-propagation: the join key
+
+一条 observation 说的是「这次任务成没成」，但要回答「**这条记忆有没有用**」，还需要知道那次任务用到了哪几条记忆。
+这个配对以前不存在——observation 有结果没参与者，`access-tracker` 有参与者没结果。
+
+现在两端都记：
+
+```
+retrieve ──► recall ledger ──► workflow_observe ──► memory-utility
+ (命中)      (readerId +        (outcome +           (成功率 / utility)
+             recalledIds)       两个 join key)
+```
+
+- **`recalledIds`（任务级，精确）**：本次任务窗口内被检索返回过的 memory id，`workflow_observe` 自动补
+- **`readerId`（会话级，弱）**：对应 memory metadata 里的 `readerIds`。**有精确样本时不掺它**——
+  一个会话跑多个任务，会话级 join 会把无关任务的成败摊到每条被读过的记忆上
+  （2026-08-23 实测：5 条记忆的会话级成功率全是 44% 这个常数，精确成功率却是 100% / 33% / 0%）
+- **`metadata.utility` ∈ [-0.8, 0.8]**：outcome 查表 + 30 天半衰期加权，**可为负**。
+  只喂检索排序（`utilityWeight`，默认 0），不进 tier、不进 decay 豁免，
+  更不写 `importance`——那一列是阈值语义，≥0.95 会触发永久免衰减，串扰不是特性
+
+查一条记忆的效用：`recallnest memory-utility <id> --links 5`。
+
+**已知边界**：历史 observation 没有 join key，补不回来，utility 只能从今天往后积累；
+`readerIds` 在 8 个读者处饱和（`READER_ID_CAP`），老条目会漏掉新会话的弱 join。
+
 ---
 
 ## The Three-Tier Lifecycle

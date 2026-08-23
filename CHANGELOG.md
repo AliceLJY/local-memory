@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **价值回溯 join key（MemOS C1，P0）**：`workflow_observe` 现在记 `readerId` 与 `recalledIds`，
+  补上了库里一直缺的 `(memory_id, outcome)` 配对——此前一边有结果没参与者（observation 不记 memory），
+  一边有参与者没结果（access-tracker 记命中不记任务成败）。新增 `src/recall-ledger.ts` 维护进程级
+  读者身份与检索命中账本；`resume_context` / `checkpoint_session` 的 managed observation 自动带上。
+  新增 CLI `memory-utility <id>`：查一条 memory 参与过的任务成功率。
+- **utility 效用列（P1）**：`src/memory-utility.ts` 按 outcome 查表（success +0.8 / corrected +0.2 /
+  missed −0.3 / failure −0.8）做加权回溯，30 天半衰期，**可为负**。落在 `metadata.utility`，
+  刻意**不写 importance**（那一列是阈值语义，≥0.95 触发永久免衰减，且 STC 已在写它）。
+  检索侧新增 `utilityWeight`（默认 0 = 关闭），只喂排序，不进 tier、不进 decay 豁免。
+- **晋升的跨来源判据（MemOS L1→L2，P2）**：`scanForPromotions` 新增 `minDistinctSources`（默认 2）。
+  数「几条相似 case」和数「几个不同 episode」差的是维度不是数字——同一个坑踩三次是一次经历的重复，
+  该走 failure-burst 反模式那条路。**带弃权路径**：拿不到来源指针时不判（全库 cases 仅 1.2% 带
+  `src:` tag，硬判会把「同一天解决的三个不同问题」误伤掉）。实际只在 `memory:pivot` 池生效。
+
+### Fixed
+
+- 同一进程内多个 `AccessTracker` 不再各自伪造一个 reader。`createComponentResolver` 按 profile 缓存
+  components，一个会话开两个 profile 就凭空多出一个「读者」，虚抬 `distinctReaderCount` 和
+  skill-promotion 的 read boost；现在实现与 `access-tracker.ts` 自己的注释
+  （"one stdio MCP server process ≈ one CC session"）一致。
+
 ## v2.6.0 — Cross-process consistency and reliable distribution (2026-08-13)
 
 ### Added

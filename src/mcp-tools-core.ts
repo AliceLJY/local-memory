@@ -13,6 +13,7 @@ import { buildSessionCheckpointResult } from "./session-engine.js";
 import { formatCheckpointSaved, formatCheckpointSummary, formatResumeContext } from "./session-output.js";
 import { matchesTemporalConstraint, type TemporalConstraint } from "./temporal-parser.js";
 import { buildManagedCheckpointObservation, buildManagedResumeObservation } from "./workflow-observation-managed.js";
+import { PROCESS_READER_ID, recentRecallHits } from "./recall-ledger.js";
 import { buildWorkflowObservationRecord } from "./workflow-observation-engine.js";
 import type { ToolRegistryDeps } from "./mcp-tool-deps.js";
 import type { RetrievalResult } from "./retriever.js";
@@ -65,7 +66,16 @@ export function registerCoreTools(deps: ToolRegistryDeps): void {
 
   async function saveManagedObservation(observation: Parameters<typeof buildWorkflowObservationRecord>[0]): Promise<void> {
     try {
-      const record = buildWorkflowObservationRecord(observation);
+      // P0 join key：managed observation 是最该带它的一类——`resume_context` 本身
+      // 就是「读了一批记忆」的动作，它的成败与那批记忆直接相关。
+      // （api-server 那份同名函数刻意不加：HTTP server 一个进程服务多个客户端，
+      //  「一进程 ≈ 一会话」的前提在那里不成立，加了只会 join 出假配对。）
+      const recalledIds = recentRecallHits();
+      const record = buildWorkflowObservationRecord({
+        readerId: PROCESS_READER_ID,
+        ...(recalledIds.length > 0 ? { recalledIds } : {}),
+        ...(observation as Record<string, unknown>),
+      });
       await workflowObservationStore.save(record);
     } catch (error) {
       console.error("[RecallNest MCP] Failed to persist managed workflow observation:", error);

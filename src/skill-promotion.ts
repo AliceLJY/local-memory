@@ -30,6 +30,8 @@ export interface PromotionCandidate {
   verification?: VerifyResult;
   /** Read-signal evidence aggregated from source entries（Artel 读驱动升华：被真实读过的候选提权）。 */
   readEvidence?: { totalAccess: number; distinctReaders: number };
+  /** 这个候选覆盖了几个不同来源（episode）。1 = 同一次经历的重复，不是跨任务规律。 */
+  distinctSources?: number;
 }
 
 export interface PromotionScanResult {
@@ -40,6 +42,10 @@ export interface PromotionScanResult {
   truncatedCases: number;
   /** 向量回填失败(库中无向量)而被跳过的条目数。 */
   vectorlessSkipped: number;
+  /** No-silent-caps 披露:条数够、但来源不够(同一个坑重复)而被拒的簇数。 */
+  rejectedSingleSource: number;
+  /** No-silent-caps 披露:拿不到来源指针、跨来源判据弃权放行的簇数。 */
+  abstainedUnknownSource: number;
 }
 
 export interface PromotionConfig {
@@ -58,6 +64,19 @@ export interface PromotionConfig {
   /** pattern_to_skill 通道最多探测的 structured patterns 数(每个一次 vectorSearch,
    *  default: 1000,按 recency 优先)。 */
   maxPatternProbes: number;
+  /**
+   * 一个簇要来自几个**不同来源**才算规律(default: 2)。
+   *
+   * 借鉴 MemOS 的 L1→L2 判据:它数的是「几个不同 episode」,而这里原本数的是
+   * 「几条相似 case」——差的是维度不是数字。**同一个坑踩三次**在旧口径下是 3 条
+   * 相似 case、会被识别成一条规律;在 MemOS 那儿是 1 个 episode 重复,够不上 L2。
+   * 而反复撞同一个坑本该走 failure-burst 生成「Avoid」反模式,跟「这类子任务该怎么做」
+   * 是相反的两种东西,现在它们混在同一条通道里。
+   *
+   * 审计原文的要害:「两个完全不同的任务遇到同类子问题,才诱导出一条可迁移 L2」——
+   * 最小值是 2,但要害在「跨任务」不在「2」。设 1 = 关闭该判据(旧行为,对照用)。
+   */
+  minDistinctSources: number;
 }
 
 const DEFAULT_CONFIG: PromotionConfig = {
@@ -68,6 +87,7 @@ const DEFAULT_CONFIG: PromotionConfig = {
   maxBucketSize: 2_000,
   pageSize: 1_000,
   maxPatternProbes: 1_000,
+  minDistinctSources: 2,
 };
 
 // ---------------------------------------------------------------------------
@@ -269,6 +289,98 @@ export function greedyCluster(
 }
 
 // ---------------------------------------------------------------------------
+// Source identity (MemOS-style episode counting)
+// ---------------------------------------------------------------------------
+
+/**
+ * 一条记录来自「哪一次」——跨来源去重的 key。
+ *
+ * 三级取值，越靠前越可靠：
+ *   1. `metadata.evidenceMemories` —— dream 合成产物指向的簇内真实源（synthesis-contract
+ *      2026-08-23 起写入，已验证互不重复且无悬空）。同一批源出来的两条派生物
+ *      签名相同 → 算一个来源，不是两个。
+ *   2. `tags` 里的 `src:<sessionId 前 8 位>` —— shared-behaviors §5.3 要求 pivot 写入必带。
+ *      2026-08-23 实测：`memory:pivot` 池 1699 条覆盖率 99.8%，其中 cases 260 条 100% 覆盖。
+ *      ⚠️ 但全库只有 2.3%、`category=cases` 全库仅 1.2% —— **这个判据只在 pivot 池成立**，
+ *      别拿去当全库口径。
+ *   3. 兜底 `day:<scope>:<YYYY-MM-DD>` —— 没有来源指针时退到「同一天同一 scope 算一次」。
+ *      粗，但比把同一次经历数成 N 次强。
+ */
+export function extractSourceKey(entry: Pick<MemoryEntry, "metadata" | "scope" | "timestamp">): string {
+  let meta: Record<string, unknown> = {};
+  try {
+    const parsed: unknown = JSON.parse(entry.metadata || "{}");
+    if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+      meta = parsed as Record<string, unknown>;
+    }
+  } catch { /* fall through to day bucket */ }
+
+  const evidence = meta.evidenceMemories;
+  if (Array.isArray(evidence) && evidence.length > 0) {
+    const ids = evidence.filter((v): v is string => typeof v === "string").sort();
+    if (ids.length > 0) return `ev:${ids.join("|")}`;
+  }
+
+  if (Array.isArray(meta.tags)) {
+    const src = meta.tags.find((t): t is string => typeof t === "string" && t.startsWith("src:"));
+    if (src) return src;
+  }
+
+  const day = Number.isFinite(entry.timestamp) && entry.timestamp > 0
+    ? new Date(entry.timestamp).toISOString().slice(0, 10)
+    : "unknown";
+  return `${UNKNOWN_SOURCE_PREFIX}${entry.scope}:${day}`;
+}
+
+/** 兜底 key 的前缀。带这个前缀 = 我们其实不知道它来自哪一次。 */
+export const UNKNOWN_SOURCE_PREFIX = "day:";
+
+/** 一组记录覆盖了几个不同来源。1 = 全部来自同一次经历。 */
+export function countDistinctSources(
+  entries: ReadonlyArray<Pick<MemoryEntry, "metadata" | "scope" | "timestamp">>,
+): number {
+  return new Set(entries.map(extractSourceKey)).size;
+}
+
+export type SourceVerdict =
+  | { status: "ok"; distinctSources: number }
+  | { status: "rejected"; distinctSources: number }
+  /** 没有可信的来源指针 —— 不知道就不判，放行。 */
+  | { status: "abstained" };
+
+/**
+ * 判一个簇是否来自足够多的不同经历。**带弃权路径**。
+ *
+ * 为什么要弃权而不是一律判：兜底 key 是「同 scope 同一天算一次」，而一天内解决三个
+ * 不同问题写三条 case 是完全正常的——那是 3 个 episode，兜底会把它们并成 1 个，
+ * 于是一条真规律被当成「同一个坑踩三次」拒掉。**误伤的代价比漏判高**：漏判只是
+ * 维持现状（旧行为），误伤是把本来能升华的东西堵死，而且堵得无声无息。
+ *
+ * 所以判据只在**拿得到真来源指针**时生效。实际效果就是它只在 `memory:pivot` 池成立
+ * （2026-08-23 实测该池 cases 100% 带 `src:`，而全库 cases 只有 1.2%）——
+ * 这恰好是本方案的适用范围，不是巧合：§5.3 要求 pivot 写入必带来源指针，
+ * 那条规矩本来就是为了让「回原文核对」成为可能，跨来源计数是它的另一个消费者。
+ */
+export function judgeDistinctSources(
+  entries: ReadonlyArray<Pick<MemoryEntry, "metadata" | "scope" | "timestamp">>,
+  minDistinctSources: number,
+): SourceVerdict {
+  if (minDistinctSources <= 1) {
+    return { status: "ok", distinctSources: countDistinctSources(entries) };
+  }
+  const keys = entries.map(extractSourceKey);
+  const known = keys.filter((k) => !k.startsWith(UNKNOWN_SOURCE_PREFIX));
+  if (known.length === 0) return { status: "abstained" };
+
+  // 有真指针的按真指针数；没指针的每条各算一次未知来源——不能让「不知道」
+  // 白白顶上一个来源，也不能因为混了几条没指针的就整簇弃权。
+  const distinctSources = new Set(keys).size;
+  return distinctSources >= minDistinctSources
+    ? { status: "ok", distinctSources }
+    : { status: "rejected", distinctSources };
+}
+
+// ---------------------------------------------------------------------------
 // Read evidence (Artel-style read-driven promotion)
 // ---------------------------------------------------------------------------
 
@@ -348,6 +460,8 @@ export async function scanForPromotions(
     scannedPatterns: patterns.length,
     truncatedCases: 0,
     vectorlessSkipped: 0,
+    rejectedSingleSource: 0,
+    abstainedUnknownSource: 0,
   };
 
   // 2. Cluster cases bucket-by-bucket (topicTag, untagged fallback)。
@@ -378,6 +492,16 @@ export async function scanForPromotions(
         if (cluster.members.length < cfg.minCaseOccurrences) continue;
         if (caseCandidates >= cfg.maxCandidates) break;
 
+        // 跨来源判据：条数够不代表是规律。同一次经历重复 N 条走的是 failure-burst
+        // 反模式那条路，不是「这类子任务该怎么做」这条。拿不到来源指针时弃权放行。
+        const sourceVerdict = judgeDistinctSources(cluster.members, cfg.minDistinctSources);
+        if (sourceVerdict.status === "rejected") {
+          result.rejectedSingleSource++;
+          continue;
+        }
+        if (sourceVerdict.status === "abstained") result.abstainedUnknownSource++;
+        const distinctSources = sourceVerdict.status === "ok" ? sourceVerdict.distinctSources : undefined;
+
         // Compute average intra-cluster similarity for scoring
         const avgSim = computeAverageIntraClusterSimilarity(cluster.members);
 
@@ -397,6 +521,7 @@ export async function scanForPromotions(
             caseReadEvidence.distinctReaders,
           ),
           readEvidence: caseReadEvidence,
+          distinctSources,
         });
       }
     }
@@ -433,6 +558,16 @@ export async function scanForPromotions(
 
     if (similarCases.length < 2) continue;
 
+    // 同一判据也管 pattern→skill：MemOS 的 L2/L3→Skill 门就是「N 个独立 episode」。
+    // 支撑证据全来自同一次经历时，这条 skill 学的是那一次，不是那一类。
+    const patternVerdict = judgeDistinctSources(similarCases.map(h => h.entry), cfg.minDistinctSources);
+    if (patternVerdict.status === "rejected") {
+      result.rejectedSingleSource++;
+      continue;
+    }
+    if (patternVerdict.status === "abstained") result.abstainedUnknownSource++;
+    const patternDistinctSources = patternVerdict.status === "ok" ? patternVerdict.distinctSources : undefined;
+
     // A2: zero-LLM verifier — pattern 当 draft，supporting cases 当 evidence。
     // steps 传 [] 不是漏传：pattern.text 已含完整 Steps 块，resonance 用整段文本即可；
     // extractSteps(pattern.text) 仅用于下面的 suggestedImplementation 字段。
@@ -462,6 +597,7 @@ export async function scanForPromotions(
       ),
       verification,
       readEvidence: patternReadEvidence,
+      distinctSources: patternDistinctSources,
     });
   }
 
@@ -495,6 +631,18 @@ export function formatPromotionResult(result: PromotionScanResult): string {
   if (result.vectorlessSkipped > 0) {
     lines.push(`⚠️ ${result.vectorlessSkipped} entries skipped (no vector in store).`);
   }
+  if (result.abstainedUnknownSource > 0) {
+    lines.push(
+      `ℹ️ ${result.abstainedUnknownSource} cluster(s) 没有可信来源指针，跨来源判据已弃权放行`
+      + `（这些 scope 里的条目没带 src: tag，判了就是瞎判）。`,
+    );
+  }
+  if (result.rejectedSingleSource > 0) {
+    lines.push(
+      `⚠️ ${result.rejectedSingleSource} cluster(s) had enough entries but too few distinct sources`
+      + ` — 同一次经历的重复不算规律（走 failure-burst 反模式那条路，不是这条）。`,
+    );
+  }
 
   if (result.candidates.length === 0) {
     lines.push("No promotion candidates found.");
@@ -507,7 +655,10 @@ export function formatPromotionResult(result: PromotionScanResult): string {
     lines.push(`### ${i + 1}. [${c.type}] ${c.suggestedName}`);
     lines.push(`Confidence: ${(c.confidence * 100).toFixed(1)}%`);
     lines.push(`Description: ${c.suggestedDescription}`);
-    lines.push(`Sources: ${c.sourceEntries.length} entries`);
+    lines.push(
+      `Sources: ${c.sourceEntries.length} entries`
+      + (c.distinctSources !== undefined ? ` from ${c.distinctSources} distinct source(s)` : ""),
+    );
     if (c.readEvidence) {
       lines.push(`Read evidence: ${c.readEvidence.totalAccess} total reads, ${c.readEvidence.distinctReaders} distinct reader(s)`);
     }

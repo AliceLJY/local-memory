@@ -13,6 +13,7 @@ import { expandQueryWithAliases } from "./aliases.js";
 import { expandQuery } from "./query-expander.js";
 import { detectLang, tokenizeFts } from "./language-hook.js";
 import { type AccessTracker, computeHotnessScore, parseAccessMetadata } from "./access-tracker.js";
+import { readUtility } from "./memory-utility.js";
 import { weibullDecay, resolveTier, isDecayExempt, adjustHalfLifeForEmotion, computeArousalBoost } from "./decay-engine.js";
 import { logInfo, logWarn } from "./stderr-log.js";
 import { extractBoundaryMetadata, isDurableMemoryScope, isTranscriptScope } from "./memory-boundaries.js";
@@ -111,6 +112,19 @@ export interface RetrievalConfig {
    * 0 = disabled (default), 0.15 = recommended.
    */
   hotnessWeight: number;
+  /**
+   * Utility weight — 价值回溯（memory-utility.ts）算出的效用值对最终分的影响强度。
+   * Formula: score *= 1 + utilityWeight * utility，utility ∈ [-0.8, 0.8]。
+   * 与 hotness/frequency 的区别在信号来源：那两个数「被读过多少次」，
+   * 这个数「被用到的那些任务成没成」——前者是热度，后者是因果贡献。
+   * 没有 utility 的条目分数原样不动（bonus-only 冷启动，不惩罚没数据的）。
+   *
+   * 0 = disabled（默认）。**默认关是有意的影子期**：目前生产库里带 join key 的
+   * observation 从 0 开始积累，样本不足时开启只会放大噪声。
+   * 升级条件写在 open-loops「MemOS 价值回溯」条目里，不在这行注释里——
+   * 注释不会有人定期回来读，那个条目每窗口都会被推到眼前。
+   */
+  utilityWeight: number;
   /**
    * Per-category score thresholds. When a result's category matches a key,
    * that threshold is used instead of hardMinScore. Categories not listed
@@ -263,6 +277,7 @@ export const DEFAULT_RETRIEVAL_CONFIG: RetrievalConfig = {
   hardMinScore: 0.35,
   timeDecayHalfLifeDays: 60,
   hotnessWeight: 0,
+  utilityWeight: 0,
 };
 
 /**
@@ -1221,8 +1236,14 @@ export class MemoryRetriever {
     const weighted = this.applyImportanceWeight(boosted);
     trace?.endStage(weighted.length, weighted.map(r => r.score));
 
-    trace?.startStage("confidence_weight", weighted.length);
-    const confidenceWeighted = this.applyConfidence(weighted);
+    // 价值回溯：紧跟 importance 之后，因为两者回答的是同一类问题（这条本身有多值得），
+    // 只是 importance 说的是「存的时候认为多重要」，utility 说的是「用起来结果怎么样」。
+    trace?.startStage("utility_weight", weighted.length);
+    const utilityWeighted = this.applyUtilityWeight(weighted);
+    trace?.endStage(utilityWeighted.length, utilityWeighted.map(r => r.score));
+
+    trace?.startStage("confidence_weight", utilityWeighted.length);
+    const confidenceWeighted = this.applyConfidence(utilityWeighted);
     trace?.endStage(confidenceWeighted.length, confidenceWeighted.map(r => r.score));
 
     let afterEmotionVector = confidenceWeighted;
@@ -2172,6 +2193,33 @@ export class MemoryRetriever {
    *
    * No-op when hotnessWeight is 0 or AccessTracker is absent.
    */
+  /**
+   * 价值回溯加权：被用在成功任务里的记忆上浮，被用在失败任务里的下沉。
+   *
+   * 这是 utility 唯一的消费点——它**只喂排序**，不进 tier、不进 decay 豁免、
+   * 更不写回 importance（那一列是阈值语义，≥0.95 会触发永久免衰减，
+   * 详见 memory-utility.ts 抬头的三条理由）。
+   *
+   * No-op when utilityWeight is 0（默认）或条目没有 utility。
+   */
+  private applyUtilityWeight(results: RetrievalResult[]): RetrievalResult[] {
+    const raw = this.config.utilityWeight;
+    const weight = Math.min(1, Math.max(0, Number.isFinite(raw) ? raw : 0));
+    if (weight <= 0) return results;
+
+    const weighted = results.map((r) => {
+      const utility = readUtility(r.entry.metadata);
+      if (utility === null) return r; // 没数据 ≠ 中性差评，原样放行
+      const factor = 1 + weight * utility;
+      return {
+        ...r,
+        score: clamp01(r.score * factor, 0),
+      };
+    });
+
+    return weighted.sort((a, b) => b.score - a.score);
+  }
+
   private applyHotnessBlend(results: RetrievalResult[]): RetrievalResult[] {
     const raw = this.config.hotnessWeight;
     const alpha = Math.min(1, Math.max(0, Number.isFinite(raw) ? raw : 0));
