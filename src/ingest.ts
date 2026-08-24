@@ -649,13 +649,20 @@ export async function drainPendingQueue(
         const entryText = extractions[j].l1 || extractions[j].l0;
         const language = detectLang(entryText);
         const fts_text = tokenizeFts(entryText, language);
-        await store.store({
+        // 2026-08-24 修：回填路径此前直接 store.store()，绕过 buildIngestedEntry，
+        // 导致条目缺 boundary/layer/tier（transcript 碎片不降权）。改走同一构造器；
+        // 入队时未保留原文件路径，file 用 "pending-queue" 诚实标记回填来源。
+        const entry = buildIngestedEntry({
+          source: batch[j].scope.split(":")[0],
+          scope: batch[j].scope,
           text: entryText,
           vector: vectors[j],
-          category: extractions[j].category as any,
-          scope: batch[j].scope,
-          importance: extractions[j].importance,
-          metadata: JSON.stringify({ source: batch[j].scope.split(":")[0], l0_abstract: extractions[j].l0, l1_overview: extractions[j].l1, l2_content: extractions[j].l1 || extractions[j].l0 }),
+          extraction: extractions[j],
+          file: "pending-queue",
+        });
+        await store.store({
+          ...entry,
+          category: entry.category as any,
           language,
           fts_text,
         });
@@ -1758,6 +1765,12 @@ export async function ingestCCTranscripts(
   };
 
   const dir = expandHome(sourcePath);
+  // session-digest.py 摘要调用留下的会话记录不 ingest（2026-08-24 审计：这类
+  // transcript 是原始会话 8000 字符采样的副本，ingest 后 scope/metadata 指向
+  // 摘要任务自身 sid——内容是真的、坐标是假的，已产生 1,950 条 evidence 污染）。
+  if (dir.includes("session-digest")) {
+    return result;
+  }
   if (!existsSync(dir)) {
     result.errors.push(`Directory not found: ${dir}`);
     return result;

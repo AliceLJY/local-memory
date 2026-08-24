@@ -307,11 +307,13 @@ log "MacBook 在线，开始 rsync"
 SSH_OPTS="$SSH_BIN -o ProxyCommand=none -o ConnectTimeout=30 -o ServerAliveInterval=20"
 
 # 2. rsync CC projects（含全部子目录）
+# --exclude='*session-digest*' 必须排在 --include='*/' 之前（rsync 规则首匹配生效）：
+# session-digest.py 的摘要调用会话记录是检索污染源（2026-08-24 审计），MacBook 存量不再回流
 log "→ rsync CC projects"
 sync_source "claude-code" tree "mac:~/.claude/projects/" \
   tree "$PULL_HOME/.claude/projects/" same \
   -avz --partial --rsync-path=/opt/homebrew/bin/rsync --timeout=120 \
-  --include='*/' --include='*.jsonl' --exclude='*' \
+  --exclude='*session-digest*' --include='*/' --include='*.jsonl' --exclude='*' \
   -e "$SSH_OPTS"
 
 # 3. rsync Codex sessions
