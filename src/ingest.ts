@@ -55,33 +55,34 @@ export interface IngestResult {
   errors: string[];
 }
 
-/**
- * 图片在原始 transcript 里的回溯坐标。
- *
- * 有意只存坐标、不复制图片本体（2026-08-27 定）：图片原件已经在
- * mini 的 ~/conversation-truth 里躺着，再复制一份是白占空间。
- * 取图路径 = 按 chunk 的 sessionId 找到 jsonl，再按 uuid 定位那一行。
- *
- * simplified: 坐标依赖 mini 上的 jsonl 仍然存在（MacBook 本地只留 3 天）。
- * 若将来这个库要脱离双机环境给别人用，改成在 ingest 时把图另存一份、
- * 这里换成文件路径即可 —— 消费侧只认 imageRefs 这个字段，不受影响。
- */
-interface ImageRef {
-  /** 该 transcript 行的 uuid，用于在 jsonl 里精确定位到那一行 */
-  uuid: string;
-  /** image/png、image/jpeg 等 */
-  mediaType: string;
-  /** 本轮里的第几张图（1-based），与正文中的 [Image #N] 标记对应 */
-  index: number;
-}
-
 interface ConversationTurn {
   role: "user" | "assistant";
   text: string;
   timestamp: string;
   sessionId: string;
-  /** 本轮用户贴的图；无图时不设 */
-  imageRefs?: ImageRef[];
+  /**
+   * 本条记忆所在 session 里用户亲手贴的图片总数——注意是整个 session 的，
+   * 不是本轮的张数。工具产的图（截图 / 读图，实测占全部图片九成）不计。
+   *
+   * 粒度取 session 而不是轮次，是有意的（2026-08-27 定）：图所在的那一轮
+   * 常常因为正文太短根本没进库，精确坐标挂不上去；而同 session 的别的轮次
+   * 进了库。打成 session 级的标，搜到那些轮次时才能顺藤摸到图。
+   *
+   * 代价是精度低：一个 session 里几十条记忆会带同一个标，图未必跟搜到的
+   * 这一条有关。这是粒度换覆盖，明知而为——判断值不值得看，回 Deja 按
+   * session 读原文，图本体不进库。
+   */
+  sessionImages?: number;
+  /**
+   * 本 session 里 AI 自己产的图片总数：工具截图、读进来的图片文件、模型生成的图。
+   * 实测它是用户贴图的三倍多（5812 vs 1629）。
+   *
+   * 跟 sessionImages 分开计，因为两者服务的检索意图不是一回事——人找「我发过的
+   * 那张截图」要的是前者；agent 回溯「我当时生成的示意图长什么样」「那个页面当时
+   * 渲染成什么样」要的是后者。混成一个数，两种意图都答不好；只留前者，则 agent
+   * 自己回溯时看不见任何线索。
+   */
+  sessionToolImages?: number;
 }
 
 // ============================================================================
@@ -725,8 +726,10 @@ function buildIngestedEntry(params: {
   heading?: string;
   /** Tier 3.1: optional core summary (≤200 chars) for token-efficient context output */
   coreSummary?: string | null;
-  /** 本条记忆对应轮次里用户贴的图的回溯坐标；无图时不传 */
-  imageRefs?: ImageRef[];
+  /** 本条记忆所在 session 里用户亲手贴的图片总数；无图时不传 */
+  sessionImages?: number;
+  /** 本条记忆所在 session 里 AI 自己产的图片总数（截图 / 读图 / 生图）；无则不传 */
+  sessionToolImages?: number;
 }): {
   text: string;
   vector: number[];
@@ -770,7 +773,8 @@ function buildIngestedEntry(params: {
       l1_overview: params.extraction.l1,
       l2_content: params.text,
       ...(params.coreSummary ? { core_summary: params.coreSummary } : {}),
-      ...(params.imageRefs?.length ? { imageRefs: params.imageRefs } : {}),
+      ...(params.sessionImages ? { sessionImages: params.sessionImages } : {}),
+      ...(params.sessionToolImages ? { sessionToolImages: params.sessionToolImages } : {}),
       tier,
       boundary: resolution.boundary,
       ...(narrative ? { narrative } : {}),
@@ -818,16 +822,72 @@ const MARKDOWN_CHUNK_CONFIG: ChunkerConfig = {
 // CC Transcript Parser
 // ============================================================================
 
+/**
+ * 数一条 transcript 记录里所有的图片信号，**不预设它们是什么用途、在什么位置**。
+ *
+ * 这是有意的宽口径：AI 产图的形态一直在长（工具截图、读进来的图片文件、模型生图、
+ * 写公众号时让它配的插图……），任何"列举有哪几类"的写法都注定漏掉下一类。所以这里
+ * 只回答一个问题——「这是不是一张图」，然后由调用方用**补集**去定义 AI 产图：
+ * 整条记录里的图 减去 用户在消息里亲手贴的，剩下的全算，不问出身。
+ *
+ * 判据是「携带图片的块」的三种通用形态，跨 Anthropic / OpenAI / Kimi 都成立：
+ *   - type 里含 image（image / input_image / image_url / image_generation_* …）
+ *   - 有 image_url / imageUrl 字段
+ *   - 有 media_type / mimeType 且以 image/ 开头
+ *
+ * ⚠️ 这是**信号计数不是精确张数**：一次生图可能同时留下 call 与 end 两条记录，
+ * 会被数成 2。这是刻意选的方向——宁可多算，不可漏报，因为它服务的问题是
+ * 「这附近有没有图」而不是「精确几张」。
+ */
+function countImageSignals(node: unknown, depth = 0): number {
+  if (depth > 10 || node === null || typeof node !== "object") return 0;
+  if (Array.isArray(node)) {
+    let sum = 0;
+    for (const item of node) sum += countImageSignals(item, depth + 1);
+    return sum;
+  }
+
+  const obj = node as Record<string, unknown>;
+  const type = obj.type;
+  const mediaType = obj.media_type ?? obj.mimeType;
+  const isImageBlock =
+    (typeof type === "string" && type.includes("image")) ||
+    typeof obj.image_url === "string" ||
+    (obj.imageUrl !== null && typeof obj.imageUrl === "object") ||
+    (typeof mediaType === "string" && mediaType.startsWith("image/"));
+
+  // 命中即计一次并停止下钻：一个图片块内部不会再嵌另一张独立的图，继续递归
+  // 只会把 {type:"image", source:{media_type:"image/png"}} 这种数成两张。
+  if (isImageBlock) return 1;
+
+  let count = 0;
+  for (const value of Object.values(obj)) {
+    if (value !== null && typeof value === "object") {
+      count += countImageSignals(value, depth + 1);
+    }
+  }
+  return count;
+}
+
 export function parseCCTranscript(filePath: string): ConversationTurn[] {
   const turns: ConversationTurn[] = [];
   const content = readFileSync(filePath, "utf-8");
   const lines = content.split("\n").filter((l) => l.trim());
 
   let sessionId = "";
+  // 整个 session 里的图片计数，扫完全文后统一盖到每个 turn 上。两类分开数：
+  // 用户亲手贴的 vs AI 自己产的（工具截图 / 读图 / 生图）。
+  // 数得到是因为本函数本来就逐行读完整个文件，顺带累加不额外花钱。
+  let sessionImages = 0;
+  let sessionToolImages = 0;
 
   for (const line of lines) {
     try {
       const obj = JSON.parse(line);
+      // 这一行里所有的图片信号。用户亲手贴的那部分在下面单独精确认，
+      // 其余的一律按补集归入 AI 产图——不枚举它是截图、读图、生图还是配图。
+      const lineImageSignals = countImageSignals(obj);
+      let lineUserImages = 0;
 
       if (!sessionId && obj.sessionId) {
         sessionId = obj.sessionId;
@@ -836,27 +896,21 @@ export function parseCCTranscript(filePath: string): ConversationTurn[] {
       if (obj.type === "user" && obj.message) {
         const msg = obj.message;
         let text = "";
-        const imageRefs: ImageRef[] = [];
+        let turnImages = 0;
         if (typeof msg.content === "string") {
           text = msg.content;
         } else if (Array.isArray(msg.content)) {
           // 文本块照旧提取，tool_use / tool_result 仍然整块丢弃（架构决定，见 memory-boundaries）。
-          // 图片不再一起丢：正文不动，只把回溯坐标记到 turn 上，图本体留在原始 jsonl 里。
+          // 图片本体也不进库，只数一下：这里只认顶层的 image block，
+          // tool_result 里内嵌的不算——那是工具截图/读图，实测占全部图片九成。
           text = msg.content
             .filter((c: any) => c.type === "text")
             .map((c: any) => c.text || "")
             .join("\n");
-          for (const block of msg.content) {
-            if (block?.type !== "image") continue;
-            imageRefs.push({
-              uuid: typeof obj.uuid === "string" ? obj.uuid : "",
-              mediaType: typeof block?.source?.media_type === "string"
-                ? block.source.media_type
-                : "unknown",
-              index: imageRefs.length + 1,
-            });
-          }
+          turnImages = msg.content.filter((c: any) => c?.type === "image").length;
         }
+        sessionImages += turnImages;
+        lineUserImages = turnImages;
 
         // 只贴图不配字的那一轮，此前会被长度闸整条丢掉——实测占含图轮次的 12.5%，
         // 且丢掉的常是「操作步骤在这里」+ 截图这类正文全在图里的高价值轮次
@@ -867,17 +921,16 @@ export function parseCCTranscript(filePath: string): ConversationTurn[] {
         const trimmed = text.trim();
         const body = trimmed.length > 0
           ? trimmed
-          : imageRefs.length > 0
-            ? `[图片×${imageRefs.length}]`
+          : turnImages > 0
+            ? `[图片×${turnImages}]`
             : "";
 
-        if (body.length > 10 || imageRefs.length > 0) {
+        if (body.length > 10 || turnImages > 0) {
           turns.push({
             role: "user",
             text: body,
             timestamp: obj.timestamp || "",
             sessionId,
-            ...(imageRefs.length > 0 ? { imageRefs } : {}),
           });
         }
       }
@@ -904,8 +957,23 @@ export function parseCCTranscript(filePath: string): ConversationTurn[] {
           });
         }
       }
+
+      // 补集：这一行里除用户亲手贴的之外的图，全算 AI 产的，不问出身。
+      // 用补集而不是列举，是因为 AI 产图的形态会一直长（生图、截图、读图、
+      // 写文章时的配图……），任何枚举都注定漏掉下一类。
+      sessionToolImages += Math.max(0, lineImageSignals - lineUserImages);
     } catch {
       // Skip malformed lines
+    }
+  }
+
+  // 整份 transcript 扫完才知道总数，统一盖到每个 turn 上——这条标记回答的是
+  // 「这条记忆所在的 session 里有没有图」，不是「这一轮有没有图」。图所在的那轮
+  // 常因正文太短进不了库，只有盖到同 session 的其他轮次上，才可能被搜到。
+  if (sessionImages > 0 || sessionToolImages > 0) {
+    for (const turn of turns) {
+      if (sessionImages > 0) turn.sessionImages = sessionImages;
+      if (sessionToolImages > 0) turn.sessionToolImages = sessionToolImages;
     }
   }
 
@@ -930,21 +998,26 @@ export function groupTurnsIntoChunks(turns: ConversationTurn[]): Array<{
   text: string;
   timestamp: string;
   sessionId: string;
-  imageRefs?: ImageRef[];
+  sessionImages?: number;
+  sessionToolImages?: number;
 }> {
   const filtered = filterNoiseTurns(turns);
   const chunks: Array<{
     text: string;
     timestamp: string;
     sessionId: string;
-    imageRefs?: ImageRef[];
+    sessionImages?: number;
+    sessionToolImages?: number;
   }> = [];
 
   for (let i = 0; i < filtered.length; i++) {
     const turn = filtered[i];
-    // 一轮被切成多个 chunk 时，每片都带同一份坐标：这些碎片同出一轮对话，
-    // 检索命中任何一片都该能回到那几张图。
-    const refs = turn.imageRefs?.length ? { imageRefs: turn.imageRefs } : {};
+    // 同一 session 切出来的每个 chunk 都带同一个标——它说的是「这个 session 有图」，
+    // 跟这一片本身有没有图无关，这正是 session 粒度要的效果。
+    const imgMark = {
+      ...(turn.sessionImages ? { sessionImages: turn.sessionImages } : {}),
+      ...(turn.sessionToolImages ? { sessionToolImages: turn.sessionToolImages } : {}),
+    };
 
     // If this is a user turn followed by an assistant turn, merge them
     if (turn.role === "user" && i + 1 < filtered.length && filtered[i + 1].role === "assistant") {
@@ -963,10 +1036,10 @@ export function groupTurnsIntoChunks(turns: ConversationTurn[]): Array<{
           if (seg.text.length > CONVERSATION_CHUNK_CONFIG.maxChunkSize) {
             const chunkResult = chunkDocument(seg.text, CONVERSATION_CHUNK_CONFIG);
             for (const chunk of chunkResult.chunks) {
-              chunks.push({ text: chunk, timestamp: turn.timestamp, sessionId: turn.sessionId, ...refs });
+              chunks.push({ text: chunk, timestamp: turn.timestamp, sessionId: turn.sessionId, ...imgMark });
             }
           } else {
-            chunks.push({ text: seg.text, timestamp: turn.timestamp, sessionId: turn.sessionId, ...refs });
+            chunks.push({ text: seg.text, timestamp: turn.timestamp, sessionId: turn.sessionId, ...imgMark });
           }
         }
       } else {
@@ -974,7 +1047,7 @@ export function groupTurnsIntoChunks(turns: ConversationTurn[]): Array<{
           text: merged,
           timestamp: turn.timestamp,
           sessionId: turn.sessionId,
-          ...refs,
+          ...imgMark,
         });
       }
 
@@ -993,10 +1066,10 @@ export function groupTurnsIntoChunks(turns: ConversationTurn[]): Array<{
           if (seg.text.length > CONVERSATION_CHUNK_CONFIG.maxChunkSize) {
             const chunkResult = chunkDocument(seg.text, CONVERSATION_CHUNK_CONFIG);
             for (const chunk of chunkResult.chunks) {
-              chunks.push({ text: chunk, timestamp: turn.timestamp, sessionId: turn.sessionId, ...refs });
+              chunks.push({ text: chunk, timestamp: turn.timestamp, sessionId: turn.sessionId, ...imgMark });
             }
           } else {
-            chunks.push({ text: seg.text, timestamp: turn.timestamp, sessionId: turn.sessionId, ...refs });
+            chunks.push({ text: seg.text, timestamp: turn.timestamp, sessionId: turn.sessionId, ...imgMark });
           }
         }
       } else {
@@ -1004,7 +1077,7 @@ export function groupTurnsIntoChunks(turns: ConversationTurn[]): Array<{
           text,
           timestamp: turn.timestamp,
           sessionId: turn.sessionId,
-          ...refs,
+          ...imgMark,
         });
       }
     }
@@ -1028,18 +1101,26 @@ export function groupTurnsIntoChunks(turns: ConversationTurn[]): Array<{
 // Codex Session Parser
 // ============================================================================
 
-function parseCodexSession(filePath: string): ConversationTurn[] {
+export function parseCodexSession(filePath: string): ConversationTurn[] {
   const turns: ConversationTurn[] = [];
   const content = readFileSync(filePath, "utf-8");
   const lines = content.split("\n").filter((l) => l.trim());
 
   let sessionId = "";
+  // 同 parseCCTranscript：两类图片分开计数。
+  // Codex 的图片字段是 input_image（OpenAI 格式），不是 Anthropic 的 image；
+  // 用户贴的在 payload.content 里可以精确认；其余一律按补集归 AI 产图。
+  let sessionImages = 0;
+  let sessionToolImages = 0;
 
   for (const line of lines) {
     try {
       const obj = JSON.parse(line);
       const payload = obj.payload;
       const timestamp = obj.timestamp || "";
+      // 同 parseCCTranscript：整行图片信号，减去用户贴的，剩下全归 AI 产
+      const lineImageSignals = countImageSignals(obj);
+      let lineUserImages = 0;
 
       if (obj.type === "session_meta" && payload?.id) {
         sessionId = payload.id;
@@ -1051,6 +1132,13 @@ function parseCodexSession(filePath: string): ConversationTurn[] {
         const content = payload.content;
 
         if (Array.isArray(content)) {
+          // 只精确认用户消息里的 input_image；Codex 自己生的图 / 读的图挂在
+          // payload.output 等别处，由下面的补集统一接住，这里不去枚举它们。
+          if (role === "user") {
+            const own = content.filter((c: any) => c?.type === "input_image").length;
+            sessionImages += own;
+            lineUserImages += own;
+          }
           for (const c of content) {
             if (c.type === "input_text" && c.text && c.text.length > 10) {
               // Skip system/developer prompts (usually very long instructions)
@@ -1092,8 +1180,18 @@ function parseCodexSession(filePath: string): ConversationTurn[] {
           }
         }
       }
+
+      // 补集：除用户亲手贴的之外，这一行里的图全算 AI 产的，不问出身。
+      sessionToolImages += Math.max(0, lineImageSignals - lineUserImages);
     } catch {
       // Skip malformed lines
+    }
+  }
+
+  if (sessionImages > 0 || sessionToolImages > 0) {
+    for (const turn of turns) {
+      if (sessionImages > 0) turn.sessionImages = sessionImages;
+      if (sessionToolImages > 0) turn.sessionToolImages = sessionToolImages;
     }
   }
 
@@ -1233,6 +1331,8 @@ export async function ingestCodexSessions(
                   sessionId: chunk.sessionId,
                   file: basename(filePath),
                   coreSummary: coreSummaries[j],
+                  sessionImages: chunk.sessionImages,
+                  sessionToolImages: chunk.sessionToolImages,
                 }));
               }
             }
@@ -1274,7 +1374,7 @@ export async function ingestCodexSessions(
 //   context.append_loop_event content.part    → 助手文本（part.type==="text"；think 跳过）
 // 其余类型（llm.tools_snapshot / mcp.tools_discovered / config.update / llm.request /
 // usage.record / permission.* 等，约占 86% 体积）是运行事件，一律跳过。
-function parseKimiSession(filePath: string): ConversationTurn[] {
+export function parseKimiSession(filePath: string): ConversationTurn[] {
   const turns: ConversationTurn[] = [];
   const content = readFileSync(filePath, "utf-8");
   const lines = content.split("\n").filter((l) => l.trim());
@@ -1284,6 +1384,11 @@ function parseKimiSession(filePath: string): ConversationTurn[] {
   const pathParts = filePath.split("/");
   const rawId = pathParts.length >= 4 ? pathParts[pathParts.length - 4] : basename(filePath, ".jsonl");
   const sessionId = rawId.replace(/^session_/, "");
+  // 同 parseCCTranscript：两类图片分开计数。
+  // Kimi 的图片字段是 image_url；用户贴的在 turn.prompt / context.append_message，
+  // AI 产的在 context.append_loop_event 的 tool.result 里。
+  let sessionImages = 0;
+  let sessionToolImages = 0;
 
   const pushTurn = (role: "user" | "assistant", text: string, timestamp: string) => {
     const trimmed = text.trim();
@@ -1299,6 +1404,23 @@ function parseKimiSession(filePath: string): ConversationTurn[] {
     try {
       const obj = JSON.parse(line);
       const timestamp = typeof obj.time === "number" ? new Date(obj.time).toISOString() : "";
+
+      // 图片统计在这里一次算完，不放进下面的分支——那些分支各自 continue，
+      // 放进去会被跳过。用户贴的精确认，其余按补集归 AI 产，不枚举出身。
+      {
+        const lineImageSignals = countImageSignals(obj);
+        let lineUserImages = 0;
+        if (obj.type === "turn.prompt" && obj.origin?.kind === "user" && Array.isArray(obj.input)) {
+          lineUserImages = obj.input.filter((c: any) => c?.type === "image_url").length;
+        } else if (obj.type === "context.append_message") {
+          const m = obj.message;
+          if (m?.role === "user" && m?.origin?.kind === "user" && Array.isArray(m.content)) {
+            lineUserImages = m.content.filter((c: any) => c?.type === "image_url").length;
+          }
+        }
+        sessionImages += lineUserImages;
+        sessionToolImages += Math.max(0, lineImageSignals - lineUserImages);
+      }
 
       if (obj.type === "turn.prompt") {
         if (obj.origin?.kind !== "user") continue;
@@ -1337,6 +1459,13 @@ function parseKimiSession(filePath: string): ConversationTurn[] {
       }
     } catch {
       // Skip malformed lines
+    }
+  }
+
+  if (sessionImages > 0 || sessionToolImages > 0) {
+    for (const turn of turns) {
+      if (sessionImages > 0) turn.sessionImages = sessionImages;
+      if (sessionToolImages > 0) turn.sessionToolImages = sessionToolImages;
     }
   }
 
@@ -1503,6 +1632,8 @@ export async function ingestKimiSessions(
                   sessionId: chunk.sessionId,
                   file: basename(filePath),
                   coreSummary: coreSummaries[j],
+                  sessionImages: chunk.sessionImages,
+                  sessionToolImages: chunk.sessionToolImages,
                 }));
               }
             }
@@ -1954,7 +2085,8 @@ export async function ingestCCTranscripts(
               sessionId: chunk.sessionId,
               file,
               coreSummary: coreSummaries[j],
-              imageRefs: chunk.imageRefs,
+              sessionImages: chunk.sessionImages,
+              sessionToolImages: chunk.sessionToolImages,
             }));
           }
 

@@ -223,34 +223,51 @@ describe("memory output", () => {
   });
 });
 
-// 图片可寻址（2026-08-27）：ingest 只记图的回溯坐标、不存图本体，
-// 所以检索侧必须把「这条还有几张图不在文字里」显式说出来——不说，
-// 等于写入侧白做，读到这条记忆的人不会知道该去取图。
-describe("memory output — 有图记忆的取图坐标", () => {
-  it("有 imageRefs 时多给一行 imgs，带张数、类型和取图坐标", () => {
+// session 级图片标记（2026-08-27）：ingest 不把图编进库，只记「这个 session 里
+// 用户贴过几张图」。检索侧必须把它显式说出来——不说，读到这条记忆的人不会知道
+// 附近还有图没看，写入侧就白做了。
+describe("memory output — session 级图片标记", () => {
+  it("有 sessionImages 时多给一行 imgs，带张数和回查坐标", () => {
     const output = formatSearchResults(
       [
         buildResult("abcd1234-0000-0000-0000-00000000000a", {
           source: "cc",
           sessionId: "05a9a168-9ee9-489e-9a9a-7f691a272ef1",
-          imageRefs: [
-            { uuid: "66285833-46f9-402f-a329-cb0398c7bb02", mediaType: "image/jpeg", index: 1 },
-            { uuid: "66285833-46f9-402f-a329-cb0398c7bb02", mediaType: "image/jpeg", index: 2 },
-          ],
+          sessionImages: 7,
         }),
       ],
       { query: "报错", profile: "default" } as any,
     );
 
     expect(output).toContain("imgs :");
-    expect(output).toContain("2 张");
-    expect(output).toContain("image/jpeg");
+    expect(output).toContain("7 张");
     expect(output).toContain("sess=05a9a168");
-    expect(output).toContain("uuid=66285833-46f9-402f-a329-cb0398c7bb02");
+    // 措辞要说清这是 session 级、未必属于本条，否则读的人会当成「这条有图」
+    expect(output).toContain("同 session");
+  });
+
+  // AI 产图单独成一类：它答的是「我当时生成的图 / 页面当时什么样」，
+  // 跟「我发过的那张截图」不是一个问题。实测它比用户贴图多三倍多，
+  // 只标用户贴图会让一半以上的带图 session 完全没有标记。
+  it("只有 AI 产图时也出 imgs 行，并与用户贴图分开报", () => {
+    const output = formatSearchResults(
+      [
+        buildResult("abcd1234-0000-0000-0000-00000000000c", {
+          source: "codex",
+          sessionId: "019f710a-84a6-7a73-a283-a198cf9a6208",
+          sessionToolImages: 23,
+        }),
+      ],
+      { query: "截图", profile: "default" } as any,
+    );
+
+    expect(output).toContain("imgs :");
+    expect(output).toContain("AI 产图 23 张");
+    expect(output).not.toContain("用户贴图");
   });
 
   // 反向断言：无图记忆不该多出这一行，否则就是给所有记忆添噪音
-  it("没有 imageRefs 的记忆不输出 imgs 行", () => {
+  it("没有任何图片标记的记忆不输出 imgs 行", () => {
     const output = formatSearchResults(
       [buildResult("abcd1234-0000-0000-0000-00000000000b", { source: "agent" })],
       { query: "concise", profile: "default" } as any,

@@ -85,32 +85,33 @@ function getTierLabel(result: RetrievalResult): string {
 }
 
 /**
- * 有图的记忆多给一行取图坐标。
+ * 所在 session 里有用户贴图时，多给一行提示。
  *
- * 图本体不在库里——ingest 只记坐标（见 ingest.ts 的 ImageRef），原件留在
- * 原始 transcript 里。这一行的作用是让读到这条记忆的人知道「这里还有几张图
- * 不在文字里」以及去哪儿取；要看图的内容，取回来现看即可，不预先编码。
+ * 图本体不在库里，正文里通常也没有对图的描述——这一行是唯一能让读到这条
+ * 记忆的人意识到「这附近还有图没看」的信号。判断值不值得看，回 Deja 按
+ * session 读原文。
+ *
+ * ⚠️ 这是 **session 级**标记，不是「本条记忆有图」：同一个 session 切出来
+ * 的每条记忆都带同一个数，图未必跟眼前这条有关。粒度换覆盖，明知而为——
+ * 图所在的那一轮常因正文太短根本没进库，只有盖到同 session 的其他轮次上
+ * 才可能被搜到。
  *
  * 无图时返回 null，调用方据此不输出这一行——不给无图记忆添噪音。
  */
-function formatImageRefs(result: RetrievalResult): string | null {
+function formatSessionImages(result: RetrievalResult): string | null {
   const meta = parseMetadata(result.entry);
-  const refs = meta.imageRefs;
-  if (!Array.isArray(refs) || refs.length === 0) return null;
+  const own = typeof meta.sessionImages === "number" ? meta.sessionImages : 0;
+  const tool = typeof meta.sessionToolImages === "number" ? meta.sessionToolImages : 0;
+  if (own <= 0 && tool <= 0) return null;
 
-  const types = [
-    ...new Set(
-      refs.map((r) => {
-        const mediaType = (r as { mediaType?: unknown } | null)?.mediaType;
-        return typeof mediaType === "string" ? mediaType : "?";
-      }),
-    ),
-  ].join(" ");
-  const firstUuid = (refs[0] as { uuid?: unknown } | null)?.uuid;
-  const uuid = typeof firstUuid === "string" && firstUuid.length > 0 ? firstUuid : "?";
+  // 两类分开报，因为它们答的是不同的问题：找「我发过的那张截图」看前者，
+  // 回溯「我当时生成的图 / 那个页面当时的样子」看后者。
+  const parts: string[] = [];
+  if (own > 0) parts.push(`用户贴图 ${own} 张`);
+  if (tool > 0) parts.push(`AI 产图 ${tool} 张`);
   const sess = typeof meta.sessionId === "string" ? meta.sessionId.slice(0, 8) : "?";
 
-  return `${refs.length} 张 (${types}) · 取图 sess=${sess} uuid=${uuid}`;
+  return `同 session ${parts.join(" / ")} · 回 Deja 读 sess=${sess}`;
 }
 
 function getProvenanceSummary(result: RetrievalResult): string {
@@ -414,7 +415,7 @@ export function formatFullResults(
     const row = buildSearchRow(i, context.query, results[i]);
     lines.push(`${row[0]} ${row[1]} ${row[2]} ${row[3]} ${row[4]} ${row[5]} ${row[6]} ${row[7]} ${row[8]} ${row[9]} | ${row[10]}`);
     lines.push(`   prov : ${getProvenanceSummary(results[i])}`);
-    const imgs = formatImageRefs(results[i]);
+    const imgs = formatSessionImages(results[i]);
     if (imgs) lines.push(`   imgs : ${imgs}`);
     // Full mode: append metadata details
     const meta = parseMetadata(results[i].entry);
@@ -466,7 +467,7 @@ export function formatSearchResults(
     const row = buildSearchRow(i, context.query, results[i]);
     lines.push(`${row[0]} ${row[1]} ${row[2]} ${row[3]} ${row[4]} ${row[5]} ${row[6]} ${row[7]} ${row[8]} ${row[9]} | ${row[10]}`);
     lines.push(`   prov : ${getProvenanceSummary(results[i])}`);
-    const imgs = formatImageRefs(results[i]);
+    const imgs = formatSessionImages(results[i]);
     if (imgs) lines.push(`   imgs : ${imgs}`);
     // Freshness: only shown for memories that declared dependsOn (opt-in, cheap check).
     const fresh = evaluateEntryFreshness(results[i].entry.metadata, freshnessCache);
