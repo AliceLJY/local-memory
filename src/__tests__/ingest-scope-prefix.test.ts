@@ -47,10 +47,21 @@ describe("ingest 源的 scope 前缀登记", () => {
     }
   });
 
-  it("minis 源已接线：config 有条目且前缀被降权识别", () => {
-    expect(config.sources.minis).toBeDefined();
-    expect(config.sources.minis.glob).toBe("*.jsonl");
+  it("minis 源已接线：前缀被降权识别；本机配了它才检查条目形状", () => {
+    // 这两条是代码契约，任何机器上都必须成立——漏登记前缀会让该端的 shell 输出
+    // 被当成「用户说过的话」提炼成 durable 结论，正是本文件开头那段要防的事。
+    expect(SOURCE_SCOPE_PREFIX.minis).toBe("minis");
     expect(isTranscriptScope("minis:9f3e7a21")).toBe(true);
+
+    // 而 config.json 是 .gitignore 掉的**本机私有配置**，每台机器配的源本就不同：
+    // 只有真正跑 ingest 的那台需要配 minis。原来这里无条件断言 config.sources.minis
+    // 存在，等于把「本机环境」当成「代码契约」，在任何没配这个源的机器上必红
+    // （已在一台开发机上红了一段时间，而它跟代码对不对毫无关系）。
+    // 配了就检查形状，没配不算失败——第一个 it 已经保证「config 里有的源都登记过」，
+    // 反方向的覆盖由那条负责，这里不必重复。
+    if (config.sources.minis) {
+      expect(config.sources.minis.glob).toBe("*.jsonl");
+    }
   });
 
   it("同一个前缀也必须在 source 清单里登记（两道闸，漏一道就静默失真）", () => {
