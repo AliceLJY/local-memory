@@ -1,6 +1,7 @@
 import type { ResumeContextResponse, SessionCheckpointRecord } from "./session-schema.js";
 import { cleanText } from "./context-composer-text.js";
 import { formatIsoAgeLabel } from "./age-label.js";
+import { isFallbackSummary } from "./session-engine.js";
 
 function listBlock(label: string, items: string[]): string[] {
   if (items.length === 0) return [];
@@ -12,7 +13,14 @@ function listBlock(label: string, items: string[]): string[] {
 
 export function formatCheckpointRecallSummary(record: SessionCheckpointRecord): string {
   const parts: string[] = [];
-  const baseSummary = record.summary.trim();
+  const rawSummary = record.summary.trim();
+  // summary 整段被 repo-state 清洗规则滤空时会退化成兜底文案，headline 就只剩一句无信息的
+  // 套话。此时改用第一条实质内容顶上，并保留标记，让读者能分辨「本来就没写」和「被洗掉了」。
+  const substitute = isFallbackSummary(rawSummary)
+    ? [...record.decisions, ...record.nextActions, ...record.openLoops]
+        .find((item) => item.trim().length > 0) ?? ""
+    : "";
+  const baseSummary = substitute ? `[summary sanitized] ${substitute}` : rawSummary;
   if (baseSummary) {
     parts.push(baseSummary);
   }

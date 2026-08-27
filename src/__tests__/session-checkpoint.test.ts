@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { buildSessionCheckpointRecord, buildSessionCheckpointResult, normalizeCheckpointScope, resolveCheckpointScope, type CheckpointQuality } from "../session-engine.js";
 import { formatCheckpointRecallSummary, formatCheckpointSaved, formatCheckpointSummary, formatResumeContext } from "../session-output.js";
 import { SessionCheckpointStore } from "../session-store.js";
+import { buildStableContextSections } from "../context-composer-stable.js";
 
 describe("session checkpoint engine", () => {
   it("defaults checkpoint scope to session:<sessionId>", () => {
@@ -287,5 +288,71 @@ describe("checkpoint quality gate", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+
+// 2026-08-27: summary 被 repo-state 清洗规则整段滤空后会退化成兜底文案。此前它既占着 recall
+// headline、又占掉一个 stable-context slot，而那条 checkpoint 的 decisions / nextActions 往往
+// 才是真内容。全库 554 条里有 9 条踩到（1.6%）。
+describe("checkpoint with a fallback summary", () => {
+  const FALLBACK = "Checkpoint captured current task state without repo-state details.";
+
+  const sanitized = buildSessionCheckpointRecord({
+    sessionId: "session-sanitized",
+    scope: "project:demo",
+    summary: "git status shows many modified files.",
+    decisions: ["Ship the delta channel note first."],
+    nextActions: ["Re-run bun test before pushing."],
+    entities: ["recallnest"],
+  });
+
+  it("guard: the fixture really does get sanitized down to the fallback text", () => {
+    expect(sanitized.summary).toBe(FALLBACK);
+  });
+
+  it("substitutes the first substantive line into the recall headline", () => {
+    const line = formatCheckpointRecallSummary(sanitized);
+
+    expect(line).toContain("[summary sanitized]");
+    expect(line).toContain("Ship the delta channel note first.");
+    expect(line).not.toContain(FALLBACK);
+  });
+
+  it("keeps the fallback text when there is nothing substantive to substitute", () => {
+    const empty = buildSessionCheckpointRecord({
+      sessionId: "session-empty",
+      summary: "git status shows many modified files.",
+    });
+
+    expect(empty.summary).toBe(FALLBACK);
+    expect(formatCheckpointRecallSummary(empty)).toContain(FALLBACK);
+  });
+
+  it("leaves a normal summary untouched", () => {
+    const normal = buildSessionCheckpointRecord({
+      sessionId: "session-normal",
+      summary: "Wire the delta channel note into the wiki page.",
+      decisions: ["Do not touch the GC policy."],
+    });
+    const line = formatCheckpointRecallSummary(normal);
+
+    expect(line).toContain("Wire the delta channel note into the wiki page.");
+    expect(line).not.toContain("[summary sanitized]");
+  });
+
+  it("does not spend a stable-context slot on the fallback text", () => {
+    const sections = buildStableContextSections({
+      profileResults: [],
+      preferenceResults: [],
+      entityResults: [],
+      pinAssets: [],
+      latestCheckpoint: sanitized,
+      stableLimit: 3,
+    });
+
+    expect(sections.checkpointContext.some((item) => item.includes(FALLBACK))).toBe(false);
+    expect(sections.checkpointContext.some((item) => item.includes("Ship the delta channel note first."))).toBe(true);
+    expect(sections.checkpointContext.some((item) => item.includes("Re-run bun test before pushing."))).toBe(true);
   });
 });

@@ -4,12 +4,11 @@ import { basename, join, resolve } from "node:path";
 import { metaDir } from "./compat.js";
 import type { SessionCheckpointRecord } from "./session-schema.js";
 import { SessionCheckpointRecordSchema } from "./session-schema.js";
-import { normalizeCheckpointScope, type CheckpointQuality } from "./session-engine.js";
+import { isFallbackSummary, normalizeCheckpointScope, type CheckpointQuality } from "./session-engine.js";
 
-const FALLBACK_SUMMARY = "Checkpoint captured current task state without repo-state details.";
 
 export function classifyCheckpointQuality(record: SessionCheckpointRecord): CheckpointQuality {
-  const isFallback = record.summary === FALLBACK_SUMMARY;
+  const isFallback = isFallbackSummary(record.summary);
   const hasContent = record.decisions.length > 0 || record.openLoops.length > 0 || record.nextActions.length > 0;
   return isFallback && !hasContent ? "minimal" : "rich";
 }

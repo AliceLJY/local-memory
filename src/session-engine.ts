@@ -8,6 +8,14 @@ import {
 } from "./session-schema.js";
 import { buildIdempotentRecordId } from "./idempotency.js";
 
+/** 当 summary 里每一句都被 repo-state 规则滤掉时的兜底文案（单一来源，勿再字面重复）。 */
+export const FALLBACK_SUMMARY = "Checkpoint captured current task state without repo-state details.";
+
+/** summary 是否已退化成兜底文案——即「本来写了东西，但整段被清洗空了」。 */
+export function isFallbackSummary(summary: string | null | undefined): boolean {
+  return (summary ?? "").trim() === FALLBACK_SUMMARY;
+}
+
 const REPO_STATE_PATTERN = /\bgit status\b|未提交|staged|uncommitted|已修改文件|modified files?|untracked|新增文件|dirty repo|dirty worktree/iu;
 const SENTENCE_SPLIT_PATTERN = /(?:\r?\n)+|(?<=[。！？!?;；])\s+/u;
 const CHECKPOINT_SANITIZABLE_FIELDS = ["summary", "task", "decisions", "openLoops", "nextActions"] as const;
@@ -51,7 +59,7 @@ function sanitizeCheckpointSummary(summary: string): SanitizedStringResult {
     .map(normalizeCheckpointText)
     .filter(Boolean);
   const kept = parts.filter((part) => !hasRepoStateText(part));
-  const value = kept[0] ? kept.join(" ") : "Checkpoint captured current task state without repo-state details.";
+  const value = kept[0] ? kept.join(" ") : FALLBACK_SUMMARY;
   return {
     value,
     changed: kept.length !== parts.length,
@@ -146,13 +154,12 @@ export function buildSessionCheckpointResult(rawInput: unknown): SessionCheckpoi
     resolvedScope: resolveCheckpointScope(sanitizedInput),
   });
 
-  const FALLBACK_SUMMARY = "Checkpoint captured current task state without repo-state details.";
-  const isFallbackSummary = record.summary === FALLBACK_SUMMARY;
+  const summaryIsFallback = isFallbackSummary(record.summary);
   const hasStructuredContent =
     record.decisions.length > 0 ||
     record.openLoops.length > 0 ||
     record.nextActions.length > 0;
-  const quality: CheckpointQuality = isFallbackSummary && !hasStructuredContent ? "minimal" : "rich";
+  const quality: CheckpointQuality = summaryIsFallback && !hasStructuredContent ? "minimal" : "rich";
 
   return {
     record,

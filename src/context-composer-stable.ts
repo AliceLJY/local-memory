@@ -1,6 +1,7 @@
 import type { PinAsset } from "./memory-assets.js";
 import type { RetrievalResult } from "./retriever.js";
 import type { SessionCheckpointRecord } from "./session-schema.js";
+import { isFallbackSummary } from "./session-engine.js";
 import { selectPinnedContext } from "./context-composer-pins.js";
 import { cleanText, dedupeText } from "./context-composer-text.js";
 import { selectStableResults } from "./context-composer-stable-selection.js";
@@ -74,7 +75,10 @@ function buildCheckpointStableContext(
   if (!checkpoint) return [];
 
   const items = [
-    checkpoint.summary ? `Checkpoint summary: ${checkpoint.summary}` : "",
+    // 兜底文案不占 slot：它零信息，占着会把真正有内容的 decision / next 挤出 limit。
+    checkpoint.summary && !isFallbackSummary(checkpoint.summary)
+      ? `Checkpoint summary: ${checkpoint.summary}`
+      : "",
     checkpoint.task ? `Checkpoint focus: ${checkpoint.task}` : "",
     checkpoint.decisions[0] ? `Checkpoint decision: ${checkpoint.decisions[0]}` : "",
     checkpoint.nextActions[0] ? `Checkpoint next: ${checkpoint.nextActions[0]}` : "",
