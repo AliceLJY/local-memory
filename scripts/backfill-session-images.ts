@@ -6,7 +6,8 @@
  * 与 AI 自己产的分开计），但已经入库的记忆没有。图本体不进库，标记只是让人和 agent
  * 知道「这附近还有图没看」，再决定要不要回原始 transcript 读。
  *
- * 输入是扫描脚本的产物（scan v4，补集口径，与 ingest 的 countImageSignals 同源），形如：
+ * 输入是 `scripts/scan-image-sessions.py` 的产物（补集口径，与 ingest 的
+ * countImageSignals 同源；改一边必须改另一边），形如：
  *   { "cc:05a9a168": { "user": 7, "tool": 23 }, "codex:019f710a": { ... } }
  * key 就是库里的 scope，所以这里只做字符串相等匹配，不猜、不模糊匹配。
  *
