@@ -245,6 +245,97 @@ bun run src/ui-server.ts
 
 ---
 
+## Images: addressable, not embedded
+
+Conversations contain images. A text memory layer does not. The usual answer is a
+multimodal embedding model — encode every image into the same vector space as the text
+and search across both. That answer is correct for photo libraries and product catalogs.
+It is the wrong shape for conversational memory, and the reason is cheap to state:
+
+**In a conversation, an image almost never arrives alone.** It arrives wrapped in
+"look at this error" — and the assistant's reply right after it usually describes what
+was in the picture. The words around the image are already an index of the image. What
+was missing was never semantic search over pixels; it was knowing that a picture is
+sitting there at all.
+
+So RecallNest does not encode images. It records **how many images are in the session a
+memory came from**, and lets you decide whether to go read the original transcript. The
+image's meaning is resolved on demand, by whatever model is asking, at the moment it
+matters — not precomputed for every image on the chance that someone asks later.
+
+The cost of this is worth being concrete about: **no multimodal model, no re-embedding of
+existing memories, no image storage, no change to any vector.** The marker is one integer
+per class in metadata. Backfilling 21,319 existing memories touched metadata only and cost
+nothing but a table scan.
+
+### Session-level, on purpose
+
+The marker counts the whole session, not the individual turn — which is coarser than it
+first looks like it should be, and the coarseness is the point.
+
+A turn that is nothing but a pasted screenshot has almost no text, so it never cleared the
+length gate and never entered the store at all. Measured on real transcripts, **12.5% of
+turns containing a user-pasted image were dropped whole** — including the ones that matter
+most, like seven screenshots with no caption, or "here are the steps" attached to a picture
+that *is* the steps. A turn-level marker has nowhere to attach for exactly the images most
+worth finding. A session-level marker lands on that session's *other* memories, which did
+get stored, and those are what a search will surface.
+
+The trade-off is real and undisguised: every memory from a session carries the same count,
+so the images may have nothing to do with the specific result you are looking at. The line
+says `same session`, not `this memory`, for that reason.
+
+### Two classes, because they answer different questions
+
+Images are counted in two buckets, and never merged:
+
+| Bucket | What it is | The question it answers |
+|---|---|---|
+| `sessionImages` | Pictures the human pasted into a message | *Where is that screenshot I sent?* |
+| `sessionToolImages` | Everything else the session produced | *What did the page look like then? What image did I generate?* |
+
+It is tempting to keep only the first — a person searching their memory wants their own
+screenshots. But an agent reconstructing its own past work wants the other one: the
+diagram it drew, the rendering it captured, the illustration it made for an article.
+**Of 1,767 sessions carrying images, 1,103 contain no human-pasted image at all.** Keep
+only the first bucket and those sessions are silent — precisely the sessions where the
+agent did visual work.
+
+### The second bucket is a complement, not a list
+
+Here is the part that took a correction to get right. The first implementation defined
+AI-produced images by enumeration: images inside `tool_result`, inside `payload.output`,
+inside `tool.result`. Every one of those is a real location. The list was still wrong,
+because **the set of ways an image can appear only grows** — screenshots, file reads,
+model generation, illustrations produced while drafting a post — and an enumeration
+silently drops whatever it did not anticipate.
+
+So the second bucket is defined as a complement: count every image signal in the record,
+subtract the ones positively identified as human-pasted, and attribute the remainder
+without asking where it came from.
+
+The difference is not academic. Across 9,619 transcripts:
+
+| | Enumerated | Complement |
+|---|---|---|
+| AI-produced images | 5,812 | **10,938** |
+| Sessions with any image | 1,507 | **1,767** |
+| Human-pasted images | 1,629 | 1,629 |
+
+**The enumeration missed 5,126 images and 376 sessions** — nearly half. The largest single
+class it dropped was image *generation*, which lives in neither of the two containers the
+list knew about. Human-pasted counts are identical under both definitions, which is the
+check that matters: widening the second bucket did not contaminate the precise one.
+
+A regression test pins this. It feeds the parser an `image_generation_call` — a shape the
+source code never names — and asserts it lands in the second bucket. Under the enumerated
+implementation that test fails.
+
+One honest caveat: the complement counts *signals*, not certified pictures. A single
+generation can leave both a call and a completion record and be counted twice. That
+direction was chosen deliberately, because the question is "is there anything here to look
+at" rather than "exactly how many."
+
 ## New in v3.0: A Supported Runtime, and Conclusions That Can Be Used
 
 v3.0 is a major release for one reason that shows up on install and one that shows up in
