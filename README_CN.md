@@ -26,8 +26,126 @@
 
 编程 Agent 每开一个窗口就失忆。项目配置、调试决策、实体映射——散落在 Claude Code、Codex、Kimi、Antigravity 以及你打开的每一个终端里，互相不通。
 
-RecallNest 的解法：**一个 LanceDB 驱动的记忆层，供你的编程 Agent 共读共写**。一个窗口存入的上下文，另一个窗口自动召回。会话退出时 checkpoint，启动时 resume。记忆会衰减、演化、自组织——不是简单的日志堆积。
+RecallNest 是**一个 LanceDB 驱动的记忆层，你所有的 Agent 共读共写**。一个窗口存入的上下文，另一个窗口能召回。会话退出时 checkpoint，启动时 resume。记忆会衰减、演化、自组织——它不是一堆等你 grep 的日志。
 
+### 一次召回长什么样
+
+```text
+Query   : deploy rollback
+Hits    : 5
+
+#  ID       Score Category  Tier        Source  Date        Age  Retrieval Path
+1  ee79037a 46.1% cases     peripheral  cc      2026-08-25  2d   vector
+   [assistant] Rolled back to the previous image and pinned the digest so the next…
+   prov : evidence/transcript-ingest
+   imgs : 52 agent-made in this session · read sess=dca70d4a
+```
+
+这一小块里有三样东西，几乎就是整个设计：
+
+- **`Source cc` · `Age 2d`** —— 它出自两天前的一个 Claude Code 窗口，而你正在另一个终端、
+  甚至另一台机器上读它。整个项目就建在这个前提上。
+- **`prov : evidence/…`** —— 每一行都标着自己待在哪一层。从对话里刮下来的碎片，永远没资格
+  冒充你真正做过的决定；要变成稳定记忆，得另走一道带证据门槛的提升流程。
+- **`imgs : …`** —— 那个 session 里有 52 张图，**一张都没进数据库**。这一行的存在只是让你知道
+  那儿有东西可看，而产生它没花一次模型调用、没多一个向量、没占一份存储。
+
+最后这条就是整套做法的缩影：**只存"让一样东西能被找到"所需的部分，不存"将来可能被问到"的一切。**
+完整的推理——包括最显然的那种实现错在哪两个地方——在
+[图片：可寻址，而不是被编码](#图片可寻址而不是被编码)。
+
+
+## 核心能力
+
+### 接入与安装
+
+| 能力 | 说明 |
+|---|---|
+| **CC Plugin** | 一行命令装入 Claude Code，无需手动配置 MCP |
+| **共享索引** | 所有客户端共用同一个 LanceDB 存储，跨机指向 `ssh` 即可共用真相源 |
+| **双通道接入** | MCP（stdio）给 CLI agent 与能填 MCP 配置的 GUI app + HTTP API 给只会发请求的客户端 |
+| **一键接入** | 集成脚本同时安装 MCP 和 continuity 规则 |
+
+### 检索与连续性
+
+| 能力 | 说明 |
+|---|---|
+| **混合检索** | 6 通道：向量 + BM25 + L0/L1/L2 多向量 + KG 图（PPR） |
+| **4 套检索策略** | default、writing、debug、fact-check —— 按任务类型调优 |
+| **会话连续性** | `checkpoint_session` + `resume_context`（full/light/summary 三种模式）+ 仓库状态守卫 |
+| **会话蒸馏** | 3 层对话压缩：微缩 → LLM 结构化摘要 → 知识提取 |
+| **对话导入** | 支持 Claude Code、Claude.ai、ChatGPT、Slack、纯文本 |
+| **Topic Tags** | scope 内 topic 分区，自动检测，搜索时可过滤 |
+| **关联 scope 侧栏** | 显式传 `includeRelatedScopes` 时，按 `scopeRelations` 白名单额外检索，并和主 scope 排序分开展示 |
+
+### 记忆生命周期与治理
+
+| 能力 | 说明 |
+|---|---|
+| **记忆演化** | Supersede 链、衰减评分、LLM 重要性、聚合、归档 |
+| **显式升级** | Evidence → Durable Memory，带冲突守卫、合并决议、审计日志 |
+| **隐私分级** | 4 级（`ephemeral` / `private` / `durable` / `shared`）+ 级联遗忘 |
+| **准入控制** | 写入时门控：噪音过滤、重要性下限、去重、限流 |
+| **Memory Lint** | 矛盾、重复、过期、孤儿检测 + 健康评分 |
+| **离线整合** | `dream` 命令：聚类、合并、修剪积累的记忆 |
+
+### 推理与结构
+
+| 能力 | 说明 |
+|---|---|
+| **Knowledge Graph** | 实体关系图 + PPR 算法，支持多跳问题 |
+| **建构式检索** | 多源候选扩展 + 溯源锚定的上下文重建 |
+| **叙事架构** | 三层自传式元数据（生命阶段 → 一般事件 → 具体事件） |
+| **Skill Memory** | 存储、检索、自动提升来自重复模式的可执行技能 |
+| **预测式提醒** | 行为信号预测引擎，主动浮现"你可能需要这个" |
+| **6 类记忆** | profile、preferences、entities、events、cases、patterns —— 类别分化合并策略 |
+
+### 可视化与运维
+
+| 能力 | 说明 |
+|---|---|
+| **Dashboard** | Web UI 首页：统计卡片、类别分布、增长趋势、健康概览 |
+| **Workflow Observation** | 专门的 append-only 工作流观测层，不混入普通 memory |
+| **结构化资产** | Pin、Brief、Distill —— 不只是原始日志 |
+| **Data Checkup** | 记忆存储数据质量健康检查（含数据源健康） |
+| **数据源心跳** | 按数据源自动追踪 ingest 健康状态，过期告警 |
+| **导出图谱** | 导出交互式 HTML 知识图谱可视化 |
+| **批量操作** | 单次调用存储最多 20 条记忆，自带去重 |
+| **Connector 框架** | 标准 connector-v1 格式接入外部数据源，附带适配器示例 |
+
+---
+
+## 架构
+
+```
+  CLIENTS                    ACCESS                      CORE ENGINE                    STORAGE
+  ──────────────────────     ───────────────────────     ────────────────────────────   ──────────────────────
+
+  Claude Code                MCP over stdio              Retriever                      LanceDB
+  Codex                ───▶  44 tools, 3 tiers    ───▶   vector + BM25 + RRF     ───▶   vector + columnar
+  Kimi · Antigravity                                     Classifier · 6 categories
+  Doubao desktop                                         Context composer
+                             HTTP API :4318              resume_context                 Jina embeddings v5
+  your scripts · cron  ───▶  21 endpoints          ───▶  Decay · Weibull half-life ─▶   1024-dim, task-aware
+                                                         Conflict · audit + merge
+  phone app            ───▶  read-only gateway     ───▶  Capture: evidence → durable
+                             :8791, token-gated
+```
+
+> 图内保留英文术语：等宽字体下中文占两格，混排会把对齐打乱。四段从左到右分别是
+> 客户端、接入层（MCP / HTTP / 只读网关）、核心引擎、存储层。
+
+### 内部设计
+
+- **L0 / L1 / L2 动态折叠** —— 每条记忆存储 3 个粒度层（一句话 / 要点概要 / 完整内容）；检索时根据相关性分数和 token 预算动态选择返回哪个层级
+- **Weibull 衰减 + 情绪调制** —— 记忆沿参数化 Weibull 曲线衰减；情绪显著性可额外延长半衰期最高 30%
+- **向量预筛 + LLM 去重** —— 90% 的去重决策用低成本余弦相似度（≥ 0.92）；仅临界情况调用 LLM 判断
+- **类别分化合并策略** —— `profile` 和 `preferences` 采用冲突合并（新版覆盖）；`events` 和 `cases` 采用追加（保留历史）
+- **展示分 vs 淘汰分双轨制** —— 检索使用双轨评分：tier floor 防止核心记忆被淘汰，decay boost 让新鲜记忆临时浮现而不永久挤掉稳定记忆
+
+> 完整架构详解：[`docs/architecture.md`](docs/architecture.md)
+
+---
 
 ## 谁能接上
 
@@ -161,265 +279,70 @@ bun run src/cli.ts doctor
 
 ---
 
-## Web UI
+## 图片：可寻址，而不是被编码
 
-<p align="center">
-  <img src="assets/dashboard.png" alt="RecallNest Dashboard" width="800" />
-  <br><em>Dashboard —— 总量、类别分布、健康评分、增长趋势一目了然。</em>
-</p>
+对话里有图，而文本记忆层没有。通常的答案是上一个多模态 embedding 模型，把每张图编码进
+和文字同一个向量空间。那个答案对相册和商品库是对的，放在这里却是错的形状，理由很便宜：
+**在对话里，一张图几乎从不孤零零地出现。** 它总被"你看这个报错"包着，而紧跟其后的回复
+通常已经描述了图里是什么。图周围的文字，本来就是这张图的索引。缺的从来不是对像素做语义
+检索，而是**知道那儿有一张图**。
 
-<p align="center">
-  <img src="assets/screenshots/ui-full.png" alt="RecallNest Search Workbench" width="800" />
-  <br><em>Search Workbench —— 混合检索 + Topic Tag 过滤 + 4 套检索策略 + Skills 浏览 + 资产管理。</em>
-</p>
+所以 RecallNest 不编码图片。它只记下**这条记忆所属的 session 里有几张图**，剩下的交给你判断
+要不要去翻原始对话。图的含义在需要的那一刻、由当时在问的那个模型现场解读。
 
-<p align="center">
-  <img src="assets/knowledge-graph.png" alt="RecallNest Knowledge Graph" width="800" />
-  <br><em>Knowledge Graph —— 交互式力导向图，语义桥接揭示跨域隐藏关联。</em>
-</p>
+代价值得说清楚：**不需要多模态模型，不重新 embedding，不存图片，不改动任何一个向量。**
+给存量的 21,319 条记忆补上这个标记，只动了 metadata。
 
-```bash
-bun run src/ui-server.ts
-# → http://localhost:4317
-```
+这里面有两个不那么显然的选择，而且两次的第一版都是错的。
 
----
+### 粒度取 session，是故意的
 
-## 核心能力
+标记数的是整个 session，不是单轮——比第一眼该有的粒度更粗，而粗正是重点。
 
-### 接入与安装
+一轮如果只有一张截图、几乎没有文字，它根本过不了长度闸，压根没进过库。在真实对话上实测，
+**含用户贴图的轮次里有 12.5% 是整轮被丢掉的**——而且丢的恰恰是最值钱的那些：七张截图一个字
+没配，或者「操作步骤在这里」配一张图、而那张图**就是**步骤本身。轮次级的标记，对最该被找到的
+那批图**无处可挂**。session 级的标记会落到同一个 session 里**其他**进了库的记忆上，而那些才是
+搜索会捞出来的东西。
 
-| 能力 | 说明 |
-|---|---|
-| **CC Plugin** | 一行命令装入 Claude Code，无需手动配置 MCP |
-| **共享索引** | 所有客户端共用同一个 LanceDB 存储，跨机指向 `ssh` 即可共用真相源 |
-| **双通道接入** | MCP（stdio）给 CLI agent 与能填 MCP 配置的 GUI app + HTTP API 给只会发请求的客户端 |
-| **一键接入** | 集成脚本同时安装 MCP 和 continuity 规则 |
+代价不加掩饰：同一个 session 的每条记忆都带同一个数字，所以那些图未必和你眼前这一条有关。
+输出里写的是 `in this session` 而不是 `in this memory`，就是为了这个。
 
-### 检索与连续性
+### 分成两类，因为它们回答的不是同一个问题
 
-| 能力 | 说明 |
-|---|---|
-| **混合检索** | 6 通道：向量 + BM25 + L0/L1/L2 多向量 + KG 图（PPR） |
-| **4 套检索策略** | default、writing、debug、fact-check —— 按任务类型调优 |
-| **会话连续性** | `checkpoint_session` + `resume_context`（full/light/summary 三种模式）+ 仓库状态守卫 |
-| **会话蒸馏** | 3 层对话压缩：微缩 → LLM 结构化摘要 → 知识提取 |
-| **对话导入** | 支持 Claude Code、Claude.ai、ChatGPT、Slack、纯文本 |
-| **Topic Tags** | scope 内 topic 分区，自动检测，搜索时可过滤 |
-| **关联 scope 侧栏** | 显式传 `includeRelatedScopes` 时，按 `scopeRelations` 白名单额外检索，并和主 scope 排序分开展示 |
+| 类别 | 是什么 | 回答什么问题 |
+|---|---|---|
+| user-pasted | 人贴进消息里的图 | *我发过的那张截图在哪？* |
+| agent-made | 这个 session 产生的其余所有图 | *那个页面当时长什么样？我当时生成的图是哪张？* |
 
-### 记忆生命周期与治理
+只留第一类很诱人——人翻自己的记忆，想找的是自己的截图。但一个 agent 回溯自己干过的活，
+要的是第二类：它画的示意图、它截的渲染结果、它为一篇文章配的插图。**1,767 个带图 session 里，
+有 1,103 个一张人贴的图都没有。** 只留第一类，这些 session 就全哑了——而它们恰恰是 agent
+做了大量视觉工作的那些。
 
-| 能力 | 说明 |
-|---|---|
-| **记忆演化** | Supersede 链、衰减评分、LLM 重要性、聚合、归档 |
-| **显式升级** | Evidence → Durable Memory，带冲突守卫、合并决议、审计日志 |
-| **隐私分级** | 4 级（`ephemeral` / `private` / `durable` / `shared`）+ 级联遗忘 |
-| **准入控制** | 写入时门控：噪音过滤、重要性下限、去重、限流 |
-| **Memory Lint** | 矛盾、重复、过期、孤儿检测 + 健康评分 |
-| **离线整合** | `dream` 命令：聚类、合并、修剪积累的记忆 |
+### 第二类是补集，不是清单
 
-### 推理与结构
+第一版的实现是靠**枚举**定义"AI 产的图"：`tool_result` 里的、`payload.output` 里的、
+`tool.result` 里的。每一个位置都真实存在，这份清单依然是错的，因为**图片可能出现的方式只会
+越来越多**，而枚举会悄无声息地漏掉它没预料到的那一种。
 
-| 能力 | 说明 |
-|---|---|
-| **Knowledge Graph** | 实体关系图 + PPR 算法，支持多跳问题 |
-| **建构式检索** | 多源候选扩展 + 溯源锚定的上下文重建 |
-| **叙事架构** | 三层自传式元数据（生命阶段 → 一般事件 → 具体事件） |
-| **Skill Memory** | 存储、检索、自动提升来自重复模式的可执行技能 |
-| **预测式提醒** | 行为信号预测引擎，主动浮现"你可能需要这个" |
-| **6 类记忆** | profile、preferences、entities、events、cases、patterns —— 类别分化合并策略 |
+所以第二类改成了补集：数出这条记录里所有的图片信号，减去能明确认定为"人贴的"，剩下的
+一律归入，不问它从哪儿来。在 9,619 份对话记录上：
 
-### 可视化与运维
+| | 枚举 | 补集 |
+|---|---|---|
+| AI 产的图 | 5,812 | **10,938** |
+| 有图的 session | 1,507 | **1,767** |
+| 人贴的图 | 1,629 | 1,629 |
 
-| 能力 | 说明 |
-|---|---|
-| **Dashboard** | Web UI 首页：统计卡片、类别分布、增长趋势、健康概览 |
-| **Workflow Observation** | 专门的 append-only 工作流观测层，不混入普通 memory |
-| **结构化资产** | Pin、Brief、Distill —— 不只是原始日志 |
-| **Data Checkup** | 记忆存储数据质量健康检查（含数据源健康） |
-| **数据源心跳** | 按数据源自动追踪 ingest 健康状态，过期告警 |
-| **导出图谱** | 导出交互式 HTML 知识图谱可视化 |
-| **批量操作** | 单次调用存储最多 20 条记忆，自带去重 |
-| **Connector 框架** | 标准 connector-v1 格式接入外部数据源，附带适配器示例 |
+**枚举漏掉了 5,126 张图和 376 个 session**，接近一半。漏得最多的是**生图**——它待在那份清单
+知道的两个容器之外。而人贴的图在两种口径下数字完全一致，这正是关键的校验点：放宽第二类
+没有污染精确的第一类。有一条回归测试钉住这件事：它喂给解析器一个源码里从未出现过的
+`image_generation_call`，断言它落进第二类；在枚举式实现下那条测试必红。
 
----
-
-## v3.0 新增：一个受支持的运行时，和终于能被用起来的结论
-
-v3.0 是大版本，原因有两个：一个在安装时看得见，一个在记忆的行为里。
-
-**运行时边界提到了 Node 22。** RecallNest 一直带着 `openai@4`，它拽着
-`formdata-node` → `node-domexception` 这条弃用链。openai 从 v5 起每个版本都是零依赖，
-所以升到哪一版这条链都会消失 —— 但 v7 自己声明 `engines.node >= 22.0.0`，于是
-「抬 Node 边界」和「甩掉弃用依赖链」变成同一件事，而不是两件。`engines.node` 现在是
-`>=22`。这是本次大版本里唯一的破坏性改动。
-
-**合成出的结论终于能进稳定记忆。** `dream` 把 cluster insight 和 cross-memory pattern
-写在 evidence 层是有意的 —— 模型对自己记忆的再加工是通往源头的线索，不是压过源头的
-权威 —— 但稳定记忆的选取对 evidence 层一律拒收。后果是绝对的：一条合成结论无论证据
-多充分，下游都没法靠它。`promote_synthesis`（MCP）与 `recallnest promote-synthesis`
-（CLI）给了它一条路，判据是这条结论自己那份经过校验的证据集，而不是「重复出现几次」
-—— 合成物本身就是跨条目聚合，要求它重复是把一件事数了几次。合成行本身一个字不改；
-晋升写的是另一条 durable 记录，带 `promotedFrom` 指回去，走的是和其他晋升同一条通道、
-同一套 `canonicalKey` 去重。
-
-本次还有：
-
-- **retrieve 审计行会说清服务了什么。** 它以前只记查询词和命中数。而信念是就地修订的
-  —— id 不变、版本号加一、旧正文作为 `superseded` 行留下 —— 所以「memory X 被检索了」
-  这句话跨过任何一次信念变更都是有歧义的。现在每条结果的 id、版本、生命周期状态和
-  boundary 都记下来；列表有上限，而且**被截断时会说自己被截断了**。
-- **embeddings 与 chat completions 有了 HTTP 契约测试。** 此前所有测试都把 SDK client
-  换成桩函数，没有一条碰过 socket，传输层的回归会全绿着放过去。新测试驱动真的类、经真的
-  SDK、打到本地回环服务器，覆盖成功 / 错误 / 超时三态，以及默认 OpenAI 形态加上 Jina、
-  Qwen 兼容端点。零出网、零凭据。
-- **修复：被限流时反而会猛打对方。** 是上面那批测试当场查出来的。embedder 遇到
-  context-length 错误会分块重试，而分块器对短文本原样返回，判定「这是 context 错误」的
-  那条正则又会命中限流措辞 —— 于是一个 429 会拿同一段文本无限重打。实测 5 秒 61,000 多
-  个请求，对着一个正在叫我们慢一点的端点。现在失败是有界的。
-- **一个已知的召回缺口变成了能跑的回归。** 一条又长、又旧、很少被读的记忆，可能用它自己
-  正文里的原话都召不回，而短的、新的、被频繁读的条目排在它前面。这是排序问题不是过滤
-  问题 —— 那条记忆过了所有阈值，然后排最后一名。复现已经进仓；排序的修复不在本次。
-- **MCP 工具 44 个**（三层），此前 43 个。
-
-### 从 v2.6 升级
-
-- **需要 Node 22 或更新版本。** 用 Bun 的不受影响。这是本次唯一的破坏性改动。
-- 已有 LanceDB 数据原地打开，不需要导出导入。
-- `promote_synthesis` 默认 dry-run，不传 `dryRun=false` 不写任何东西。
-- `audit.jsonl` 里检索那类行变大了（它现在列出服务了哪几条）。轮转仍是手动的，接近
-  50 MB 时归档一下。
-
-### 关于 npm 历史的一句说明
-
-npm 上的 `recallnest@2.6.1` 是一次维护发布，发布时这个包还没有配置 Trusted Publishing，
-所以它不带构建 provenance。这是它当时怎么发的一个事实，不是包本身的缺陷，而且**无法追认**
-—— 同一个 npm 版本不能为了补 provenance 再发一次。
-
----
-
-## v2.6 新增：跨进程一致性与可靠分发
-
-v2.6 把 v2.5.4 以来的开发整理成一版可升级、可安装、版本口径一致的正式候选：
-
-- **跨进程即时可见** —— LanceDB 默认每次读取都检查外部提交，常驻 MCP/API/UI 无需重启即可看见 CLI ingest 写入。可用 `RECALLNEST_READ_CONSISTENCY_INTERVAL=<秒>` 设置允许的延迟窗口，或设为 `off` 恢复旧版不检查行为。
-- **更安全的记忆演化** —— 信念变化不再原地覆盖，旧记录保留为 `superseded`；程序性记忆免于时间衰减；冷启动和长度归一化不再压低短实体查询与稳定记忆。
-- **更可靠的整合管线** —— `dream` 增加失败分型、总时长预算、聚类前向量回填，以及“成功必须真的产出结果”的断言。
-- **更完整的对话来源** —— Kimi、AGY/Antigravity 和 minis 已同步纳入 ingest、scope 边界与术语识别。
-- **一个公开版本号** —— npm 元数据、CLI `--version`、MCP 握手、HTTP 健康接口和 Claude Code marketplace 统一遵守 `2.6.0` 发布契约。
-- **真正可安装的 Claude Code 插件** —— 安装后自动注册 43 个 MCP 工具与连续性 skill，通过敏感插件配置接收 Jina key，并把配置与 LanceDB 数据放进 Claude Code 的持久插件数据目录。
-
-### 从 v2.5.4 升级
-
-- 现有 LanceDB 数据原地打开；缺少新字段的旧表会自动迁移，空表也覆盖。
-- 插件数据位于版本缓存之外，更新插件不会清空；手动 clone 仍沿用现有 `config.json` 与数据库路径。
-- 检索操作现已写入审计日志。`audit.jsonl` 暂无自动轮转，接近 50 MB 时建议人工归档。
-- `RECALLNEST_LAYER_ADMISSION` 仍是显式开启项（`observe` 或 `on`），默认 `off`。
-
----
-
-## v2.1 新增：记忆哲学驱动的架构升级
-
-v2.0 建立了完整的记忆操作平台；v2.1 加入了记忆哲学驱动的记忆行为。
-
-来自 9 个记忆哲学研究维度的 5 项工程升级：
-
-- **情绪感知衰减** *（情感记忆理论）* —— 带有强烈情绪的记忆衰减慢 20-30%。基于关键词的情绪检测计算 `salience`（记忆显著性），注入 Weibull 半衰期公式和重新平衡的 4 因子演化评分。零 LLM 成本。
-
-- **记忆伦理层** *（遗忘权 / GDPR 第 17 条）* —— 四级隐私：`ephemeral`（临时）/ `private`（私密）/ `durable`（持久）/ `shared`（共享）。级联遗忘引擎贯穿 KG 三元组、演化链、Pin 资产和摘要。完整审计日志。`forget_memory` MCP 工具支持 Agent 驱动的删除。
-
-- **自传叙事架构** *（叙事身份理论 / Conway 三层模型）* —— 记忆标注 `生命阶段 → 一般事件 → 具体事件` 层级，正交于现有 6 类别。检索自动拉取叙事兄弟。上下文渲染按生命阶段分组。支持中英文的规则式标注器。
-
-- **建构式检索** *（模拟理论 / Michaelian）* —— 不再返回原始存储文本，而是从扩展候选集（KG 邻居 + 演化链 + 聚类成员 + 叙事兄弟）中重建上下文。Source-map 语义覆盖率替代词汇重叠。矛盾检测与标记。
-
-- **预测式前瞻记忆** *（精神时间旅行 / Tulving）* —— 启发式预测引擎从行为信号中浮现"你可能需要这个"提醒：过期的 checkpoint 待办事项、被纠正的工作流观察、高频休眠记忆和未覆盖的查询主题。零 LLM 成本。7 天未接受自动过期。
-
----
-
-## v2.2 新增：检索质量强化
-
-v2.1 加入了哲学记忆行为；v2.2 补齐前沿扫描（ACC、PI-LLM、TSM）发现的最后三个引擎层空白。
-
-- **记忆置信度元标签** *（ACC / 双过程不确定性量化）* —— 每条记忆携带结构化 `ConfidenceMetadata`（分数 + 可靠性层级：`direct` 用户亲述 / `inferred` LLM 推断 / `hearsay` 二手转述）。写入时根据 source 自动赋值（manual=0.9, agent=0.7, conversation_import=0.5）。检索评分加权置信度。`resume_context` 对低置信条目标注 `[低置信]`。
-
-- **干扰检测 + 主动遗忘门** *（PI-LLM / SleepGate）* —— 语义聚簇检测识别竞争检索的近重复记忆群。增强版 RIF 每簇仅保留 top-K（默认 3），多余的降权 50% 而非删除。写入时预警：scope 内累积 ≥5 条高相似活跃记忆时，最弱的标记 `pending_review`。`data_checkup` 报告干扰密度。
-
-- **时间有效性窗口** *（TSM / TiMem / Zep）* —— `store_memory` 接受 `validUntil`（过期时间）和 `eventTime`（事件发生时间）。`search_memory` 支持 `validAt`（时间点查询）和 `includeExpired`（降权 80% 而非隐藏）。auto-GC 对过期记忆施加 2 倍衰减加速。
-
-- **Usage-adjusted Auto-GC** *（默认关闭）* —— `RECALLNEST_USAGE_DECAY=true` 且建构式检索 use 信号开启时，GC 专用分支才会对 cold 记忆的 frequency 项打折；在线检索排序不读取这个分支。
-
----
-
-## v2.3 新增：Connector 生态 + 数据源健康
-
-v2.2 强化了检索质量；v2.3 通过标准 Connector 框架和运维健康监控，把 RecallNest 开放给外部数据源。
-
-- **Connector-v1 标准** *（GB-2）* —— 一套 JSON 格式（`ConnectorOutputV1`），任何外部脚本都可以输出。Obsidian 笔记、邮件、RSS、日志文件——标准化一次，走完整的 dedup/embed/extract 管线入库。规范见 [`docs/connector-spec.md`](docs/connector-spec.md)，适配器骨架见 [`connectors/examples/`](connectors/examples/)（email、logs、RSS）。
-
-- **Obsidian Vault 接入** *（GB-1）* —— 官方 Obsidian 连接器：扫描 `.md` 文件，提取 frontmatter + wikilink，文件夹结构映射为 tag。一条命令：`lm ingest --obsidian /path/to/vault`。
-
-- **数据源健康监控** *（GB-3）* —— 每次 connector ingest 写心跳到 `data/source-heartbeat.json`。`data_checkup` 标记过期数据源（>7 天 warning，>30 天 error）。`doctor --ci` 按数据源展示心跳摘要（如"obsidian: 2h ago"）。
-
----
-
-## 架构
-
-```
-┌──────────────────────────────────────────────────────────┐
-│                       客户端层                            │
-├──────────┬──────────┬──────────┬──────────────────────────┤
-│ Claude   │ Gemini   │ Codex    │ 自定义 Agent / curl      │
-│ Code     │ CLI      │          │                          │
-└────┬─────┴────┬─────┴────┬─────┴──────┬──────────────────┘
-     │          │          │            │
-     └──── MCP (stdio) ───┘     HTTP API（端口 4318）
-                │                       │
-                ▼                       ▼
-┌──────────────────────────────────────────────────────────┐
-│                      集成层                               │
-│  ┌─────────────────────┐  ┌────────────────────────────┐ │
-│  │  MCP Server         │  │  HTTP API Server           │ │
-│  │  44 个工具           │  │  21 个端点                  │ │
-│  └─────────┬───────────┘  └──────────┬─────────────────┘ │
-└────────────┼─────────────────────────┼───────────────────┘
-             └──────────┬──────────────┘
-                        ▼
-┌──────────────────────────────────────────────────────────┐
-│                      核心引擎                             │
-│                                                           │
-│  ┌────────────┐  ┌────────────┐  ┌─────────────────────┐ │
-│  │ 检索器      │  │ 分类器      │  │ 上下文编排器         │ │
-│  │（向量 +     │  │（6 类分类） │  │（resume_context）   │ │
-│  │ BM25 + RRF）│  │            │  │                      │ │
-│  └────────────┘  └────────────┘  └──────────────────────┘ │
-│  ┌────────────┐  ┌────────────┐  ┌─────────────────────┐ │
-│  │ 衰减引擎    │  │ 冲突引擎    │  │ 捕获引擎             │ │
-│  │（Weibull） │  │（审计 +     │  │（evidence → durable）│ │
-│  │            │  │  合并）     │  │                      │ │
-│  └────────────┘  └────────────┘  └──────────────────────┘ │
-└──────────────────────────┬───────────────────────────────┘
-                           ▼
-┌──────────────────────────────────────────────────────────┐
-│                      存储层                               │
-│  ┌─────────────────────┐  ┌────────────────────────────┐ │
-│  │ LanceDB             │  │ Jina Embeddings v5         │ │
-│  │（向量 + 列式存储）   │  │（1024 维，任务感知）       │ │
-│  └─────────────────────┘  └────────────────────────────┘ │
-└──────────────────────────────────────────────────────────┘
-```
-
-### 内部设计
-
-- **L0 / L1 / L2 动态折叠** —— 每条记忆存储 3 个粒度层（一句话 / 要点概要 / 完整内容）；检索时根据相关性分数和 token 预算动态选择返回哪个层级
-- **Weibull 衰减 + 情绪调制** —— 记忆沿参数化 Weibull 曲线衰减；情绪显著性可额外延长半衰期最高 30%
-- **向量预筛 + LLM 去重** —— 90% 的去重决策用低成本余弦相似度（≥ 0.92）；仅临界情况调用 LLM 判断
-- **类别分化合并策略** —— `profile` 和 `preferences` 采用冲突合并（新版覆盖）；`events` 和 `cases` 采用追加（保留历史）
-- **展示分 vs 淘汰分双轨制** —— 检索使用双轨评分：tier floor 防止核心记忆被淘汰，decay boost 让新鲜记忆临时浮现而不永久挤掉稳定记忆
-
-> 完整架构详解：[`docs/architecture.md`](docs/architecture.md)
-
----
+一点诚实的说明：补集数的是*信号*，不是确认过的图片张数。一次生图可能同时留下调用和完成
+两条记录，被数成两张。这个方向是刻意选的——它要回答的是"这儿有没有东西可看"，而不是
+"到底几张"。
 
 ## 接口
 
@@ -565,6 +488,46 @@ bun run src/cli.ts doctor
 </details>
 
 ---
+
+## Web UI
+
+<p align="center">
+  <img src="assets/dashboard.png" alt="RecallNest Dashboard" width="800" />
+  <br><em>Dashboard —— 总量、类别分布、健康评分、增长趋势一目了然。</em>
+</p>
+
+<p align="center">
+  <img src="assets/screenshots/ui-full.png" alt="RecallNest Search Workbench" width="800" />
+  <br><em>Search Workbench —— 混合检索 + Topic Tag 过滤 + 4 套检索策略 + Skills 浏览 + 资产管理。</em>
+</p>
+
+<p align="center">
+  <img src="assets/knowledge-graph.png" alt="RecallNest Knowledge Graph" width="800" />
+  <br><em>Knowledge Graph —— 交互式力导向图，语义桥接揭示跨域隐藏关联。</em>
+</p>
+
+```bash
+bun run src/ui-server.ts
+# → http://localhost:4317
+```
+
+---
+
+## 最近更新
+
+**v3.0** 把运行时下限提到 **Node 22**（本次唯一的破坏性变更，Bun 用户不受影响），
+并给"合成出来的结论"开了一条通往稳定记忆的路：`dream` 产出的洞察现在可以凭它自己
+那套已验证的证据被提升，而不是永远卡在证据层、下游谁也不敢依赖。
+
+同批还修了一个限流回复引发的无限请求风暴——实测在一个正让我们慢下来的接口上
+五秒打了六万多次请求。它是被新加的 HTTP 契约测试抓出来的：那些测试让真实的客户端类
+去打一个本地回环服务，而不是把 SDK 打桩糊过去。
+
+已有的 LanceDB 数据原地打开，不需要导出导入。
+
+**完整变更历史（v3.0 到 v1.0，含每个版本的升级说明）在
+[CHANGELOG.md](CHANGELOG.md)。**
+
 
 ## 多语言支持
 
