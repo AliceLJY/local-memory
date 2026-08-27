@@ -26,7 +26,37 @@ A local-first memory system backed by LanceDB that turns scattered conversation 
 
 Coding agents forget everything between windows. Your context — project configs, debugging decisions, entity mappings — is scattered across Claude Code, Codex, Kimi, Antigravity — and every other terminal you open — with no shared memory.
 
-RecallNest solves this: **a single LanceDB-backed memory layer that your coding agents read and write**. Context stored in one window is auto-recalled in another. Sessions checkpoint on exit and resume on start. Memory decays, evolves, and self-organizes — not just raw log storage.
+RecallNest is **one LanceDB-backed memory layer that all of them read and write**. Context stored in one window is recalled in another. Sessions checkpoint on exit and resume on start. Memory decays, evolves, and self-organizes — it is not a log you grep.
+
+### What a recall actually looks like
+
+```text
+Query   : deploy rollback
+Hits    : 5
+
+#  ID       Score Category  Tier        Source  Date        Age  Retrieval Path
+1  ee79037a 46.1% cases     peripheral  cc      2026-08-25  2d   vector
+   [assistant] Rolled back to the previous image and pinned the digest so the next…
+   prov : evidence/transcript-ingest
+   imgs : 52 agent-made in this session · read sess=dca70d4a
+```
+
+Three things in that block carry most of the design:
+
+- **`Source cc` · `Age 2d`** — this came out of a Claude Code window two days ago and you
+  are reading it from a different terminal, possibly on a different machine. That is the
+  premise the whole project is built on.
+- **`prov : evidence/…`** — every row states which layer it sits on. A fragment scraped out
+  of a transcript never gets to pose as a decision you actually made; moving to durable
+  memory is a separate, gated step with its own evidence requirement.
+- **`imgs : …`** — that session contained 52 images. **Not one of them is in the database.**
+  The line exists so you know there is something to go look at, and producing it cost no
+  model call, no vector, and no storage.
+
+That last one is the approach in miniature: **store what makes a thing findable, not
+everything that could ever be asked about it.** The full reasoning — including the two
+places where the obvious implementation was wrong — is in
+[Images: addressable, not embedded](#images-addressable-not-embedded).
 
 
 ## Who Can Connect
@@ -248,222 +278,99 @@ bun run src/ui-server.ts
 ## Images: addressable, not embedded
 
 Conversations contain images. A text memory layer does not. The usual answer is a
-multimodal embedding model — encode every image into the same vector space as the text
-and search across both. That answer is correct for photo libraries and product catalogs.
-It is the wrong shape for conversational memory, and the reason is cheap to state:
-
-**In a conversation, an image almost never arrives alone.** It arrives wrapped in
-"look at this error" — and the assistant's reply right after it usually describes what
-was in the picture. The words around the image are already an index of the image. What
-was missing was never semantic search over pixels; it was knowing that a picture is
-sitting there at all.
+multimodal embedding model — encode every image into the same space as the text. That is
+right for photo libraries. It is the wrong shape here, for a cheap reason: **in a
+conversation an image almost never arrives alone.** It comes wrapped in "look at this
+error", and the reply right after it usually describes what was in the picture. The words
+around the image are already an index of it. What was missing was never semantic search
+over pixels — it was knowing a picture is sitting there at all.
 
 So RecallNest does not encode images. It records **how many images are in the session a
-memory came from**, and lets you decide whether to go read the original transcript. The
-image's meaning is resolved on demand, by whatever model is asking, at the moment it
-matters — not precomputed for every image on the chance that someone asks later.
+memory came from**, and lets you decide whether to open the original transcript. Meaning
+is resolved on demand, by whatever model is asking, at the moment it matters.
 
-The cost of this is worth being concrete about: **no multimodal model, no re-embedding of
-existing memories, no image storage, no change to any vector.** The marker is one integer
-per class in metadata. Backfilling 21,319 existing memories touched metadata only and cost
-nothing but a table scan.
+The cost is worth stating plainly: **no multimodal model, no re-embedding, no image
+storage, no change to any vector.** Backfilling 21,319 existing memories touched metadata
+only.
+
+Two design choices in it were not obvious, and both were wrong on the first attempt.
 
 ### Session-level, on purpose
 
-The marker counts the whole session, not the individual turn — which is coarser than it
-first looks like it should be, and the coarseness is the point.
+The marker counts the whole session, not the turn — coarser than it first looks like it
+should be, and the coarseness is the point.
 
 A turn that is nothing but a pasted screenshot has almost no text, so it never cleared the
-length gate and never entered the store at all. Measured on real transcripts, **12.5% of
-turns containing a user-pasted image were dropped whole** — including the ones that matter
-most, like seven screenshots with no caption, or "here are the steps" attached to a picture
-that *is* the steps. A turn-level marker has nowhere to attach for exactly the images most
-worth finding. A session-level marker lands on that session's *other* memories, which did
-get stored, and those are what a search will surface.
+length gate and never entered the store. Measured on real transcripts, **12.5% of turns
+containing a pasted image were dropped whole** — including the ones worth the most, like
+seven screenshots with no caption, or "here are the steps" attached to a picture that *is*
+the steps. A turn-level marker has nothing to attach to for exactly those. A session-level
+marker lands on that session's *other* memories, which did get stored, and those are what
+a search surfaces.
 
-The trade-off is real and undisguised: every memory from a session carries the same count,
-so the images may have nothing to do with the specific result you are looking at. The line
-says `same session`, not `this memory`, for that reason.
+The trade-off is undisguised: every memory from a session carries the same count, so the
+images may have nothing to do with the row you are looking at. The line says
+`in this session`, not `in this memory`, for that reason.
 
 ### Two classes, because they answer different questions
 
-Images are counted in two buckets, and never merged:
-
 | Bucket | What it is | The question it answers |
 |---|---|---|
-| `sessionImages` | Pictures the human pasted into a message | *Where is that screenshot I sent?* |
-| `sessionToolImages` | Everything else the session produced | *What did the page look like then? What image did I generate?* |
+| user-pasted | Pictures a human put into a message | *Where is that screenshot I sent?* |
+| agent-made | Everything else the session produced | *What did the page look like? What did I generate?* |
 
-It is tempting to keep only the first — a person searching their memory wants their own
-screenshots. But an agent reconstructing its own past work wants the other one: the
-diagram it drew, the rendering it captured, the illustration it made for an article.
-**Of 1,767 sessions carrying images, 1,103 contain no human-pasted image at all.** Keep
-only the first bucket and those sessions are silent — precisely the sessions where the
-agent did visual work.
+Keeping only the first is tempting — a person searching their own memory wants their own
+screenshots. But an agent reconstructing its past work wants the other: the diagram it
+drew, the rendering it captured, the illustration it made for a post. **Of 1,767 sessions
+carrying images, 1,103 contain no human-pasted image at all.** Keep one bucket and those
+sessions go silent — precisely the ones where the agent did visual work.
 
 ### The second bucket is a complement, not a list
 
-Here is the part that took a correction to get right. The first implementation defined
-AI-produced images by enumeration: images inside `tool_result`, inside `payload.output`,
-inside `tool.result`. Every one of those is a real location. The list was still wrong,
-because **the set of ways an image can appear only grows** — screenshots, file reads,
-model generation, illustrations produced while drafting a post — and an enumeration
+The first implementation defined agent-made images by enumeration: inside `tool_result`,
+inside `payload.output`, inside `tool.result`. Every location was real. The list was still
+wrong, because **the set of ways an image can appear only grows**, and an enumeration
 silently drops whatever it did not anticipate.
 
-So the second bucket is defined as a complement: count every image signal in the record,
-subtract the ones positively identified as human-pasted, and attribute the remainder
-without asking where it came from.
-
-The difference is not academic. Across 9,619 transcripts:
+So the second bucket is a complement: count every image signal in the record, subtract the
+ones positively identified as human-pasted, attribute the rest without asking where it came
+from. Across 9,619 transcripts:
 
 | | Enumerated | Complement |
 |---|---|---|
-| AI-produced images | 5,812 | **10,938** |
+| Agent-made images | 5,812 | **10,938** |
 | Sessions with any image | 1,507 | **1,767** |
 | Human-pasted images | 1,629 | 1,629 |
 
-**The enumeration missed 5,126 images and 376 sessions** — nearly half. The largest single
-class it dropped was image *generation*, which lives in neither of the two containers the
-list knew about. Human-pasted counts are identical under both definitions, which is the
-check that matters: widening the second bucket did not contaminate the precise one.
+**The enumeration missed 5,126 images and 376 sessions** — nearly half. The largest class
+it dropped was image *generation*, which lives in neither container the list knew about.
+Human-pasted counts are identical under both definitions, which is the check that matters:
+widening the second bucket did not contaminate the precise one. A regression test feeds the
+parser an `image_generation_call` — a shape the source never names — and asserts it lands
+in the second bucket; under the enumerated implementation that test fails.
 
-A regression test pins this. It feeds the parser an `image_generation_call` — a shape the
-source code never names — and asserts it lands in the second bucket. Under the enumerated
-implementation that test fails.
+One caveat: the complement counts *signals*, not certified pictures. A single generation can
+leave both a call and a completion record and be counted twice. That direction was chosen
+deliberately — the question is "is there anything here to look at", not "exactly how many".
 
-One honest caveat: the complement counts *signals*, not certified pictures. A single
-generation can leave both a call and a completion record and be counted twice. That
-direction was chosen deliberately, because the question is "is there anything here to look
-at" rather than "exactly how many."
 
-## New in v3.0: A Supported Runtime, and Conclusions That Can Be Used
+## What's new
 
-v3.0 is a major release for one reason that shows up on install and one that shows up in
-how memory behaves.
+**v3.0** raised the runtime floor to **Node 22** (the only breaking change — Bun users are
+unaffected) and gave synthesized conclusions a road into stable memory: a `dream` insight
+can now be promoted on the strength of its own validated evidence set, instead of being
+permanently stuck on the evidence layer where nothing downstream could lean on it.
 
-**The runtime boundary moved to Node 22.** RecallNest had been carrying `openai@4`, which
-pulls in the deprecated `formdata-node` → `node-domexception` chain. Every `openai` release
-since v5 has zero dependencies, so the chain disappears on any upgrade — but v7 declares
-`engines.node >= 22.0.0`, which makes "raise the Node floor" and "move off a deprecated
-dependency chain" the same piece of work rather than two. `engines.node` is now `>=22`.
-This is the breaking part of the major.
+It also fixed a rate-limit reply that could trigger an unbounded request storm — measured
+at over 61,000 requests in five seconds against an endpoint asking us to slow down. Found
+by the new HTTP contract tests, which drive the real client classes against a loopback
+server instead of stubbing the SDK.
 
-**A synthesized conclusion can now reach stable memory.** `dream` writes cluster insights
-and cross-memory patterns on the evidence layer deliberately — a model re-reading its own
-memories is a lead to its sources, not authority over them — but stable-memory selection
-refuses the evidence layer outright. The consequence was absolute: no matter how well
-supported a synthesized conclusion was, nothing downstream could lean on it. `promote_synthesis`
-(MCP) and `recallnest promote-synthesis` (CLI) give it a road, gated on the conclusion's own
-validated evidence set rather than on repetition, because a synthesis is already a
-cross-entry aggregate. The synthesized row is never modified; promotion writes a separate
-durable entry carrying `promotedFrom` back to it, through the same path and the same
-`canonicalKey` dedup as every other promotion.
+Existing LanceDB data opens in place; there is no export or import step.
 
-Also in this release:
+**Full history — v3.0 through v1.0, with the upgrade notes for each — is in
+[CHANGELOG.md](CHANGELOG.md).**
 
-- **Retrieve audit rows say what was served.** They used to record the query and a hit
-  count. Because beliefs are revised in place — the id stays, the version increments, the
-  old text survives as a `superseded` row — "memory X was retrieved" was ambiguous across
-  every belief change. Rows now carry each result's id, revision, lifecycle status, and
-  boundary. The list is capped, and a capped list says so.
-- **HTTP contract tests for embeddings and chat completions.** Every previous test stubbed
-  the SDK client, so nothing exercised a socket, and a transport-level regression would
-  have passed all of them. These drive the real classes through the real SDK against a
-  loopback server, covering success, error, and timeout for the default OpenAI shape plus
-  the Jina and Qwen-compatible profiles. No network egress, no vendor credentials.
-- **Fixed: a rate-limit reply could trigger an unbounded request storm.** Found by those
-  tests. The embedder retried a context-length error by chunking, the chunker returns short
-  text unchanged, and the gate that decided "this is a context error" also matched
-  rate-limit wording — so a 429 re-embedded the same text forever. Measured at over 61,000
-  requests in five seconds against an endpoint asking us to slow down. Failure is bounded now.
-- **A known recall gap is now a runnable regression.** A memory that is long, older, and
-  rarely read can fail to be recalled by words copied out of its own body, while short,
-  fresh, frequently-read entries outrank it. It is a ranking problem, not a filtering one —
-  the entry clears every threshold and then places last. The reproduction is checked in; the
-  ranking fix is not in this release.
-- **44 MCP tools** across three tiers, up from 43.
-
-### Upgrading from v2.6
-
-- **Node 22 or newer is required.** Bun users are unaffected. This is the only breaking
-  change in the release.
-- Existing LanceDB data is opened in place. No export or import step.
-- `promote_synthesis` defaults to dry-run and writes nothing until `dryRun=false`.
-- `audit.jsonl` rows for retrievals are larger now that they list what was served. Rotation
-  is still manual; archive it if it approaches 50 MB.
-
-### A note on npm history
-
-`recallnest@2.6.1` on npm was a maintenance release published before Trusted Publishing was
-configured for this package, so it carries no build provenance. That is a fact about how it
-was published, not a defect in the package, and it is not retroactively fixable — the same
-npm version cannot be republished to add provenance.
-
----
-
-## New in v2.6: Reliable Cross-Process Memory and Distribution
-
-v2.6 turns the development since v2.5.4 into a release-ready upgrade:
-
-- **Cross-process visibility** — LanceDB now checks for external commits on every read by default, so resident MCP/API/UI processes see writes from CLI ingestion without a restart. Set `RECALLNEST_READ_CONSISTENCY_INTERVAL=<seconds>` for bounded staleness or `off` for the legacy unchecked behavior.
-- **Safer memory evolution** — belief changes preserve the old row as `superseded`; procedural memories avoid time decay; cold-start and length-normalization behavior no longer suppress short entity queries or stable memories.
-- **More reliable consolidation** — `dream` now distinguishes failure classes, honors wall-clock budgets, refills vectors before semantic clustering, and asserts that successful runs actually produced work.
-- **Broader conversation coverage** — Kimi, AGY/Antigravity, and minis sources are recognized across ingestion, scope boundaries, and term resolution.
-- **One public version** — npm metadata, CLI `--version`, MCP handshakes, HTTP health responses, and the Claude Code marketplace all follow the `2.6.0` release contract.
-- **Installable Claude Code plugin** — installation now registers the 43-tool MCP server and continuity skill, asks for the Jina key through sensitive plugin configuration, and keeps config plus LanceDB data in Claude Code's persistent plugin data directory.
-
-### Upgrading from v2.5.4
-
-- Existing LanceDB data is opened in place. Legacy tables missing newer fields are migrated automatically, including empty tables.
-- Plugin data survives plugin updates because it is stored outside the versioned cache. A manual clone continues to use its existing `config.json` and database path.
-- Retrieval auditing now includes read operations. `audit.jsonl` has no automatic rotation yet; consider archiving it if it approaches 50 MB.
-- `RECALLNEST_LAYER_ADMISSION` remains opt-in (`observe` or `on`); the default is `off`.
-
----
-
-## New in v2.1: Philosophy-Informed Memory
-
-v2.0 built the operational memory platform; v2.1 added philosophy-informed memory behavior.
-
-Five upgrades derived from 9 research dimensions in philosophy of memory, each mapped to concrete engineering:
-
-- **Emotion-Aware Decay** *(Affective Memory Theory)* — Memories with strong emotional content decay 20-30% slower. Keyword-based emotion detection computes `salience` (mnemonic significance), which feeds into the Weibull half-life formula and a rebalanced 4-factor evolution score. Zero LLM cost.
-
-- **Memory Ethics Layer** *(Right to Be Forgotten / GDPR Art. 17)* — Four privacy tiers (`ephemeral` / `private` / `durable` / `shared`). Cascade forgetting engine that propagates deletion through KG triples, evolution chains, pin assets, and briefs. Full audit trail. `forget_memory` MCP tool for agent-driven deletion.
-
-- **Autobiographical Narrative** *(Narrative Identity Theory / Conway's 3-layer model)* — Memories are tagged with `lifePeriod → generalEvent → specificEvent` hierarchy, orthogonal to existing 6 categories. Retrieval pulls narrative siblings. Context rendering groups by life period. Rule-based tagger with EN+CN support.
-
-- **Constructive Retrieval** *(Simulation Theory / Michaelian)* — Instead of returning raw stored text, RecallNest now reconstructs context from an expanded candidate set: KG neighbors + evolution chains + cluster members + narrative siblings. Source-map grounded coverage replaces lexical overlap. Contradictions are detected and flagged.
-
-- **Predictive Prospective Memory** *(Mental Time Travel / Tulving)* — Heuristic prediction engine that surfaces "you might need this" reminders from behavioral signals: stale checkpoint open loops, corrected workflow observations, high-frequency dormant memories, and uncovered query topics. Zero LLM cost. Auto-expire in 7 days if unaccepted.
-
----
-
-## New in v2.2: Retrieval Quality Hardening
-
-v2.1 added philosophy-informed behavior; v2.2 closes the last three engine-layer gaps identified by a frontier research scan (ACC, PI-LLM, TSM).
-
-- **Memory Confidence Meta-tags** *(ACC / Dual-Process UQ)* — Each memory now carries structured `ConfidenceMetadata` (score, reliability tier: `direct` / `inferred` / `hearsay`). Auto-assigned from source on write (`manual` = 0.9, `agent` = 0.7, `conversation_import` = 0.5). Retrieval scores are weighted by confidence. `resume_context` tags low-confidence items with `[低置信]`.
-
-- **Interference Detection + Active Forgetting Gate** *(PI-LLM / SleepGate)* — Semantic cluster detection identifies groups of near-duplicate memories competing for retrieval. Enhanced RIF keeps only top-K (default 3) per cluster; extras are demoted 50% instead of removed. Write-time pre-warning: when a scope accumulates ≥5 high-similarity active memories, the weakest is flagged `pending_review`. `data_checkup` reports interference density.
-
-- **Temporal Validity Windows** *(TSM / TiMem / Zep)* — `store_memory` accepts `validUntil` (expiration) and `eventTime` (when the event actually happened). `search_memory` supports `validAt` (point-in-time query) and `includeExpired` (demote 80% instead of hide). Auto-GC applies 2× decay acceleration to expired memories.
-
-- **Usage-Adjusted Auto-GC** *(off by default)* — `RECALLNEST_USAGE_DECAY=true` enables a GC-only cold-memory penalty when constructive retrieval is also active. Cold memories discount the frequency component instead of changing online retrieval ranking.
-
----
-
-## New in v2.3: Connector Ecosystem + Source Health
-
-v2.2 hardened retrieval quality; v2.3 opens RecallNest to external data sources with a standard connector framework and operational health monitoring.
-
-- **Connector-v1 Standard** *(GB-2)* — A JSON format (`ConnectorOutputV1`) that any external script can produce. Obsidian vaults, emails, RSS feeds, log files — normalize once, ingest through the full dedup/embed/extract pipeline. See [`docs/connector-spec.md`](docs/connector-spec.md) for the specification and [`connectors/examples/`](connectors/examples/) for adapter skeletons (email, logs, RSS).
-
-- **Obsidian Vault Ingestion** *(GB-1)* — First-party Obsidian connector: scans `.md` files, extracts frontmatter + wikilinks, maps folder structure to tags. One command: `lm ingest --obsidian /path/to/vault`.
-
-- **Source Health Monitoring** *(GB-3)* — Every connector ingest writes a heartbeat to `data/source-heartbeat.json`. `data_checkup` flags stale sources (>7d warning, >30d error). `doctor --ci` shows a per-source heartbeat summary with human-readable age.
-
----
 
 ## Architecture
 

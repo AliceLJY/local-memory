@@ -106,12 +106,13 @@ function formatSessionImages(result: RetrievalResult): string | null {
 
   // 两类分开报，因为它们答的是不同的问题：找「我发过的那张截图」看前者，
   // 回溯「我当时生成的图 / 那个页面当时的样子」看后者。
+  // 措辞用英文，与同一块里的 prov / fresh 行保持一致（这个输出面是英文的）。
   const parts: string[] = [];
-  if (own > 0) parts.push(`用户贴图 ${own} 张`);
-  if (tool > 0) parts.push(`AI 产图 ${tool} 张`);
+  if (own > 0) parts.push(`${own} user-pasted`);
+  if (tool > 0) parts.push(`${tool} agent-made`);
   const sess = typeof meta.sessionId === "string" ? meta.sessionId.slice(0, 8) : "?";
 
-  return `同 session ${parts.join(" / ")} · 回 Deja 读 sess=${sess}`;
+  return `${parts.join(", ")} in this session · read sess=${sess}`;
 }
 
 function getProvenanceSummary(result: RetrievalResult): string {

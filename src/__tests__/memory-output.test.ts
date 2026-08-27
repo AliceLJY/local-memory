@@ -240,10 +240,10 @@ describe("memory output — session 级图片标记", () => {
     );
 
     expect(output).toContain("imgs :");
-    expect(output).toContain("7 张");
+    expect(output).toContain("7 user-pasted");
     expect(output).toContain("sess=05a9a168");
     // 措辞要说清这是 session 级、未必属于本条，否则读的人会当成「这条有图」
-    expect(output).toContain("同 session");
+    expect(output).toContain("in this session");
   });
 
   // AI 产图单独成一类：它答的是「我当时生成的图 / 页面当时什么样」，
@@ -262,8 +262,8 @@ describe("memory output — session 级图片标记", () => {
     );
 
     expect(output).toContain("imgs :");
-    expect(output).toContain("AI 产图 23 张");
-    expect(output).not.toContain("用户贴图");
+    expect(output).toContain("23 agent-made");
+    expect(output).not.toContain("user-pasted");
   });
 
   // 反向断言：无图记忆不该多出这一行，否则就是给所有记忆添噪音

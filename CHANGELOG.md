@@ -349,6 +349,49 @@ P0 反馈闭环：让 skill 的 `successCount` / `failureCount` 真有真实使�
 
 - 基线 1486 → 1520 / 0 fail（+13 新 case 覆盖 outcome 映射 + 错误路径 + 元数据完整性 + 时间戳；+1 顺手修 workflow-observation.test.ts dashboard 漏传 now 参数 pre-existing bug）
 
+## v2.3 — Connector ecosystem + source health
+
+> Migrated out of README on 2026-08-28. These three entries lived in the README as
+> "New in vX" sections and were never in this file; release dates were not recorded at
+> the time, so none is stated here rather than guessed. They sit between v2.5.0-pre
+> (2026-05-27) and v1.3.1 (2026-03-12) by position in the sequence.
+
+v2.2 hardened retrieval quality; v2.3 opens RecallNest to external data sources with a standard connector framework and operational health monitoring.
+
+- **Connector-v1 Standard** *(GB-2)* — A JSON format (`ConnectorOutputV1`) that any external script can produce. Obsidian vaults, emails, RSS feeds, log files — normalize once, ingest through the full dedup/embed/extract pipeline. See [`docs/connector-spec.md`](docs/connector-spec.md) for the specification and [`connectors/examples/`](connectors/examples/) for adapter skeletons (email, logs, RSS).
+
+- **Obsidian Vault Ingestion** *(GB-1)* — First-party Obsidian connector: scans `.md` files, extracts frontmatter + wikilinks, maps folder structure to tags. One command: `lm ingest --obsidian /path/to/vault`.
+
+- **Source Health Monitoring** *(GB-3)* — Every connector ingest writes a heartbeat to `data/source-heartbeat.json`. `data_checkup` flags stale sources (>7d warning, >30d error). `doctor --ci` shows a per-source heartbeat summary with human-readable age.
+
+## v2.2 — Retrieval quality hardening
+
+v2.1 added philosophy-informed behavior; v2.2 closes the last three engine-layer gaps identified by a frontier research scan (ACC, PI-LLM, TSM).
+
+- **Memory Confidence Meta-tags** *(ACC / Dual-Process UQ)* — Each memory now carries structured `ConfidenceMetadata` (score, reliability tier: `direct` / `inferred` / `hearsay`). Auto-assigned from source on write (`manual` = 0.9, `agent` = 0.7, `conversation_import` = 0.5). Retrieval scores are weighted by confidence. `resume_context` tags low-confidence items with `[低置信]`.
+
+- **Interference Detection + Active Forgetting Gate** *(PI-LLM / SleepGate)* — Semantic cluster detection identifies groups of near-duplicate memories competing for retrieval. Enhanced RIF keeps only top-K (default 3) per cluster; extras are demoted 50% instead of removed. Write-time pre-warning: when a scope accumulates ≥5 high-similarity active memories, the weakest is flagged `pending_review`. `data_checkup` reports interference density.
+
+- **Temporal Validity Windows** *(TSM / TiMem / Zep)* — `store_memory` accepts `validUntil` (expiration) and `eventTime` (when the event actually happened). `search_memory` supports `validAt` (point-in-time query) and `includeExpired` (demote 80% instead of hide). Auto-GC applies 2× decay acceleration to expired memories.
+
+- **Usage-Adjusted Auto-GC** *(off by default)* — `RECALLNEST_USAGE_DECAY=true` enables a GC-only cold-memory penalty when constructive retrieval is also active. Cold memories discount the frequency component instead of changing online retrieval ranking.
+
+## v2.1 — Philosophy-informed memory
+
+v2.0 built the operational memory platform; v2.1 added philosophy-informed memory behavior.
+
+Five upgrades derived from 9 research dimensions in philosophy of memory, each mapped to concrete engineering:
+
+- **Emotion-Aware Decay** *(Affective Memory Theory)* — Memories with strong emotional content decay 20-30% slower. Keyword-based emotion detection computes `salience` (mnemonic significance), which feeds into the Weibull half-life formula and a rebalanced 4-factor evolution score. Zero LLM cost.
+
+- **Memory Ethics Layer** *(Right to Be Forgotten / GDPR Art. 17)* — Four privacy tiers (`ephemeral` / `private` / `durable` / `shared`). Cascade forgetting engine that propagates deletion through KG triples, evolution chains, pin assets, and briefs. Full audit trail. `forget_memory` MCP tool for agent-driven deletion.
+
+- **Autobiographical Narrative** *(Narrative Identity Theory / Conway's 3-layer model)* — Memories are tagged with `lifePeriod → generalEvent → specificEvent` hierarchy, orthogonal to existing 6 categories. Retrieval pulls narrative siblings. Context rendering groups by life period. Rule-based tagger with EN+CN support.
+
+- **Constructive Retrieval** *(Simulation Theory / Michaelian)* — Instead of returning raw stored text, RecallNest now reconstructs context from an expanded candidate set: KG neighbors + evolution chains + cluster members + narrative siblings. Source-map grounded coverage replaces lexical overlap. Contradictions are detected and flagged.
+
+- **Predictive Prospective Memory** *(Mental Time Travel / Tulving)* — Heuristic prediction engine that surfaces "you might need this" reminders from behavioral signals: stale checkpoint open loops, corrected workflow observations, high-frequency dormant memories, and uncovered query topics. Zero LLM cost. Auto-expire in 7 days if unaccepted.
+
 ## v1.3.1 — Upstream Sync (2026-03-12)
 
 Synced with [CortexReach/memory-lancedb-pro](https://github.com/CortexReach/memory-lancedb-pro) master (v1.1.0-beta.6+).
