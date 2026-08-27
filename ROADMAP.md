@@ -44,6 +44,7 @@ What matters first is this: opening another window should not erase stable conte
 - Explicit evidence -> durable promotion with provenance and `canonicalKey`
 - Automatic promotion scans: recurring downgraded evidence, and synthesized conclusions gated on their own validated evidence set
 - Retrieve audit rows carry the revision and provenance of every result served
+- Images are addressable without being embedded: each memory carries how many images its session held, counted separately for human-pasted and agent-made, so a recall says there is something to go look at without a multimodal model, a new vector, or any image storage
 - Conflict candidates, review, audit, escalation, merge resolution, and audit export
 - Session Distiller: 3-layer conversation compression to durable memory
 - Conversation import from Claude Code, Claude.ai, ChatGPT, Slack, and plaintext

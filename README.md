@@ -59,6 +59,95 @@ places where the obvious implementation was wrong — is in
 [Images: addressable, not embedded](#images-addressable-not-embedded).
 
 
+## Core Capabilities
+
+### Access & Setup
+
+| Capability | Description |
+|---|---|
+| **CC Plugin** | Install in Claude Code with one command — no manual config |
+| **Shared Index** | One LanceDB store shared by every terminal that speaks MCP |
+| **Dual Interface** | MCP (stdio) for CLI tools + HTTP API for custom agents |
+| **One-Click Setup** | Integration scripts install MCP access and continuity rules |
+
+### Recall & Continuity
+
+| Capability | Description |
+|---|---|
+| **Hybrid Retrieval** | 6-channel: vector + BM25 + L0/L1/L2 multi-vector + KG graph (PPR) |
+| **4 Retrieval Profiles** | default, writing, debug, fact-check — tuned for different tasks |
+| **Session Continuity** | `checkpoint_session` + `resume_context` (full/light/summary modes) with repo-state guard |
+| **Session Distiller** | 3-layer conversation compression: microcompact → LLM summary → knowledge extraction |
+| **Conversation Import** | Import from Claude Code, Claude.ai, ChatGPT, Slack, and plaintext |
+| **Topic Tags** | Intra-scope topic partitioning — auto-detected, filterable in search |
+| **Related Scope Sidecar** | Opt-in `includeRelatedScopes` search over configured `scopeRelations`, shown separately from the main scoped ranking |
+
+### Memory Lifecycle & Governance
+
+| Capability | Description |
+|---|---|
+| **Memory Evolution** | Supersede chains, decay scoring, LLM importance, consolidation, archival |
+| **Smart Promotion** | Evidence → durable memory with conflict guards, merge resolution, and audit trail |
+| **Privacy Tiers** | 4-tier (`ephemeral` / `private` / `durable` / `shared`) with cascade forgetting |
+| **Admission Control** | Write-time gating: noise filter, importance floor, dedup, rate limiting |
+| **Memory Lint** | Contradiction, duplicate, stale, and orphan detection with health score |
+| **Offline Consolidation** | `dream` command: clustering, merging, pruning of accumulated memories |
+
+### Reasoning & Structure
+
+| Capability | Description |
+|---|---|
+| **Knowledge Graph** | Entity relation graph with PPR algorithm for multi-hop questions |
+| **Constructive Retrieval** | Multi-source candidate expansion + grounded context reconstruction |
+| **Narrative Architecture** | 3-layer autobiographical metadata (life-period → general-event → specific-event) |
+| **Skill Memory** | Store, retrieve, and promote executable skills from recurring patterns |
+| **Predictive Reminders** | Behavioral-signal prediction engine surfaces "you might need this" suggestions |
+| **6 Categories** | profile, preferences, entities, events, cases, patterns — with category-aware merge strategies |
+
+### Visibility & Operations
+
+| Capability | Description |
+|---|---|
+| **Dashboard** | Web UI with stats, category distribution, growth trends, and health |
+| **Workflow Observation** | Dedicated append-only workflow health records, outside regular memory |
+| **Structured Assets** | Pins, briefs, and distilled summaries — not just raw logs |
+| **Data Checkup** | Data quality health checks on the memory store (including source health) |
+| **Source Heartbeats** | Automatic ingest health tracking per data source with staleness alerts |
+| **Export Graph** | Export interactive HTML knowledge graph visualization |
+| **Batch Operations** | Store up to 20 memories in a single call with dedup |
+| **Connector Framework** | Standard connector-v1 format for external data sources with example adapters |
+
+---
+
+## Architecture
+
+```
+  CLIENTS                    ACCESS                      CORE ENGINE                    STORAGE
+  ──────────────────────     ───────────────────────     ────────────────────────────   ──────────────────────
+
+  Claude Code                MCP over stdio              Retriever                      LanceDB
+  Codex                ───▶  44 tools, 3 tiers    ───▶   vector + BM25 + RRF     ───▶   vector + columnar
+  Kimi · Antigravity                                     Classifier · 6 categories
+  Doubao desktop                                         Context composer
+                             HTTP API :4318              resume_context                 Jina embeddings v5
+  your scripts · cron  ───▶  21 endpoints          ───▶  Decay · Weibull half-life ─▶   1024-dim, task-aware
+                                                         Conflict · audit + merge
+  phone app            ───▶  read-only gateway     ───▶  Capture: evidence → durable
+                             :8791, token-gated
+```
+
+### Internal Design
+
+- **L0 / L1 / L2 Dynamic Folding** — every memory stores 3 granularity layers (one-liner / bullet summary / full content); retrieval dynamically selects which layer to return based on relevance score and token budget
+- **Weibull Decay + Emotion Modulation** — memories decay along a parametric Weibull curve; importance scores modulate the half-life, and emotional salience extends it further (up to 30%)
+- **Vector Pre-filter + LLM Dedup** — 90% of dedup decisions use cheap cosine similarity (>= 0.92); only borderline cases invoke LLM judgment, keeping costs low without sacrificing accuracy
+- **Category-Aware Merge Strategies** — `profile` and `preferences` use merge-on-conflict (latest wins); `events` and `cases` use append-only (history preserved)
+- **Display Score vs Elimination Score** — dual-track retrieval: tier floor prevents core memories from ever dropping out, while decay boost lets fresh memories surface temporarily without permanently displacing stable ones
+
+> Full architecture deep-dive: [`docs/architecture.md`](docs/architecture.md)
+
+---
+
 ## Who Can Connect
 
 **The data layer does not know what your client looks like.** RecallNest exposes the same LanceDB store through three outlets, so the right one is picked per client — not per protocol.
@@ -191,90 +280,6 @@ bun run src/cli.ts doctor
 
 ---
 
-## Web UI
-
-<p align="center">
-  <img src="assets/dashboard.png" alt="RecallNest Dashboard" width="800" />
-  <br><em>Dashboard — total count, category distribution, health score, and growth trends at a glance.</em>
-</p>
-
-<p align="center">
-  <img src="assets/screenshots/ui-full.png" alt="RecallNest Search Workbench" width="800" />
-  <br><em>Search Workbench — hybrid search with topic tag filtering, 4 retrieval profiles, Skills browser, and asset management.</em>
-</p>
-
-<p align="center">
-  <img src="assets/knowledge-graph.png" alt="RecallNest Knowledge Graph" width="800" />
-  <br><em>Knowledge Graph — interactive force-directed visualization with semantic bridges revealing cross-domain connections.</em>
-</p>
-
-```bash
-bun run src/ui-server.ts
-# → http://localhost:4317
-```
-
----
-
-## Core Capabilities
-
-### Access & Setup
-
-| Capability | Description |
-|---|---|
-| **CC Plugin** | Install in Claude Code with one command — no manual config |
-| **Shared Index** | One LanceDB store shared by every terminal that speaks MCP |
-| **Dual Interface** | MCP (stdio) for CLI tools + HTTP API for custom agents |
-| **One-Click Setup** | Integration scripts install MCP access and continuity rules |
-
-### Recall & Continuity
-
-| Capability | Description |
-|---|---|
-| **Hybrid Retrieval** | 6-channel: vector + BM25 + L0/L1/L2 multi-vector + KG graph (PPR) |
-| **4 Retrieval Profiles** | default, writing, debug, fact-check — tuned for different tasks |
-| **Session Continuity** | `checkpoint_session` + `resume_context` (full/light/summary modes) with repo-state guard |
-| **Session Distiller** | 3-layer conversation compression: microcompact → LLM summary → knowledge extraction |
-| **Conversation Import** | Import from Claude Code, Claude.ai, ChatGPT, Slack, and plaintext |
-| **Topic Tags** | Intra-scope topic partitioning — auto-detected, filterable in search |
-| **Related Scope Sidecar** | Opt-in `includeRelatedScopes` search over configured `scopeRelations`, shown separately from the main scoped ranking |
-
-### Memory Lifecycle & Governance
-
-| Capability | Description |
-|---|---|
-| **Memory Evolution** | Supersede chains, decay scoring, LLM importance, consolidation, archival |
-| **Smart Promotion** | Evidence → durable memory with conflict guards, merge resolution, and audit trail |
-| **Privacy Tiers** | 4-tier (`ephemeral` / `private` / `durable` / `shared`) with cascade forgetting |
-| **Admission Control** | Write-time gating: noise filter, importance floor, dedup, rate limiting |
-| **Memory Lint** | Contradiction, duplicate, stale, and orphan detection with health score |
-| **Offline Consolidation** | `dream` command: clustering, merging, pruning of accumulated memories |
-
-### Reasoning & Structure
-
-| Capability | Description |
-|---|---|
-| **Knowledge Graph** | Entity relation graph with PPR algorithm for multi-hop questions |
-| **Constructive Retrieval** | Multi-source candidate expansion + grounded context reconstruction |
-| **Narrative Architecture** | 3-layer autobiographical metadata (life-period → general-event → specific-event) |
-| **Skill Memory** | Store, retrieve, and promote executable skills from recurring patterns |
-| **Predictive Reminders** | Behavioral-signal prediction engine surfaces "you might need this" suggestions |
-| **6 Categories** | profile, preferences, entities, events, cases, patterns — with category-aware merge strategies |
-
-### Visibility & Operations
-
-| Capability | Description |
-|---|---|
-| **Dashboard** | Web UI with stats, category distribution, growth trends, and health |
-| **Workflow Observation** | Dedicated append-only workflow health records, outside regular memory |
-| **Structured Assets** | Pins, briefs, and distilled summaries — not just raw logs |
-| **Data Checkup** | Data quality health checks on the memory store (including source health) |
-| **Source Heartbeats** | Automatic ingest health tracking per data source with staleness alerts |
-| **Export Graph** | Export interactive HTML knowledge graph visualization |
-| **Batch Operations** | Store up to 20 memories in a single call with dedup |
-| **Connector Framework** | Standard connector-v1 format for external data sources with example adapters |
-
----
-
 ## Images: addressable, not embedded
 
 Conversations contain images. A text memory layer does not. The usual answer is a
@@ -353,83 +358,6 @@ One caveat: the complement counts *signals*, not certified pictures. A single ge
 leave both a call and a completion record and be counted twice. That direction was chosen
 deliberately — the question is "is there anything here to look at", not "exactly how many".
 
-
-## What's new
-
-**v3.0** raised the runtime floor to **Node 22** (the only breaking change — Bun users are
-unaffected) and gave synthesized conclusions a road into stable memory: a `dream` insight
-can now be promoted on the strength of its own validated evidence set, instead of being
-permanently stuck on the evidence layer where nothing downstream could lean on it.
-
-It also fixed a rate-limit reply that could trigger an unbounded request storm — measured
-at over 61,000 requests in five seconds against an endpoint asking us to slow down. Found
-by the new HTTP contract tests, which drive the real client classes against a loopback
-server instead of stubbing the SDK.
-
-Existing LanceDB data opens in place; there is no export or import step.
-
-**Full history — v3.0 through v1.0, with the upgrade notes for each — is in
-[CHANGELOG.md](CHANGELOG.md).**
-
-
-## Architecture
-
-```
-┌──────────────────────────────────────────────────────────┐
-│                     Client Layer                          │
-├──────────┬──────────┬──────────┬──────────────────────────┤
-│ Claude   │ Anti-    │ Codex    │ Custom Agents / curl     │
-│ Code     │ gravity  │          │                          │
-└────┬─────┴────┬─────┴────┬─────┴──────┬──────────────────┘
-     │          │          │            │
-     └──── MCP (stdio) ───┘     HTTP API (port 4318)
-                │                       │
-                ▼                       ▼
-┌──────────────────────────────────────────────────────────┐
-│                   Integration Layer                       │
-│  ┌─────────────────────┐  ┌────────────────────────────┐ │
-│  │  MCP Server         │  │  HTTP API Server           │ │
-│  │  44 tools           │  │  21 endpoints              │ │
-│  └─────────┬───────────┘  └──────────┬─────────────────┘ │
-└────────────┼─────────────────────────┼───────────────────┘
-             └──────────┬──────────────┘
-                        ▼
-┌──────────────────────────────────────────────────────────┐
-│                     Core Engine                           │
-│                                                           │
-│  ┌────────────┐  ┌────────────┐  ┌─────────────────────┐ │
-│  │ Retriever  │  │ Classifier │  │ Context Composer     │ │
-│  │ (vector +  │  │ (6 cats)   │  │ (resume_context)     │ │
-│  │ BM25 + RRF)│  │            │  │                      │ │
-│  └────────────┘  └────────────┘  └──────────────────────┘ │
-│  ┌────────────┐  ┌────────────┐  ┌─────────────────────┐ │
-│  │ Decay      │  │ Conflict   │  │ Capture Engine       │ │
-│  │ Engine     │  │ Engine     │  │ (evidence → durable) │ │
-│  │ (Weibull)  │  │ (audit +   │  │                      │ │
-│  │            │  │  merge)    │  │                      │ │
-│  └────────────┘  └────────────┘  └──────────────────────┘ │
-└──────────────────────────┬───────────────────────────────┘
-                           ▼
-┌──────────────────────────────────────────────────────────┐
-│                    Storage Layer                          │
-│  ┌─────────────────────┐  ┌────────────────────────────┐ │
-│  │ LanceDB             │  │ Jina Embeddings v5         │ │
-│  │ (vector + columnar) │  │ (1024-dim, task-aware)     │ │
-│  └─────────────────────┘  └────────────────────────────┘ │
-└──────────────────────────────────────────────────────────┘
-```
-
-### Internal Design
-
-- **L0 / L1 / L2 Dynamic Folding** — every memory stores 3 granularity layers (one-liner / bullet summary / full content); retrieval dynamically selects which layer to return based on relevance score and token budget
-- **Weibull Decay + Emotion Modulation** — memories decay along a parametric Weibull curve; importance scores modulate the half-life, and emotional salience extends it further (up to 30%)
-- **Vector Pre-filter + LLM Dedup** — 90% of dedup decisions use cheap cosine similarity (>= 0.92); only borderline cases invoke LLM judgment, keeping costs low without sacrificing accuracy
-- **Category-Aware Merge Strategies** — `profile` and `preferences` use merge-on-conflict (latest wins); `events` and `cases` use append-only (history preserved)
-- **Display Score vs Elimination Score** — dual-track retrieval: tier floor prevents core memories from ever dropping out, while decay boost lets fresh memories surface temporarily without permanently displacing stable ones
-
-> Full architecture deep-dive: [`docs/architecture.md`](docs/architecture.md)
-
----
 
 ## Interfaces
 
@@ -575,6 +503,48 @@ bun run src/cli.ts doctor
 </details>
 
 ---
+
+## Web UI
+
+<p align="center">
+  <img src="assets/dashboard.png" alt="RecallNest Dashboard" width="800" />
+  <br><em>Dashboard — total count, category distribution, health score, and growth trends at a glance.</em>
+</p>
+
+<p align="center">
+  <img src="assets/screenshots/ui-full.png" alt="RecallNest Search Workbench" width="800" />
+  <br><em>Search Workbench — hybrid search with topic tag filtering, 4 retrieval profiles, Skills browser, and asset management.</em>
+</p>
+
+<p align="center">
+  <img src="assets/knowledge-graph.png" alt="RecallNest Knowledge Graph" width="800" />
+  <br><em>Knowledge Graph — interactive force-directed visualization with semantic bridges revealing cross-domain connections.</em>
+</p>
+
+```bash
+bun run src/ui-server.ts
+# → http://localhost:4317
+```
+
+---
+
+## What's new
+
+**v3.0** raised the runtime floor to **Node 22** (the only breaking change — Bun users are
+unaffected) and gave synthesized conclusions a road into stable memory: a `dream` insight
+can now be promoted on the strength of its own validated evidence set, instead of being
+permanently stuck on the evidence layer where nothing downstream could lean on it.
+
+It also fixed a rate-limit reply that could trigger an unbounded request storm — measured
+at over 61,000 requests in five seconds against an endpoint asking us to slow down. Found
+by the new HTTP contract tests, which drive the real client classes against a loopback
+server instead of stubbing the SDK.
+
+Existing LanceDB data opens in place; there is no export or import step.
+
+**Full history — v3.0 through v1.0, with the upgrade notes for each — is in
+[CHANGELOG.md](CHANGELOG.md).**
+
 
 ## Multilingual Support
 
