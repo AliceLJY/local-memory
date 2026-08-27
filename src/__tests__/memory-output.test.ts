@@ -222,3 +222,40 @@ describe("memory output", () => {
     expect(output).not.toContain("slot:tool-choice:");
   });
 });
+
+// 图片可寻址（2026-08-27）：ingest 只记图的回溯坐标、不存图本体，
+// 所以检索侧必须把「这条还有几张图不在文字里」显式说出来——不说，
+// 等于写入侧白做，读到这条记忆的人不会知道该去取图。
+describe("memory output — 有图记忆的取图坐标", () => {
+  it("有 imageRefs 时多给一行 imgs，带张数、类型和取图坐标", () => {
+    const output = formatSearchResults(
+      [
+        buildResult("abcd1234-0000-0000-0000-00000000000a", {
+          source: "cc",
+          sessionId: "05a9a168-9ee9-489e-9a9a-7f691a272ef1",
+          imageRefs: [
+            { uuid: "66285833-46f9-402f-a329-cb0398c7bb02", mediaType: "image/jpeg", index: 1 },
+            { uuid: "66285833-46f9-402f-a329-cb0398c7bb02", mediaType: "image/jpeg", index: 2 },
+          ],
+        }),
+      ],
+      { query: "报错", profile: "default" } as any,
+    );
+
+    expect(output).toContain("imgs :");
+    expect(output).toContain("2 张");
+    expect(output).toContain("image/jpeg");
+    expect(output).toContain("sess=05a9a168");
+    expect(output).toContain("uuid=66285833-46f9-402f-a329-cb0398c7bb02");
+  });
+
+  // 反向断言：无图记忆不该多出这一行，否则就是给所有记忆添噪音
+  it("没有 imageRefs 的记忆不输出 imgs 行", () => {
+    const output = formatSearchResults(
+      [buildResult("abcd1234-0000-0000-0000-00000000000b", { source: "agent" })],
+      { query: "concise", profile: "default" } as any,
+    );
+
+    expect(output).not.toContain("imgs :");
+  });
+});

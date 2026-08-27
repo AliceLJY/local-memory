@@ -55,11 +55,33 @@ export interface IngestResult {
   errors: string[];
 }
 
+/**
+ * 图片在原始 transcript 里的回溯坐标。
+ *
+ * 有意只存坐标、不复制图片本体（2026-08-27 定）：图片原件已经在
+ * mini 的 ~/conversation-truth 里躺着，再复制一份是白占空间。
+ * 取图路径 = 按 chunk 的 sessionId 找到 jsonl，再按 uuid 定位那一行。
+ *
+ * simplified: 坐标依赖 mini 上的 jsonl 仍然存在（MacBook 本地只留 3 天）。
+ * 若将来这个库要脱离双机环境给别人用，改成在 ingest 时把图另存一份、
+ * 这里换成文件路径即可 —— 消费侧只认 imageRefs 这个字段，不受影响。
+ */
+interface ImageRef {
+  /** 该 transcript 行的 uuid，用于在 jsonl 里精确定位到那一行 */
+  uuid: string;
+  /** image/png、image/jpeg 等 */
+  mediaType: string;
+  /** 本轮里的第几张图（1-based），与正文中的 [Image #N] 标记对应 */
+  index: number;
+}
+
 interface ConversationTurn {
   role: "user" | "assistant";
   text: string;
   timestamp: string;
   sessionId: string;
+  /** 本轮用户贴的图；无图时不设 */
+  imageRefs?: ImageRef[];
 }
 
 // ============================================================================
@@ -703,6 +725,8 @@ function buildIngestedEntry(params: {
   heading?: string;
   /** Tier 3.1: optional core summary (≤200 chars) for token-efficient context output */
   coreSummary?: string | null;
+  /** 本条记忆对应轮次里用户贴的图的回溯坐标；无图时不传 */
+  imageRefs?: ImageRef[];
 }): {
   text: string;
   vector: number[];
@@ -746,6 +770,7 @@ function buildIngestedEntry(params: {
       l1_overview: params.extraction.l1,
       l2_content: params.text,
       ...(params.coreSummary ? { core_summary: params.coreSummary } : {}),
+      ...(params.imageRefs?.length ? { imageRefs: params.imageRefs } : {}),
       tier,
       boundary: resolution.boundary,
       ...(narrative ? { narrative } : {}),
@@ -793,7 +818,7 @@ const MARKDOWN_CHUNK_CONFIG: ChunkerConfig = {
 // CC Transcript Parser
 // ============================================================================
 
-function parseCCTranscript(filePath: string): ConversationTurn[] {
+export function parseCCTranscript(filePath: string): ConversationTurn[] {
   const turns: ConversationTurn[] = [];
   const content = readFileSync(filePath, "utf-8");
   const lines = content.split("\n").filter((l) => l.trim());
@@ -811,22 +836,48 @@ function parseCCTranscript(filePath: string): ConversationTurn[] {
       if (obj.type === "user" && obj.message) {
         const msg = obj.message;
         let text = "";
+        const imageRefs: ImageRef[] = [];
         if (typeof msg.content === "string") {
           text = msg.content;
         } else if (Array.isArray(msg.content)) {
-          // Extract text blocks, skip tool_use/tool_result/images
+          // 文本块照旧提取，tool_use / tool_result 仍然整块丢弃（架构决定，见 memory-boundaries）。
+          // 图片不再一起丢：正文不动，只把回溯坐标记到 turn 上，图本体留在原始 jsonl 里。
           text = msg.content
             .filter((c: any) => c.type === "text")
             .map((c: any) => c.text || "")
             .join("\n");
+          for (const block of msg.content) {
+            if (block?.type !== "image") continue;
+            imageRefs.push({
+              uuid: typeof obj.uuid === "string" ? obj.uuid : "",
+              mediaType: typeof block?.source?.media_type === "string"
+                ? block.source.media_type
+                : "unknown",
+              index: imageRefs.length + 1,
+            });
+          }
         }
 
-        if (text.trim().length > 10) {
+        // 只贴图不配字的那一轮，此前会被长度闸整条丢掉——实测占含图轮次的 12.5%，
+        // 且丢掉的常是「操作步骤在这里」+ 截图这类正文全在图里的高价值轮次
+        // （最极端的样本是 0 字配 7 张图）。给它一个占位正文，让它能跟下一条
+        // 助手回复合成 chunk——助手的回复通常描述了图里是什么，那就是定位这些图的文字。
+        //
+        // 有配文时正文一个字都不改：文字本身已是检索入口，往里塞标记只会稀释 embedding。
+        const trimmed = text.trim();
+        const body = trimmed.length > 0
+          ? trimmed
+          : imageRefs.length > 0
+            ? `[图片×${imageRefs.length}]`
+            : "";
+
+        if (body.length > 10 || imageRefs.length > 0) {
           turns.push({
             role: "user",
-            text: text.trim(),
+            text: body,
             timestamp: obj.timestamp || "",
             sessionId,
+            ...(imageRefs.length > 0 ? { imageRefs } : {}),
           });
         }
       }
@@ -879,12 +930,21 @@ export function groupTurnsIntoChunks(turns: ConversationTurn[]): Array<{
   text: string;
   timestamp: string;
   sessionId: string;
+  imageRefs?: ImageRef[];
 }> {
   const filtered = filterNoiseTurns(turns);
-  const chunks: Array<{ text: string; timestamp: string; sessionId: string }> = [];
+  const chunks: Array<{
+    text: string;
+    timestamp: string;
+    sessionId: string;
+    imageRefs?: ImageRef[];
+  }> = [];
 
   for (let i = 0; i < filtered.length; i++) {
     const turn = filtered[i];
+    // 一轮被切成多个 chunk 时，每片都带同一份坐标：这些碎片同出一轮对话，
+    // 检索命中任何一片都该能回到那几张图。
+    const refs = turn.imageRefs?.length ? { imageRefs: turn.imageRefs } : {};
 
     // If this is a user turn followed by an assistant turn, merge them
     if (turn.role === "user" && i + 1 < filtered.length && filtered[i + 1].role === "assistant") {
@@ -903,10 +963,10 @@ export function groupTurnsIntoChunks(turns: ConversationTurn[]): Array<{
           if (seg.text.length > CONVERSATION_CHUNK_CONFIG.maxChunkSize) {
             const chunkResult = chunkDocument(seg.text, CONVERSATION_CHUNK_CONFIG);
             for (const chunk of chunkResult.chunks) {
-              chunks.push({ text: chunk, timestamp: turn.timestamp, sessionId: turn.sessionId });
+              chunks.push({ text: chunk, timestamp: turn.timestamp, sessionId: turn.sessionId, ...refs });
             }
           } else {
-            chunks.push({ text: seg.text, timestamp: turn.timestamp, sessionId: turn.sessionId });
+            chunks.push({ text: seg.text, timestamp: turn.timestamp, sessionId: turn.sessionId, ...refs });
           }
         }
       } else {
@@ -914,6 +974,7 @@ export function groupTurnsIntoChunks(turns: ConversationTurn[]): Array<{
           text: merged,
           timestamp: turn.timestamp,
           sessionId: turn.sessionId,
+          ...refs,
         });
       }
 
@@ -932,10 +993,10 @@ export function groupTurnsIntoChunks(turns: ConversationTurn[]): Array<{
           if (seg.text.length > CONVERSATION_CHUNK_CONFIG.maxChunkSize) {
             const chunkResult = chunkDocument(seg.text, CONVERSATION_CHUNK_CONFIG);
             for (const chunk of chunkResult.chunks) {
-              chunks.push({ text: chunk, timestamp: turn.timestamp, sessionId: turn.sessionId });
+              chunks.push({ text: chunk, timestamp: turn.timestamp, sessionId: turn.sessionId, ...refs });
             }
           } else {
-            chunks.push({ text: seg.text, timestamp: turn.timestamp, sessionId: turn.sessionId });
+            chunks.push({ text: seg.text, timestamp: turn.timestamp, sessionId: turn.sessionId, ...refs });
           }
         }
       } else {
@@ -943,6 +1004,7 @@ export function groupTurnsIntoChunks(turns: ConversationTurn[]): Array<{
           text,
           timestamp: turn.timestamp,
           sessionId: turn.sessionId,
+          ...refs,
         });
       }
     }
@@ -1892,6 +1954,7 @@ export async function ingestCCTranscripts(
               sessionId: chunk.sessionId,
               file,
               coreSummary: coreSummaries[j],
+              imageRefs: chunk.imageRefs,
             }));
           }
 

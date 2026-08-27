@@ -84,6 +84,35 @@ function getTierLabel(result: RetrievalResult): string {
   return String(meta.tier || "peripheral");
 }
 
+/**
+ * 有图的记忆多给一行取图坐标。
+ *
+ * 图本体不在库里——ingest 只记坐标（见 ingest.ts 的 ImageRef），原件留在
+ * 原始 transcript 里。这一行的作用是让读到这条记忆的人知道「这里还有几张图
+ * 不在文字里」以及去哪儿取；要看图的内容，取回来现看即可，不预先编码。
+ *
+ * 无图时返回 null，调用方据此不输出这一行——不给无图记忆添噪音。
+ */
+function formatImageRefs(result: RetrievalResult): string | null {
+  const meta = parseMetadata(result.entry);
+  const refs = meta.imageRefs;
+  if (!Array.isArray(refs) || refs.length === 0) return null;
+
+  const types = [
+    ...new Set(
+      refs.map((r) => {
+        const mediaType = (r as { mediaType?: unknown } | null)?.mediaType;
+        return typeof mediaType === "string" ? mediaType : "?";
+      }),
+    ),
+  ].join(" ");
+  const firstUuid = (refs[0] as { uuid?: unknown } | null)?.uuid;
+  const uuid = typeof firstUuid === "string" && firstUuid.length > 0 ? firstUuid : "?";
+  const sess = typeof meta.sessionId === "string" ? meta.sessionId.slice(0, 8) : "?";
+
+  return `${refs.length} 张 (${types}) · 取图 sess=${sess} uuid=${uuid}`;
+}
+
 function getProvenanceSummary(result: RetrievalResult): string {
   const provenance = extractMemoryProvenance({
     scope: result.entry.scope,
@@ -385,6 +414,8 @@ export function formatFullResults(
     const row = buildSearchRow(i, context.query, results[i]);
     lines.push(`${row[0]} ${row[1]} ${row[2]} ${row[3]} ${row[4]} ${row[5]} ${row[6]} ${row[7]} ${row[8]} ${row[9]} | ${row[10]}`);
     lines.push(`   prov : ${getProvenanceSummary(results[i])}`);
+    const imgs = formatImageRefs(results[i]);
+    if (imgs) lines.push(`   imgs : ${imgs}`);
     // Full mode: append metadata details
     const meta = parseMetadata(results[i].entry);
     const evolution = typeof meta.evolutionStatus === "string" ? meta.evolutionStatus : "-";
@@ -435,6 +466,8 @@ export function formatSearchResults(
     const row = buildSearchRow(i, context.query, results[i]);
     lines.push(`${row[0]} ${row[1]} ${row[2]} ${row[3]} ${row[4]} ${row[5]} ${row[6]} ${row[7]} ${row[8]} ${row[9]} | ${row[10]}`);
     lines.push(`   prov : ${getProvenanceSummary(results[i])}`);
+    const imgs = formatImageRefs(results[i]);
+    if (imgs) lines.push(`   imgs : ${imgs}`);
     // Freshness: only shown for memories that declared dependsOn (opt-in, cheap check).
     const fresh = evaluateEntryFreshness(results[i].entry.metadata, freshnessCache);
     if (fresh) lines.push(`   fresh: ${fresh}`);
