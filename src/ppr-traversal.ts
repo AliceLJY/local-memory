@@ -10,7 +10,11 @@ import type { KGTriple, NeighborhoodResult } from "./kg-store.js";
 // ============================================================================
 
 export interface PPRConfig {
-  /** Teleport probability back to seed nodes (default: 0.85) */
+  /**
+   * Probability of CONTINUING to diffuse along an edge at each step.
+   * The teleport-back-to-seed probability is the complement: (1 - dampingFactor).
+   * (The previous version of this comment had the two reversed.)
+   */
   dampingFactor: number;
   /** Max power-iteration rounds (default: 10) */
   maxIterations: number;
@@ -31,6 +35,26 @@ export interface PPRResult {
   path: string[];
 }
 
+/**
+ * NOTE on dampingFactor = 0.85 (measured 2026-08-28, deliberately NOT changed):
+ *
+ * 0.85 is Brin & Page's default, tuned for billion-node web link graphs.
+ * HippoRAG 2 (arXiv 2502.14802, Table 13) uses 0.5 for knowledge graphs.
+ *
+ * Sensitivity measured on our own production KG (60,536 nodes / 66,332 edges,
+ * 10 real seeds, Top-10 Jaccard against alpha=0.85):
+ *   alpha=0.30 -> 0.617 | 0.50 -> 0.648 | 0.70 -> 0.760 | 0.95 -> 0.598
+ *   alpha=0.30 vs alpha=0.95 -> 0.371  (~63% of results differ)
+ * So the parameter IS sensitive. It is nevertheless left at 0.85, because
+ * tuning it does not fix the actual failure mode: at every alpha tested,
+ * generic hub nodes ("user" / "assistant" / "Alice") take ~30% of the top-20
+ * and land at ranks 2-4. Changing alpha only reshuffles the hubs among
+ * themselves.
+ *
+ * Fix the graph first (entity normalization + hub suppression), then tune.
+ * Revisit only after the top-20 hub share drops materially; any change must
+ * go through a shadow run first.
+ */
 export const DEFAULT_PPR_CONFIG: PPRConfig = {
   dampingFactor: 0.85,
   maxIterations: 10,
