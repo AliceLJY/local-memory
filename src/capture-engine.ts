@@ -461,6 +461,15 @@ export async function writeDurableEntry(
   entry: MemoryEntry;
   disposition: "stored" | "updated" | "deduped" | "promoted" | "conflict";
   conflictId?: string;
+  /**
+   * True when this write REPLACED the content of an existing canonical row
+   * (a belief version was archived). Two different paths can do that — the
+   * latest-wins branch reports `updated`, while the deterministic-id branch
+   * below still reports `stored` — so disposition alone cannot tell them
+   * apart. Consumers that mirror memory content elsewhere (KG triples) must
+   * drop the old projection when this is set.
+   */
+  supersededPrevious?: boolean;
 }> {
   const matches = await findCanonicalMatches(deps.store, params.canonicalKey);
   const categoryMatches = matches.filter((entry) => entry.category === params.category);
@@ -605,6 +614,7 @@ export async function writeDurableEntry(
     return {
       entry: updated,
       disposition: params.promotedFrom ? "promoted" : "updated",
+      supersededPrevious: true,
     };
   }
 
@@ -617,6 +627,7 @@ export async function writeDurableEntry(
     ? deterministicId(params.scope, params.canonicalKey)
     : undefined;
   let metadataForStore = params.metadata;
+  let supersededPrevious = false;
 
   if (targetId && deps.store.getById) {
     const rowAtTargetId = await deps.store.getById(targetId);
@@ -629,6 +640,7 @@ export async function writeDurableEntry(
         { now },
       );
       metadataForStore = buildSupersedingBeliefMetadata(params.metadata, previousEvo, historyId, now);
+      supersededPrevious = true;
     }
   }
 
@@ -647,6 +659,7 @@ export async function writeDurableEntry(
   return {
     entry: stored,
     disposition: params.promotedFrom ? "promoted" : "stored",
+    supersededPrevious,
   };
 }
 
@@ -1106,7 +1119,7 @@ export async function persistMemory(
     metadata = JSON.stringify(parsed);
   }
 
-  const { entry, disposition, conflictId } = await writeDurableEntry(deps, {
+  const { entry, disposition, conflictId, supersededPrevious } = await writeDurableEntry(deps, {
     text: input.text,
     vector,
     category: input.category,
@@ -1124,9 +1137,18 @@ export async function persistMemory(
   const entryPrivacyTier = parsePrivacyTier(metadata);
   const kgAllowed = entryPrivacyTier !== "ephemeral" && entryPrivacyTier !== "private";
   if (deps.kgExtractor && disposition !== "deduped" && kgAllowed) {
-    deps.kgExtractor
-      .extractAndStore(input.text, entry.id, resolvedScope)
-      .catch(() => {}); // Silently ignore — KG extraction must never block memory writes
+    const kgExtractor = deps.kgExtractor;
+    // When this write replaced existing content, the edges extracted from the OLD
+    // text are still in the graph: triple ids are content-derived, so re-extracting
+    // merely adds new rows beside the stale ones and both compete during traversal.
+    // Purge first, then re-extract — strictly ordered, or the purge would race ahead
+    // and delete what we just wrote.
+    const purged = supersededPrevious
+      ? kgExtractor.purgeForMemory(entry.id)
+      : Promise.resolve();
+    purged
+      .then(() => kgExtractor.extractAndStore(input.text, entry.id, resolvedScope))
+      .catch(() => {}); // Silently ignore — KG upkeep must never block memory writes
   }
 
   // F-1: Audit log — record store operation (non-blocking, silent on failure)

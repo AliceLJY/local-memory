@@ -1326,3 +1326,81 @@ describe("text length contract", () => {
     })).resolves.toBeDefined();
   });
 });
+
+describe("KG upkeep on overwrite", () => {
+  // Triple ids are sha256(scope+subject+predicate+object) — content-derived, not
+  // keyed by source memory. So replacing a memory's text leaves the edges from the
+  // OLD text sitting in the graph forever, competing with the new ones. These tests
+  // pin the fix: an overwriting write must purge the memory's old projection before
+  // re-extracting, and a fresh write must not purge anything.
+  function createKgSpy() {
+    const calls: string[] = [];
+    return {
+      calls,
+      extractor: {
+        async purgeForMemory(memoryId: string) {
+          calls.push(`purge:${memoryId}`);
+        },
+        async extractAndStore(_text: string, memoryId: string, _scope: string) {
+          calls.push(`extract:${memoryId}`);
+          return 0;
+        },
+      },
+    };
+  }
+
+  // The extraction chain is deliberately fire-and-forget so KG upkeep never blocks a
+  // memory write; give the microtask chain a turn before asserting.
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  it("purges the old projection before re-extracting when content is replaced", async () => {
+    const { deps } = createDeps();
+    const kg = createKgSpy();
+    const depsWithKg = { ...(deps as any), kgExtractor: kg.extractor };
+
+    const first = await persistMemory(depsWithKg, {
+      text: "User prefers duo for spawning a codex child agent",
+      category: "preferences",
+      scope: TEST_SCOPE,
+      source: "manual",
+      canonicalKey: "tool-status:duo",
+    });
+    await settle();
+
+    const second = await persistMemory(depsWithKg, {
+      text: "User no longer uses duo; it was archived on 2026-06-08",
+      category: "preferences",
+      scope: TEST_SCOPE,
+      source: "manual",
+      canonicalKey: "tool-status:duo",
+    });
+    await settle();
+
+    // Precondition: this is the in-place rewrite path, not two separate rows.
+    expect(second.disposition).toBe("updated");
+
+    // Same canonical row rewritten in place.
+    expect(second.id).toBe(first.id);
+    // First write is fresh: extract only. Second write overwrites: purge, then extract.
+    expect(kg.calls).toEqual([
+      `extract:${first.id}`,
+      `purge:${second.id}`,
+      `extract:${second.id}`,
+    ]);
+  });
+
+  it("does not purge when the write creates a new memory", async () => {
+    const { deps } = createDeps();
+    const kg = createKgSpy();
+
+    const result = await persistMemory({ ...(deps as any), kgExtractor: kg.extractor }, {
+      text: "User prefers running the hippo wiki on the mac mini",
+      category: "preferences",
+      scope: TEST_SCOPE,
+      source: "manual",
+    });
+    await settle();
+
+    expect(kg.calls).toEqual([`extract:${result.id}`]);
+  });
+});

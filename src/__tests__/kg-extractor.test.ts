@@ -67,6 +67,24 @@ describe("normalizePredicate", () => {
   });
 });
 
+describe("KGExtractor.purgeForMemory", () => {
+  it("delegates to the store's reference-counted deleteBySource", async () => {
+    const deleted: string[] = [];
+    const kgStore = {
+      async createTriples(t: any[]) { return t; },
+      async deleteBySource(memoryId: string) { deleted.push(memoryId); },
+    } as any;
+    const ext = new KGExtractor({ llmClient: createMockLlm({ triples: [] }), kgStore });
+
+    await ext.purgeForMemory("mem-1");
+
+    // Deliberately delegating rather than deleting here: KGStore.deleteBySource is
+    // reference-counted (an edge other memories still attest to only loses this one
+    // source), and re-implementing that here would silently drop shared edges.
+    expect(deleted).toEqual(["mem-1"]);
+  });
+});
+
 describe("isKGModeEnabled", () => {
   it("reads env var", () => {
     const orig = process.env.RECALLNEST_KG_MODE;

@@ -124,6 +124,23 @@ export class KGExtractor {
   }
 
   /**
+   * Drop this memory's contribution to the graph.
+   *
+   * Triple ids are `sha256(scope + subject + predicate + object)` — derived from
+   * content, not from the source memory. So when a memory's text is replaced, the
+   * new text yields brand-new ids and the edges from the OLD text stay behind
+   * forever, competing with the new ones during retrieval. Callers that overwrite
+   * a memory's content must purge first, then re-extract.
+   *
+   * Delegates to KGStore.deleteBySource, which is reference-counted: an edge that
+   * other memories still attest to only loses this one source (mention_count -1);
+   * the row itself is deleted only when the last piece of evidence goes away.
+   */
+  async purgeForMemory(memoryId: string): Promise<void> {
+    await this.kgStore.deleteBySource(memoryId);
+  }
+
+  /**
    * Extract triples from text and persist to KG store.
    * Returns the number of triples stored.
    */
