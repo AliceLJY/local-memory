@@ -17,6 +17,7 @@ import {
   extractAgyUserText,
   extractTurnsFromRecord,
   filteredDejaEnvironment,
+  FROZEN_BUNDLE_SCHEMA_VERSION,
   frozenSampleHash,
   geminiJsonTurns,
   harnessFamily,
@@ -45,10 +46,13 @@ import {
   stableSessionId,
   storedResultMatches,
   validateJudgeResponse,
+  verifyCandidateEvidenceAgainstTurns,
+  verifyCandidateEvidenceSourceFile,
   writeFrozenBundle,
   type FrozenBundleDescriptor,
   type SessionMeta,
 } from "../../scripts/pivot-distill.js";
+import { turnContentDigest } from "../pivot-evidence.js";
 
 function session(overrides: Partial<SessionMeta> = {}): SessionMeta {
   return {
@@ -63,7 +67,7 @@ function session(overrides: Partial<SessionMeta> = {}): SessionMeta {
     sizeBytes: 200_000,
     mtimeNs: "123456789",
     origin: "deja",
-    fingerprint: "abc",
+    fingerprint: "a".repeat(64),
     ...overrides,
   };
 }
@@ -79,7 +83,7 @@ function bundleIdentityHashForTest(input: {
   eligibleSessions: number;
   deferredSessions: number;
 }): string {
-  return sha256(JSON.stringify({ schemaVersion: 1, ...input }));
+  return sha256(JSON.stringify({ schemaVersion: FROZEN_BUNDLE_SCHEMA_VERSION, ...input }));
 }
 
 function createBundleFixture(): {
@@ -188,6 +192,14 @@ describe("pivot-distill transcript adapters", () => {
     expect(extractTurnsFromRecord({
       type: "user",
       message: { content: [{ type: "tool_result", content: "secret" }] },
+    }, "claude-jsonl")).toEqual([]);
+  });
+
+  it("keeps Claude sidechain turns out of main-session evidence", () => {
+    expect(extractTurnsFromRecord({
+      type: "assistant",
+      isSidechain: true,
+      message: { content: [{ type: "text", text: "subagent-only conclusion" }] },
     }, "claude-jsonl")).toEqual([]);
   });
 
@@ -312,6 +324,7 @@ describe("pivot-distill sampling and validation", () => {
     expect(sample.text).toContain("turn-8-");
     expect(sample.sampledTurns).toBe(5);
     expect(sample.sampledExchanges).toBe(3);
+    expect(sample.groundingTurns.map((turn) => turn.ordinal)).toEqual([0, 1, 4, 5, 8]);
   });
 
   it("redacts a secret before the per-turn cut", () => {
@@ -421,12 +434,121 @@ describe("pivot-distill sampling and validation", () => {
     expect(result.candidates[0].canonicalKey).toBe("pivot-decision-拒绝双真相源");
     expect(result.candidates[0].proposedScope).toBe("memory:pivot");
     expect(result.candidates[0].proposedCategory).toBe("events");
+    expect(result.candidates[0].evidenceContractVersion).toBe(1);
+    expect(result.candidates[0].sourceFingerprint).toBe(session().fingerprint);
+    expect(result.candidates[0].anchorCoordinate).toMatchObject({
+      sessionId: session().sessionId,
+      ordinal: 0,
+      role: "user",
+    });
+    expect(result.candidates[0].anchorCoordinate.contentDigest).toHaveLength(64);
+    expect(result.candidates[0].evidenceWindows).toEqual([{
+      sessionId: session().sessionId,
+      startOrdinal: 1,
+      endOrdinal: 1,
+      turns: [{
+        ordinal: 1,
+        role: "assistant",
+        contentDigest: expect.any(String),
+        evidenceIndexes: [0],
+      }],
+    }]);
     expect(result.candidates[0].tags).toEqual([
       "src:019fc307",
       "date:2026-08-02",
       "harness:codex",
       "raw:codex",
     ]);
+  });
+
+  it("uses deterministic host digests and keeps non-contiguous evidence in separate windows", () => {
+    const turns = [
+      { role: "user" as const, text: "部署时出现连接失败" },
+      { role: "assistant" as const, text: "先修正配置文件" },
+      { role: "user" as const, text: "中间讨论了另一个问题" },
+      { role: "assistant" as const, text: "这段与解法无关" },
+      { role: "assistant" as const, text: "最终验证服务恢复" },
+    ];
+    const sample = buildStratifiedSample(turns, 1_000);
+    const candidate = validateJudgeResponse(JSON.stringify({
+      hasPivot: true,
+      candidates: [{
+        kind: "case",
+        text: "部署连接失败的问题通过修正配置，并在最后验证服务恢复后得到解决。",
+        anchor: "部署时出现连接失败",
+        key: "部署连接修复",
+        evidence: ["先修正配置文件", "最终验证服务恢复"],
+      }],
+    }), sample, session()).candidates[0];
+
+    expect(candidate.evidenceWindows.map((window) => [window.startOrdinal, window.endOrdinal]))
+      .toEqual([[1, 1], [4, 4]]);
+    expect(candidate.anchorCoordinate.contentDigest).toBe(turnContentDigest({
+      sessionId: session().sessionId,
+      ordinal: 0,
+      role: "user",
+      text: turns[0].text,
+    }));
+    expect(turnContentDigest({
+      sessionId: session().sessionId,
+      ordinal: 0,
+      role: "user",
+      text: turns[0].text,
+    })).toBe(turnContentDigest({
+      sessionId: session().sessionId,
+      ordinal: 0,
+      role: "user",
+      text: turns[0].text,
+    }));
+    expect(turnContentDigest({
+      sessionId: session().sessionId,
+      ordinal: 0,
+      role: "user",
+      text: `${turns[0].text}（已修改）`,
+    })).not.toBe(candidate.anchorCoordinate.contentDigest);
+
+    expect(() => verifyCandidateEvidenceAgainstTurns(candidate, session(), turns)).not.toThrow();
+    const edited = turns.map((turn) => ({ ...turn }));
+    edited[4].text = "最终验证仍未恢复";
+    expect(() => verifyCandidateEvidenceAgainstTurns(candidate, session(), edited))
+      .toThrow("content digest changed");
+  });
+
+  it("fails closed when the same quote maps to multiple turn ordinals", () => {
+    const sample = buildStratifiedSample([
+      { role: "user", text: "采用这个方案" },
+      { role: "assistant", text: "验证已经完成" },
+      { role: "user", text: "再核对一次" },
+      { role: "assistant", text: "验证已经完成" },
+    ], 500);
+    expect(() => validateJudgeResponse(JSON.stringify({
+      hasPivot: true,
+      candidates: [{
+        kind: "decision",
+        text: "Alice 决定采用已经完成验证的方案，并保留可追溯的验证依据。",
+        anchor: "采用这个方案",
+        key: "采用已验证方案",
+        evidence: ["验证已经完成"],
+      }],
+    }), sample, session())).toThrow("ambiguous across sampled turn ordinals");
+  });
+
+  it("rejects model-supplied coordinate fields instead of trusting them", () => {
+    const sample = buildStratifiedSample([
+      { role: "user", text: "采用这个方案" },
+      { role: "assistant", text: "验证已经完成" },
+    ], 500);
+    expect(() => validateJudgeResponse(JSON.stringify({
+      hasPivot: true,
+      candidates: [{
+        kind: "decision",
+        text: "Alice 决定采用已经完成验证的方案，并保留可追溯的验证依据。",
+        anchor: "采用这个方案",
+        key: "采用已验证方案",
+        evidence: ["验证已经完成"],
+        evidenceWindows: [{ startOrdinal: 999, endOrdinal: 999 }],
+      }],
+    }), sample, session())).toThrow("unsupported properties");
   });
 
   it("redactedResidue ignores placeholder shapes but catches real residue", () => {
@@ -623,6 +745,10 @@ describe("pivot-distill sampling and validation", () => {
       hasPivot: true,
       candidates: [{ kind: "case", ...base, evidence: ["旧判断失效"] }],
     }), sample, session())).toThrow("at least two");
+    expect(() => validateJudgeResponse(JSON.stringify({
+      hasPivot: true,
+      candidates: [{ kind: "decision", ...base, evidence: Array.from({ length: 17 }, () => "旧判断失效") }],
+    }), sample, session())).toThrow("at most 16");
     expect(() => validateJudgeResponse(JSON.stringify({
       hasPivot: true,
       candidates: [{ kind: "preference_rule", ...base, anchor: `我改${OMISSION_MARKER}主意了`, evidence: [] }],
@@ -840,6 +966,10 @@ describe("pivot-distill request identity and frozen bundle", () => {
     );
     expect(loaded.entries).toHaveLength(1);
     expect(loaded.entries[0].status).toBe("eligible");
+    expect(loaded.entries[0].sample.schemaVersion).toBe(FROZEN_BUNDLE_SCHEMA_VERSION);
+    expect(loaded.entries[0].sample.groundingTurns[0]).toMatchObject({ ordinal: 0, role: "user" });
+    expect(loaded.entries[0].sample.groundingTurns[0].contentDigest).toHaveLength(64);
+    expect("sourceText" in loaded.entries[0].sample.groundingTurns[0]).toBeFalse();
     expect(frozenSampleHash(loaded.entries[0].sample)).toBe(loaded.entries[0].sampleSha256);
     expect(() => loadFrozenBundle(
       fixture.bundleDir,
@@ -851,6 +981,20 @@ describe("pivot-distill request identity and frozen bundle", () => {
       fixture.descriptor.bundleHash,
       "wrong-profile",
     )).toThrow("unexpected requestProfileHash");
+  });
+
+  it("rejects legacy frozen bundles instead of reinterpreting them with coordinate semantics", () => {
+    const fixture = createBundleFixture();
+    const descriptor = JSON.parse(
+      readFileSync(join(fixture.bundleDir, "bundle.json"), "utf8"),
+    ) as Record<string, unknown>;
+    descriptor.schemaVersion = 1;
+    writeFileSync(join(fixture.bundleDir, "bundle.json"), `${JSON.stringify(descriptor)}\n`);
+    expect(() => loadFrozenBundle(
+      fixture.bundleDir,
+      fixture.descriptor.bundleHash,
+      fixture.descriptor.requestProfileHash,
+    )).toThrow("must be re-estimated");
   });
 
   it("rejects mutated samples, duplicate session keys, and paths outside the bundle root", () => {
@@ -1024,6 +1168,41 @@ else console.log(${JSON.stringify(payload)});
     writeFileSync(path, "{\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"ok\"}}\nnot-json\n");
     await expect(readSessionTurns(session({ path, parserKind: "codex-rollout" })))
       .rejects.toThrow("Malformed JSONL at line 2");
+  });
+
+  it("re-reads the reviewed source before apply and rejects later file drift", async () => {
+    const root = mkdtempSync(join(tmpdir(), "pivot-source-recheck-"));
+    const path = join(root, "source.jsonl");
+    writeFileSync(path, [
+      JSON.stringify({ type: "event_msg", payload: { type: "user_message", message: "采用这个方案" } }),
+      JSON.stringify({
+        type: "response_item",
+        payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "验证已经完成" }] },
+      }),
+    ].join("\n") + "\n");
+    const sourceStat = statSync(path, { bigint: true });
+    const sourceSession = session({
+      path,
+      sizeBytes: Number(sourceStat.size),
+      mtimeNs: sourceStat.mtimeNs.toString(),
+      fingerprint: "b".repeat(64),
+    });
+    const turns = await readSessionTurns(sourceSession);
+    const candidate = validateJudgeResponse(JSON.stringify({
+      hasPivot: true,
+      candidates: [{
+        kind: "decision",
+        text: "Alice 决定采用已经完成验证的方案，并保留可追溯的验证依据。",
+        anchor: "采用这个方案",
+        key: "采用已验证方案",
+        evidence: ["验证已经完成"],
+      }],
+    }), buildStratifiedSample(turns, 500), sourceSession).candidates[0];
+
+    await expect(verifyCandidateEvidenceSourceFile(candidate, sourceSession)).resolves.toBeUndefined();
+    writeFileSync(path, `${readFileSync(path, "utf8")}\n`);
+    await expect(verifyCandidateEvidenceSourceFile(candidate, sourceSession))
+      .rejects.toThrow("source session stat changed");
   });
 });
 

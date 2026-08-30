@@ -43,10 +43,20 @@ import {
 } from "../src/llm-client.js";
 import { normalizeCanonicalKey } from "../src/memory-boundaries.js";
 import { redactSecrets } from "../src/pii-detector.js";
+import {
+  PIVOT_EVIDENCE_CONTRACT_VERSION,
+  PivotEvidenceProvenanceSchema,
+  evidenceWindowIssues,
+  turnContentDigest,
+  type EvidenceCoordinate,
+  type EvidenceWindow,
+  type PivotEvidenceProvenance,
+} from "../src/pivot-evidence.js";
 import { loadConfig, loadDotEnv, resolveEnv } from "../src/runtime-config.js";
 
 export const PROMPT_VERSION = "pivot-v6";
-export const PIPELINE_VERSION = "pivot-pipeline-v6";
+export const PIPELINE_VERSION = "pivot-pipeline-v7";
+export const FROZEN_BUNDLE_SCHEMA_VERSION = 2 as const;
 export const PIVOT_MODEL = "qwen3.7-plus-2026-05-26";
 export const DEFAULT_MIN_SIZE = 1;
 export const DEFAULT_SAMPLE_CHARS = 24_000;
@@ -118,10 +128,25 @@ export interface NormalizedTurn {
   timestamp?: string;
 }
 
+export interface SampleGroundingTurn {
+  role: "user" | "assistant";
+  text: string;
+  ordinal: number;
+  /** Kept in-memory only; writeFrozenBundle replaces it with contentDigest. */
+  sourceText: string;
+}
+
+export interface FrozenGroundingTurn {
+  role: "user" | "assistant";
+  text: string;
+  ordinal: number;
+  contentDigest: string;
+}
+
 export interface SampleResult {
   text: string;
   userText: string;
-  groundingTurns: Array<{ role: "user" | "assistant"; text: string }>;
+  groundingTurns: SampleGroundingTurn[];
   chars: number;
   originalTurns: number;
   sampledTurns: number;
@@ -179,16 +204,16 @@ export interface PivotRequestProfile {
 }
 
 export interface FrozenSample {
-  schemaVersion: 1;
+  schemaVersion: typeof FROZEN_BUNDLE_SCHEMA_VERSION;
   sessionKey: string;
   text: string;
   userText: string;
-  groundingTurns: Array<{ role: "user" | "assistant"; text: string }>;
+  groundingTurns: FrozenGroundingTurn[];
   metrics: Omit<SampleResult, "text" | "userText" | "groundingTurns">;
 }
 
 export interface FrozenManifestEntry {
-  schemaVersion: 1;
+  schemaVersion: typeof FROZEN_BUNDLE_SCHEMA_VERSION;
   status: "eligible" | "deferred";
   reason?: "no-parseable-user-text";
   session: SessionMeta;
@@ -198,7 +223,7 @@ export interface FrozenManifestEntry {
 }
 
 export interface FrozenBundleDescriptor {
-  schemaVersion: 1;
+  schemaVersion: typeof FROZEN_BUNDLE_SCHEMA_VERSION;
   complete: true;
   createdAt: string;
   bundleHash: string;
@@ -230,7 +255,7 @@ interface RawJudgeResponse {
   candidates?: unknown;
 }
 
-export interface JudgeCandidate {
+export interface JudgeCandidate extends PivotEvidenceProvenance {
   kind: PivotKind;
   text: string;
   anchor: string;
@@ -742,7 +767,7 @@ export function extractTurnsFromRecord(record: unknown, parser: ParserKind): Nor
 
   if (parser === "claude-jsonl") {
     if (row.type !== "user" && row.type !== "assistant") return [];
-    if (row.isMeta === true) return [];
+    if (row.isMeta === true || row.isSidechain === true) return [];
     const message = row.message;
     if (!message || typeof message !== "object") return [];
     const text = textFromContent(
@@ -954,6 +979,7 @@ function assertExternalRedactionReady(): void {
 interface PreparedSampleTurn {
   role: "user" | "assistant";
   text: string;
+  sourceText: string;
   redactions: number;
   ordinal: number;
 }
@@ -1118,7 +1144,7 @@ export function buildStratifiedSample(turns: NormalizedTurn[], maxChars = DEFAUL
     const clean = turn.text.replace(/\u0000/g, "").trim();
     if (!clean) return null;
     const redacted = redactForExternalModel(clean);
-    return { role: turn.role, text: redacted.text, redactions: redacted.redacted, ordinal };
+    return { role: turn.role, text: redacted.text, sourceText: clean, redactions: redacted.redacted, ordinal };
   }).filter((turn): turn is PreparedSampleTurn => turn !== null && turn.text.trim().length > 0);
   const exchanges = sampleExchanges(prepared);
   const renderFull = (turn: PreparedSampleTurn): string => `${labelForRole(turn.role)}${turn.text}`;
@@ -1182,6 +1208,8 @@ export function buildStratifiedSample(turns: NormalizedTurn[], maxChars = DEFAUL
   const groundingTurns = selected.map((turn, index) => ({
     role: turn.role,
     text: renderedPayloads[index],
+    ordinal: turn.ordinal,
+    sourceText: turn.sourceText,
   }));
   const text = selected.map((turn, index) => `${labelForRole(turn.role)}${renderedPayloads[index]}`).join("\n");
   if (text.length > maxChars) throw new Error(`sampling invariant failed: ${text.length} > ${maxChars}`);
@@ -1241,10 +1269,92 @@ function parseJsonObject(text: string): unknown {
   }
 }
 
+interface JudgeSampleProjection {
+  text: string;
+  userText: string;
+  groundingTurns: Array<SampleGroundingTurn | FrozenGroundingTurn>;
+}
+
+function bindGroundingTurns(
+  turns: JudgeSampleProjection["groundingTurns"],
+  sessionId: string,
+): FrozenGroundingTurn[] {
+  return turns.map((turn) => {
+    if ("contentDigest" in turn) return { ...turn };
+    return {
+      role: turn.role,
+      text: turn.text,
+      ordinal: turn.ordinal,
+      contentDigest: turnContentDigest({
+        sessionId,
+        ordinal: turn.ordinal,
+        role: turn.role,
+        text: turn.sourceText,
+      }),
+    };
+  });
+}
+
+function uniqueGroundingTurn(
+  turns: FrozenGroundingTurn[],
+  quote: string,
+  role?: FrozenGroundingTurn["role"],
+): FrozenGroundingTurn | null {
+  const matches = turns.filter((turn) => (!role || turn.role === role) && turn.text.includes(quote));
+  if (matches.length > 1) {
+    throw new Error(`quoted evidence is ambiguous across sampled turn ordinals: ${matches.map((turn) => turn.ordinal).join(",")}`);
+  }
+  return matches[0] ?? null;
+}
+
+export function buildEvidenceWindows(
+  sessionId: string,
+  mappings: Array<{ evidenceIndex: number; turn: FrozenGroundingTurn }>,
+): EvidenceWindow[] {
+  const byOrdinal = new Map<number, { turn: FrozenGroundingTurn; evidenceIndexes: number[] }>();
+  for (const mapping of mappings) {
+    const current = byOrdinal.get(mapping.turn.ordinal);
+    if (current) {
+      if (current.turn.contentDigest !== mapping.turn.contentDigest || current.turn.role !== mapping.turn.role) {
+        throw new Error(`conflicting evidence coordinates for ordinal ${mapping.turn.ordinal}`);
+      }
+      current.evidenceIndexes.push(mapping.evidenceIndex);
+    } else {
+      byOrdinal.set(mapping.turn.ordinal, {
+        turn: mapping.turn,
+        evidenceIndexes: [mapping.evidenceIndex],
+      });
+    }
+  }
+  const ordered = [...byOrdinal.values()].sort((a, b) => a.turn.ordinal - b.turn.ordinal);
+  const windows: EvidenceWindow[] = [];
+  for (const item of ordered) {
+    const coordinate = {
+      ordinal: item.turn.ordinal,
+      role: item.turn.role,
+      contentDigest: item.turn.contentDigest,
+      evidenceIndexes: [...item.evidenceIndexes].sort((a, b) => a - b),
+    };
+    const current = windows[windows.length - 1];
+    if (current && current.endOrdinal + 1 === coordinate.ordinal) {
+      current.turns.push(coordinate);
+      current.endOrdinal = coordinate.ordinal;
+    } else {
+      windows.push({
+        sessionId,
+        startOrdinal: coordinate.ordinal,
+        endOrdinal: coordinate.ordinal,
+        turns: [coordinate],
+      });
+    }
+  }
+  return windows;
+}
+
 export function validateJudgeResponse(
   rawText: string,
-  sample: Pick<FrozenSample, "text" | "userText" | "groundingTurns">,
-  session: Pick<SessionMeta, "sessionId" | "date" | "harness" | "rawHarness">,
+  sample: JudgeSampleProjection,
+  session: Pick<SessionMeta, "sessionId" | "date" | "harness" | "rawHarness" | "fingerprint">,
 ): { hasPivot: boolean; candidates: JudgeCandidate[] } {
   const parsed = parseJsonObject(rawText);
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("LLM response must be an object");
@@ -1259,17 +1369,18 @@ export function validateJudgeResponse(
   if (!response.hasPivot && response.candidates.length > 0) {
     throw new Error("hasPivot=false cannot include candidates");
   }
-  const renderedSample = sample.groundingTurns
+  const groundingTurns = bindGroundingTurns(sample.groundingTurns, session.sessionId);
+  const renderedSample = groundingTurns
     .map((turn) => `${labelForRole(turn.role)}${turn.text}`)
     .join("\n");
-  const renderedUserSample = sample.groundingTurns
+  const renderedUserSample = groundingTurns
     .filter((turn) => turn.role === "user")
     .map((turn) => turn.text)
     .join("\n");
   if (sample.text !== renderedSample || sample.userText !== renderedUserSample) {
     throw new Error("sample grounding projection is inconsistent");
   }
-  const userGrounding = sample.groundingTurns.filter((turn) => turn.role === "user");
+  const userGrounding = groundingTurns.filter((turn) => turn.role === "user");
   const candidates: JudgeCandidate[] = [];
   // One malformed candidate must not void the session's other valid candidates;
   // if none survive, the hasPivot=true check below still fails the response.
@@ -1295,7 +1406,8 @@ export function validateJudgeResponse(
       throw new Error("candidate anchor cannot quote the sampling omission marker");
     }
     const anchor = stripRoleLabel(item.anchor.trim());
-    if (anchor.length < 2 || !userGrounding.some((turn) => turn.text.includes(anchor))) {
+    const anchorTurn = anchor.length >= 2 ? uniqueGroundingTurn(userGrounding, anchor, "user") : null;
+    if (!anchorTurn) {
       throw new Error("candidate anchor is not grounded in a sampled user turn");
     }
     if (typeof item.key !== "string" || item.key.trim().length < 2 || item.key.length > 120) {
@@ -1307,6 +1419,7 @@ export function validateJudgeResponse(
       throw new Error("candidate evidence must be an array of non-empty strings");
     }
     const evidence = item.evidence as string[];
+    if (evidence.length > 16) throw new Error("candidate evidence must contain at most 16 quotes");
     const normalizedEvidence = evidence.map((quote) => normalizeForEvidence(quote));
     if (new Set(normalizedEvidence).size !== evidence.length) {
       throw new Error("candidate evidence quotes must be distinct");
@@ -1318,15 +1431,13 @@ export function validateJudgeResponse(
     // single bad quote must not void the candidate. Keep only verbatim quotes,
     // then enforce the per-kind minimum on what survived — every stored
     // evidence line stays exactly re-findable in the sample.
-    const groundedEvidence = evidence.filter((quote) => {
+    const groundedEvidence: Array<{ quoteText: string; turn: FrozenGroundingTurn }> = [];
+    for (const quote of evidence) {
       const quoteText = stripRoleLabel(quote.trim());
-      return (
-        !quote.includes(OMISSION_MARKER) &&
-        quote.length <= 500 &&
-        quoteText.length > 0 &&
-        sample.groundingTurns.some((turn) => turn.text.includes(quoteText))
-      );
-    });
+      if (quote.includes(OMISSION_MARKER) || quote.length > 500 || quoteText.length === 0) continue;
+      const turn = uniqueGroundingTurn(groundingTurns, quoteText);
+      if (turn) groundedEvidence.push({ quoteText, turn });
+    }
     if ((kind === "judgment_shift" || kind === "decision") && groundedEvidence.length < 1) {
       throw new Error(`${kind} requires at least one grounded evidence quote`);
     }
@@ -1342,12 +1453,17 @@ export function validateJudgeResponse(
     if (redactForExternalModel(canonicalKey).redacted > 0) {
       throw new Error("canonical key contained sensitive material after normalization");
     }
+    const storedEvidence = groundedEvidence.map(({ quoteText }) => redactForExternalModel(quoteText).text);
+    const evidenceWindows = buildEvidenceWindows(
+      session.sessionId,
+      groundedEvidence.map(({ turn }, evidenceIndex) => ({ evidenceIndex, turn })),
+    );
     const built: JudgeCandidate = {
       kind,
       text: redactForExternalModel(item.text.trim()).text,
       anchor: redactForExternalModel(anchor).text,
       canonicalKey,
-      evidence: groundedEvidence.map((quote) => redactForExternalModel(stripRoleLabel(quote.trim())).text),
+      evidence: storedEvidence,
       proposedScope: "memory:pivot",
       proposedCategory: categoryForKind(kind),
       tags: [
@@ -1356,13 +1472,22 @@ export function validateJudgeResponse(
         `harness:${session.harness}`,
         `raw:${session.rawHarness}`,
       ],
+      evidenceContractVersion: PIVOT_EVIDENCE_CONTRACT_VERSION,
+      sourceFingerprint: session.fingerprint,
+      anchorCoordinate: {
+        sessionId: session.sessionId,
+        ordinal: anchorTurn.ordinal,
+        role: anchorTurn.role,
+        contentDigest: anchorTurn.contentDigest,
+      },
+      evidenceWindows,
     };
     // The checks above ran on the model's raw output, but stripping labels and
     // redaction reshape what actually gets stored (e.g. "助手：好" stores as a
     // single character; distinct quotes can collide after transformation).
     // Validate the exact stored form with the same predicate resume/compile
     // uses, so a written candidate can never be rejected on read-back.
-    if (!validStoredCandidate(built, sample, session)) {
+    if (!validStoredCandidate(built, { groundingTurns }, session)) {
       throw new Error("candidate stored form failed read-back validation");
     }
     candidates.push(built);
@@ -1375,6 +1500,87 @@ export function validateJudgeResponse(
     throw new Error(`hasPivot=true requires at least one valid candidate${detail}`);
   }
   return { hasPivot: response.hasPivot, candidates };
+}
+
+type EvidenceBearingCandidate = Pick<
+  JudgeCandidate,
+  | "anchor"
+  | "evidence"
+  | "evidenceContractVersion"
+  | "sourceFingerprint"
+  | "anchorCoordinate"
+  | "evidenceWindows"
+>;
+
+export function verifyCandidateEvidenceAgainstTurns(
+  candidate: EvidenceBearingCandidate,
+  session: Pick<SessionMeta, "sessionId" | "fingerprint">,
+  turns: NormalizedTurn[],
+): void {
+  const provenance = PivotEvidenceProvenanceSchema.parse({
+    evidenceContractVersion: candidate.evidenceContractVersion,
+    sourceFingerprint: candidate.sourceFingerprint,
+    anchorCoordinate: candidate.anchorCoordinate,
+    evidenceWindows: candidate.evidenceWindows,
+  });
+  if (provenance.sourceFingerprint !== session.fingerprint) {
+    throw new Error("candidate source fingerprint no longer matches the frozen session");
+  }
+  const windowIssues = evidenceWindowIssues(provenance, candidate.evidence.length, session.sessionId);
+  if (windowIssues.length > 0) throw new Error(`candidate evidence windows are invalid: ${windowIssues.join("; ")}`);
+
+  const sourceTurns = turns.map((turn, ordinal) => ({
+    role: turn.role,
+    text: turn.text.replace(/\u0000/g, "").trim(),
+    ordinal,
+  })).filter((turn) => turn.text.length > 0);
+  const verifyCoordinate = (
+    coordinate: EvidenceCoordinate | EvidenceWindow["turns"][number],
+    expectedText: string,
+  ): void => {
+    const turn = sourceTurns.find((item) => item.ordinal === coordinate.ordinal);
+    if (!turn || turn.role !== coordinate.role) {
+      throw new Error(`source turn ${coordinate.ordinal} is missing or changed role`);
+    }
+    const digest = turnContentDigest({
+      sessionId: session.sessionId,
+      ordinal: turn.ordinal,
+      role: turn.role,
+      text: turn.text,
+    });
+    if (digest !== coordinate.contentDigest) {
+      throw new Error(`source turn ${coordinate.ordinal} content digest changed`);
+    }
+    const redactedSource = redactForExternalModel(turn.text).text;
+    if (!redactedSource.includes(expectedText.trim())) {
+      throw new Error(`source turn ${coordinate.ordinal} no longer contains its reviewed quote`);
+    }
+  };
+
+  verifyCoordinate(provenance.anchorCoordinate, candidate.anchor);
+  for (const window of provenance.evidenceWindows) {
+    for (const turn of window.turns) {
+      for (const evidenceIndex of turn.evidenceIndexes) {
+        verifyCoordinate(turn, candidate.evidence[evidenceIndex]);
+      }
+    }
+  }
+}
+
+export async function verifyCandidateEvidenceSourceFile(
+  candidate: EvidenceBearingCandidate,
+  session: SessionMeta,
+): Promise<void> {
+  const before = statMetadata(session.path);
+  if (before.sizeBytes !== session.sizeBytes || before.mtimeNs !== session.mtimeNs) {
+    throw new Error("source session stat changed after the frozen bundle was reviewed");
+  }
+  const turns = await readSessionTurns(session);
+  const after = statMetadata(session.path);
+  if (after.sizeBytes !== before.sizeBytes || after.mtimeNs !== before.mtimeNs) {
+    throw new Error("source session changed while evidence was being revalidated");
+  }
+  verifyCandidateEvidenceAgainstTurns(candidate, session, turns);
 }
 
 export const JUDGE_JSON_SCHEMA = {
@@ -1394,7 +1600,7 @@ export const JUDGE_JSON_SCHEMA = {
           text: { type: "string", minLength: 20, maxLength: 4000 },
           anchor: { type: "string", minLength: 2, maxLength: 500 },
           key: { type: "string", minLength: 2, maxLength: 120 },
-          evidence: { type: "array", items: { type: "string", minLength: 1, maxLength: 500 } },
+          evidence: { type: "array", maxItems: 16, items: { type: "string", minLength: 1, maxLength: 500 } },
         },
         allOf: [
           {
@@ -1638,7 +1844,7 @@ function bundleIdentityHash(input: {
   eligibleSessions: number;
   deferredSessions: number;
 }): string {
-  return sha256Text(JSON.stringify({ schemaVersion: 1, ...input }));
+  return sha256Text(JSON.stringify({ schemaVersion: FROZEN_BUNDLE_SCHEMA_VERSION, ...input }));
 }
 
 export function writeFrozenBundle(
@@ -1666,11 +1872,21 @@ export function writeFrozenBundle(
   chmodSync(samplesRoot, 0o700);
   const entries: FrozenManifestEntry[] = preparedSessions.map(({ session, sample }, index) => {
     const samplePayload: FrozenSample = {
-      schemaVersion: 1,
+      schemaVersion: FROZEN_BUNDLE_SCHEMA_VERSION,
       sessionKey: session.key,
       text: sample.text,
       userText: sample.userText,
-      groundingTurns: sample.groundingTurns,
+      groundingTurns: sample.groundingTurns.map((turn) => ({
+        role: turn.role,
+        text: turn.text,
+        ordinal: turn.ordinal,
+        contentDigest: turnContentDigest({
+          sessionId: session.sessionId,
+          ordinal: turn.ordinal,
+          role: turn.role,
+          text: turn.sourceText,
+        }),
+      })),
       metrics: {
         chars: sample.chars,
         originalTurns: sample.originalTurns,
@@ -1703,7 +1919,7 @@ export function writeFrozenBundle(
     writeJson(join(bundleRoot, sampleFile), samplePayload);
     const eligible = sample.userText.trim().length > 0;
     return {
-      schemaVersion: 1,
+      schemaVersion: FROZEN_BUNDLE_SCHEMA_VERSION,
       status: eligible ? "eligible" : "deferred",
       reason: eligible ? undefined : "no-parseable-user-text",
       session: { ...session, fingerprint },
@@ -1725,7 +1941,7 @@ export function writeFrozenBundle(
     deferredSessions,
   });
   const descriptor: FrozenBundleDescriptor = {
-    schemaVersion: 1,
+    schemaVersion: FROZEN_BUNDLE_SCHEMA_VERSION,
     complete: true,
     createdAt: new Date().toISOString(),
     bundleHash,
@@ -1812,8 +2028,11 @@ export function loadFrozenBundle(
   }
   const root = resolve(inputBundle);
   const descriptorRecord = asRecord(JSON.parse(readFileSync(join(root, "bundle.json"), "utf8")) as unknown, "bundle.json");
-  if (descriptorRecord.schemaVersion !== 1 || descriptorRecord.complete !== true) {
-    throw new Error("input bundle is not a complete schemaVersion 1 bundle");
+  if (descriptorRecord.schemaVersion !== FROZEN_BUNDLE_SCHEMA_VERSION || descriptorRecord.complete !== true) {
+    const legacy = descriptorRecord.schemaVersion === 1
+      ? "; schemaVersion 1 bundles must be re-estimated before evidence-coordinate apply"
+      : "";
+    throw new Error(`input bundle is not a complete schemaVersion ${FROZEN_BUNDLE_SCHEMA_VERSION} bundle${legacy}`);
   }
   const requestProfileRecord = asRecord(descriptorRecord.requestProfile, "bundle requestProfile");
   if (
@@ -1849,7 +2068,7 @@ export function loadFrozenBundle(
   const sampleFiles = new Set<string>();
   for (const [index, line] of manifestRows.entries()) {
     const entryRecord = asRecord(JSON.parse(line) as unknown, `manifest line ${index + 1}`);
-    if (entryRecord.schemaVersion !== 1 || (entryRecord.status !== "eligible" && entryRecord.status !== "deferred")) {
+    if (entryRecord.schemaVersion !== FROZEN_BUNDLE_SCHEMA_VERSION || (entryRecord.status !== "eligible" && entryRecord.status !== "deferred")) {
       throw new Error(`manifest line ${index + 1} has invalid schema/status`);
     }
     const session = validateFrozenSession(entryRecord.session);
@@ -1870,7 +2089,7 @@ export function loadFrozenBundle(
       JSON.parse(readFileSync(samplePath, "utf8")) as unknown,
       `sample ${sampleFile}`,
     );
-    if (sampleRecord.schemaVersion !== 1 || sampleRecord.sessionKey !== session.key) {
+    if (sampleRecord.schemaVersion !== FROZEN_BUNDLE_SCHEMA_VERSION || sampleRecord.sessionKey !== session.key) {
       throw new Error(`sample identity mismatch: ${sampleFile}`);
     }
     if (typeof sampleRecord.text !== "string" || typeof sampleRecord.userText !== "string") {
@@ -1884,10 +2103,20 @@ export function loadFrozenBundle(
       if (
         (turn.role !== "user" && turn.role !== "assistant") ||
         typeof turn.text !== "string" || turn.text.trim().length === 0 ||
-        Object.keys(turn).some((key) => key !== "role" && key !== "text")
+        !Number.isInteger(turn.ordinal) || (turn.ordinal as number) < 0 ||
+        typeof turn.contentDigest !== "string" || !/^[0-9a-f]{64}$/.test(turn.contentDigest) ||
+        Object.keys(turn).some((key) => !["role", "text", "ordinal", "contentDigest"].includes(key))
       ) throw new Error(`sample grounding turn is invalid: ${sampleFile}`);
-      return { role: turn.role, text: turn.text } as FrozenSample["groundingTurns"][number];
+      return {
+        role: turn.role,
+        text: turn.text,
+        ordinal: turn.ordinal,
+        contentDigest: turn.contentDigest,
+      } as FrozenSample["groundingTurns"][number];
     });
+    if (groundingTurns.some((turn, turnIndex) => turnIndex > 0 && turn.ordinal <= groundingTurns[turnIndex - 1].ordinal)) {
+      throw new Error(`sample grounding ordinals must be strictly increasing: ${sampleFile}`);
+    }
     const renderedGrounding = groundingTurns
       .map((turn) => `${labelForRole(turn.role)}${turn.text}`)
       .join("\n");
@@ -1900,6 +2129,7 @@ export function loadFrozenBundle(
     }
     const metrics = asRecord(sampleRecord.metrics, `sample metrics ${sampleFile}`);
     if (metrics.chars !== sampleRecord.text.length) throw new Error(`sample metrics chars mismatch: ${sampleFile}`);
+    if (metrics.sampledTurns !== groundingTurns.length) throw new Error(`sample metrics sampledTurns mismatch: ${sampleFile}`);
     for (const field of [
       "originalTurns",
       "sampledTurns",
@@ -1953,7 +2183,7 @@ export function loadFrozenBundle(
       throw new Error(`sample eligibility mismatch: ${session.key}`);
     }
     entries.push({
-      schemaVersion: 1,
+      schemaVersion: FROZEN_BUNDLE_SCHEMA_VERSION,
       status,
       reason: status === "deferred" ? "no-parseable-user-text" : undefined,
       session,
@@ -1995,17 +2225,21 @@ export function redactedResidue(text: string): number {
 function validStoredCandidate(
   value: unknown,
   sample: Pick<FrozenSample, "groundingTurns">,
-  session: Pick<SessionMeta, "sessionId" | "date" | "harness" | "rawHarness">,
+  session: Pick<SessionMeta, "sessionId" | "date" | "harness" | "rawHarness" | "fingerprint">,
 ): value is JudgeCandidate {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const candidateKeys = Object.keys(value as Record<string, unknown>).sort();
   const expectedCandidateKeys = [
     "anchor",
+    "anchorCoordinate",
     "canonicalKey",
     "evidence",
+    "evidenceContractVersion",
+    "evidenceWindows",
     "kind",
     "proposedCategory",
     "proposedScope",
+    "sourceFingerprint",
     "tags",
     "text",
   ].sort();
@@ -2018,7 +2252,10 @@ function validStoredCandidate(
   if (typeof candidate.text !== "string" || candidate.text.trim().length < 20 || candidate.text.length > 4_000) return false;
   if (typeof candidate.anchor !== "string" || candidate.anchor.trim().length < 2 || candidate.anchor.length > 500) return false;
   if (candidate.anchor.includes(OMISSION_MARKER)) return false;
-  if (!sample.groundingTurns.some((turn) => turn.role === "user" && turn.text.includes(candidate.anchor!.trim()))) return false;
+  const anchorMatches = sample.groundingTurns.filter(
+    (turn) => turn.role === "user" && turn.text.includes(candidate.anchor!.trim()),
+  );
+  if (anchorMatches.length !== 1) return false;
   if (
     typeof candidate.canonicalKey !== "string" ||
     normalizeCanonicalKey(candidate.canonicalKey) !== candidate.canonicalKey ||
@@ -2028,13 +2265,34 @@ function validStoredCandidate(
   if (!Array.isArray(candidate.evidence) || candidate.evidence.some((quote) => typeof quote !== "string")) return false;
   const normalizedEvidence = candidate.evidence.map((quote) => normalizeForEvidence(quote));
   if (new Set(normalizedEvidence).size !== normalizedEvidence.length) return false;
-  if (candidate.evidence.some((quote) =>
-    !isSubstantiveEvidence(quote) || quote.includes(OMISSION_MARKER) || quote.length > 500 ||
-    !sample.groundingTurns.some((turn) => turn.text.includes(quote.trim()))
-  )) return false;
+  const evidenceMappings: Array<{ evidenceIndex: number; turn: FrozenGroundingTurn }> = [];
+  for (const [evidenceIndex, quote] of candidate.evidence.entries()) {
+    if (!isSubstantiveEvidence(quote) || quote.includes(OMISSION_MARKER) || quote.length > 500) return false;
+    const matches = sample.groundingTurns.filter((turn) => turn.text.includes(quote.trim()));
+    if (matches.length !== 1) return false;
+    evidenceMappings.push({ evidenceIndex, turn: matches[0] });
+  }
   if ((candidate.kind === "judgment_shift" || candidate.kind === "decision") && candidate.evidence.length < 1) return false;
   if (candidate.kind === "case" && candidate.evidence.length < 2) return false;
   if (candidate.proposedScope !== "memory:pivot" || candidate.proposedCategory !== categoryForKind(candidate.kind)) return false;
+  const provenance = PivotEvidenceProvenanceSchema.safeParse({
+    evidenceContractVersion: candidate.evidenceContractVersion,
+    sourceFingerprint: candidate.sourceFingerprint,
+    anchorCoordinate: candidate.anchorCoordinate,
+    evidenceWindows: candidate.evidenceWindows,
+  });
+  if (!provenance.success || provenance.data.sourceFingerprint !== session.fingerprint) return false;
+  if (evidenceWindowIssues(provenance.data, candidate.evidence.length, session.sessionId).length > 0) return false;
+  const anchorTurn = anchorMatches[0];
+  const expectedAnchor: EvidenceCoordinate = {
+    sessionId: session.sessionId,
+    ordinal: anchorTurn.ordinal,
+    role: anchorTurn.role,
+    contentDigest: anchorTurn.contentDigest,
+  };
+  if (!exactJsonValue(provenance.data.anchorCoordinate, expectedAnchor)) return false;
+  const expectedWindows = buildEvidenceWindows(session.sessionId, evidenceMappings);
+  if (!exactJsonValue(provenance.data.evidenceWindows, expectedWindows)) return false;
   const expectedTags = [
     `src:${session.sessionId.slice(0, 8)}`,
     `date:${session.date}`,

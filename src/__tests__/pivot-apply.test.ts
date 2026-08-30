@@ -2,12 +2,15 @@ import { describe, expect, it } from "bun:test";
 
 import {
   PIVOT_APPLY_CAPTURE,
+  PIVOT_APPLY_EVIDENCE_CAPTURE,
   PIVOT_APPLY_SOURCE,
   PIVOT_SCOPE,
   PivotCandidateInputSchema,
+  PivotEvidenceCandidateInputSchema,
   persistPivotBatch,
   persistPivotCandidate,
 } from "../pivot-apply.js";
+import { evidenceIdentityPayload } from "../pivot-evidence.js";
 
 const REPORT_ID = "00b609834309b7b44d1e36fc7c93169e083abb66487073bfd64d8c5bafc337fa";
 
@@ -32,6 +35,30 @@ function makeCandidate(overrides: Record<string, unknown> = {}): Record<string, 
     batchId: "test-batch-1",
     importance: 0.7,
     ...overrides,
+  };
+}
+
+function evidenceProvenance(): Record<string, unknown> {
+  return {
+    evidenceContractVersion: 1,
+    sourceFingerprint: candHash("f"),
+    anchorCoordinate: {
+      sessionId: "bb8af0b7-cc58-4bb2-8e35-9744537e5854",
+      ordinal: 0,
+      role: "user",
+      contentDigest: candHash("1"),
+    },
+    evidenceWindows: [{
+      sessionId: "bb8af0b7-cc58-4bb2-8e35-9744537e5854",
+      startOrdinal: 1,
+      endOrdinal: 1,
+      turns: [{
+        ordinal: 1,
+        role: "assistant",
+        contentDigest: candHash("2"),
+        evidenceIndexes: [0],
+      }],
+    }],
   };
 }
 
@@ -110,12 +137,27 @@ describe("PivotCandidateInputSchema", () => {
     expect(() => PivotCandidateInputSchema.parse(missing)).toThrow();
     expect(() => PivotCandidateInputSchema.parse(makeCandidate({ reportId: "not-hex" }))).toThrow();
   });
+
+  it("requires a complete, canonical evidence-coordinate contract for v2 apply", () => {
+    expect(evidenceIdentityPayload(makeCandidate())).toEqual({});
+    expect(evidenceIdentityPayload(makeCandidate(evidenceProvenance()))).toEqual(evidenceProvenance());
+    expect(() => PivotEvidenceCandidateInputSchema.parse(makeCandidate(evidenceProvenance()))).not.toThrow();
+    expect(() => PivotEvidenceCandidateInputSchema.parse(makeCandidate())).toThrow("requires contract version 1");
+    expect(() => PivotCandidateInputSchema.parse(makeCandidate({
+      ...evidenceProvenance(),
+      evidenceWindows: [],
+    }))).toThrow("has no source coordinate");
+    expect(() => PivotCandidateInputSchema.parse(makeCandidate({
+      ...evidenceProvenance(),
+      sourceFingerprint: undefined,
+    }))).toThrow("must be complete");
+  });
 });
 
 describe("persistPivotCandidate", () => {
   it("stores a clean candidate with session_distill identity and full pivot metadata", async () => {
     const { deps, storedEntries, auditLines } = createDeps();
-    const outcome = await persistPivotCandidate(deps as never, makeCandidate());
+    const outcome = await persistPivotCandidate(deps as never, makeCandidate(evidenceProvenance()));
 
     expect(outcome.disposition).toBe("stored");
     expect(outcome.memoryId).not.toBeNull();
@@ -124,7 +166,7 @@ describe("persistPivotCandidate", () => {
     expect(storedEntries.length).toBe(1);
     const meta = JSON.parse(String(storedEntries[0].metadata)) as Record<string, unknown>;
     expect(meta.source).toBe(PIVOT_APPLY_SOURCE);
-    expect(meta.capture).toBe(PIVOT_APPLY_CAPTURE);
+    expect(meta.capture).toBe(PIVOT_APPLY_EVIDENCE_CAPTURE);
     expect(meta.anchor).toBe("你要记住了，以后都是，甩链接，学习，记录。");
     expect((meta.confidence as Record<string, unknown>).score).toBe(0.6);
     expect((meta.confidence as Record<string, unknown>).reliability).toBe("inferred");
@@ -137,6 +179,10 @@ describe("persistPivotCandidate", () => {
     expect(pivotApply.evidence).toEqual([
       "你要记住了，以后都是，甩链接，学习，记录，如果借鉴了就要记到审计这里。",
     ]);
+    expect(pivotApply.evidenceContractVersion).toBe(1);
+    expect(pivotApply.sourceFingerprint).toBe(candHash("f"));
+    expect(pivotApply.anchorCoordinate).toEqual(evidenceProvenance().anchorCoordinate);
+    expect(pivotApply.evidenceWindows).toEqual(evidenceProvenance().evidenceWindows);
     const tags = meta.tags as string[];
     expect(tags).toContain("pivot-apply");
     expect(tags).toContain("batch:test-batch-1");
@@ -151,6 +197,15 @@ describe("persistPivotCandidate", () => {
     // deps deliberately has no llm / kgExtractor / rateLimiter keys at all.
     const outcome = await persistPivotCandidate(deps as never, makeCandidate());
     expect(outcome.disposition).toBe("stored");
+  });
+
+  it("keeps the fixed historical apply contract available only as v1 metadata", async () => {
+    const { deps, storedEntries } = createDeps();
+    await persistPivotCandidate(deps as never, makeCandidate());
+    const meta = JSON.parse(String(storedEntries[0].metadata)) as Record<string, unknown>;
+    expect(meta.capture).toBe(PIVOT_APPLY_CAPTURE);
+    const pivotApply = meta.pivotApply as Record<string, unknown>;
+    expect(pivotApply.evidenceContractVersion).toBeUndefined();
   });
 
   it("dedupes an identical re-apply (same key, same normalized text) without writing twice", async () => {

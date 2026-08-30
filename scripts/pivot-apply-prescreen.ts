@@ -24,6 +24,8 @@ import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
+import { evidenceIdentityPayload } from "../src/pivot-evidence.js";
+
 const RESULTS_DIR = resolve(
   process.env.HOME ?? "",
   "pivot-distill-runs/20260803/full/results",
@@ -114,6 +116,7 @@ function candidateHashOf(sessionFingerprint: string, c: RawCandidate): string {
     proposedScope: c.proposedScope,
     proposedCategory: c.proposedCategory,
     tags: c.tags,
+    ...evidenceIdentityPayload(c),
   });
   return createHash("sha256").update(payload, "utf8").digest("hex");
 }

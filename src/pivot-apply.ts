@@ -36,9 +36,17 @@ import {
 import { assignDefaultConfidence } from "./confidence-tracker.js";
 import { detectLang, tokenizeFts } from "./language-hook.js";
 import { scanForPII, redactSecrets } from "./pii-detector.js";
+import {
+  EvidenceCoordinateSchema,
+  EvidenceWindowSchema,
+  PIVOT_EVIDENCE_CONTRACT_VERSION,
+  PivotEvidenceProvenanceSchema,
+  evidenceWindowIssues,
+} from "./pivot-evidence.js";
 
 export const PIVOT_APPLY_SOURCE = "session_distill";
 export const PIVOT_APPLY_CAPTURE = "pivot_apply_v1";
+export const PIVOT_APPLY_EVIDENCE_CAPTURE = "pivot_apply_v2";
 export const PIVOT_SCOPE = "memory:pivot";
 
 const SHA256_HEX = /^[0-9a-f]{64}$/;
@@ -77,11 +85,45 @@ export const PivotCandidateInputSchema = z
     candidateHash: z.string().regex(SHA256_HEX, "candidateHash must be 64-char sha256 hex"),
     batchId: z.string().min(1).max(64),
     importance: z.number().min(0).max(1),
+    evidenceContractVersion: z.literal(PIVOT_EVIDENCE_CONTRACT_VERSION).optional(),
+    sourceFingerprint: z.string().regex(SHA256_HEX).optional(),
+    anchorCoordinate: EvidenceCoordinateSchema.optional(),
+    evidenceWindows: z.array(EvidenceWindowSchema).max(16).optional(),
   })
   .refine((c) => KIND_CATEGORY[c.kind] === c.proposedCategory, {
     message: "proposedCategory does not match kind (corpus-verified mapping violated)",
+  })
+  .superRefine((candidate, context) => {
+    const fields = [
+      candidate.evidenceContractVersion,
+      candidate.sourceFingerprint,
+      candidate.anchorCoordinate,
+      candidate.evidenceWindows,
+    ];
+    if (fields.every((field) => field === undefined)) return;
+    const provenance = PivotEvidenceProvenanceSchema.safeParse({
+      evidenceContractVersion: candidate.evidenceContractVersion,
+      sourceFingerprint: candidate.sourceFingerprint,
+      anchorCoordinate: candidate.anchorCoordinate,
+      evidenceWindows: candidate.evidenceWindows,
+    });
+    if (!provenance.success) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "evidence provenance must be complete and match contract version 1",
+      });
+      return;
+    }
+    for (const issue of evidenceWindowIssues(provenance.data, candidate.evidence.length, candidate.sessionId)) {
+      context.addIssue({ code: z.ZodIssueCode.custom, message: issue });
+    }
   });
 export type PivotCandidateInput = z.infer<typeof PivotCandidateInputSchema>;
+
+export const PivotEvidenceCandidateInputSchema = PivotCandidateInputSchema.refine(
+  (candidate) => candidate.evidenceContractVersion === PIVOT_EVIDENCE_CONTRACT_VERSION,
+  { message: "evidence-coordinate apply requires contract version 1 provenance" },
+);
 
 export type PivotApplyDisposition =
   | "stored"
@@ -195,10 +237,18 @@ export async function persistPivotCandidate(
   const language = detectLang(text);
   const fts_text = tokenizeFts(text, language);
 
+  const evidenceProvenance = input.evidenceContractVersion === PIVOT_EVIDENCE_CONTRACT_VERSION
+    ? PivotEvidenceProvenanceSchema.parse({
+      evidenceContractVersion: input.evidenceContractVersion,
+      sourceFingerprint: input.sourceFingerprint,
+      anchorCoordinate: input.anchorCoordinate,
+      evidenceWindows: input.evidenceWindows,
+    })
+    : null;
   let metadata = buildStructuredMetadata({
     source: PIVOT_APPLY_SOURCE,
     tags: [...input.tags, "pivot-apply", `batch:${input.batchId}`],
-    capture: PIVOT_APPLY_CAPTURE,
+    capture: evidenceProvenance ? PIVOT_APPLY_EVIDENCE_CAPTURE : PIVOT_APPLY_CAPTURE,
     category: input.proposedCategory,
     canonicalKey: input.canonicalKey,
     extra: {
@@ -210,6 +260,7 @@ export async function persistPivotCandidate(
         reportId: input.reportId,
         candidateHash: input.candidateHash,
         batchId: input.batchId,
+        ...(evidenceProvenance ?? {}),
       },
     },
   });

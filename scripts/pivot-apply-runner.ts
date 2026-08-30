@@ -28,12 +28,22 @@ import * as lancedb from "@lancedb/lancedb";
 import { createAuditLogger } from "../src/audit-log.js";
 import { ConflictCandidateStore } from "../src/conflict-store.js";
 import { persistPivotBatch, PIVOT_SCOPE } from "../src/pivot-apply.js";
+import {
+  PIVOT_EVIDENCE_CONTRACT_VERSION,
+  evidenceIdentityPayload,
+  type EvidenceCoordinate,
+  type EvidenceWindow,
+} from "../src/pivot-evidence.js";
 import { createComponents, loadConfig, resolveDbPath } from "../src/runtime-config.js";
+import {
+  verifyCandidateEvidenceSourceFile,
+  type SessionMeta,
+} from "./pivot-distill.js";
 import { SUPERVISED_TASKS } from "./pivot-distill-supervisor.js";
 import { createHash } from "node:crypto";
 
-const RESULTS_DIR = resolve(process.env.HOME ?? "", "pivot-distill-runs/20260803/full/results");
-const EXPECTED_REPORT_ID = "00b609834309b7b44d1e36fc7c93169e083abb66487073bfd64d8c5bafc337fa";
+const LEGACY_RESULTS_DIR = resolve(process.env.HOME ?? "", "pivot-distill-runs/20260803/full/results");
+const LEGACY_REPORT_ID = "00b609834309b7b44d1e36fc7c93169e083abb66487073bfd64d8c5bafc337fa";
 const MAX_PHYSICAL_BATCH = 300;
 
 interface AllowlistRow {
@@ -98,9 +108,17 @@ interface RebuiltCandidate {
   candidateHash: string;
   batchId: string;
   importance: number;
+  evidenceContractVersion?: typeof PIVOT_EVIDENCE_CONTRACT_VERSION;
+  sourceFingerprint?: string;
+  anchorCoordinate?: EvidenceCoordinate;
+  evidenceWindows?: EvidenceWindow[];
 }
 
-function rebuildCandidates(rows: AllowlistRow[], batchId: string): RebuiltCandidate[] {
+function rebuildCandidates(
+  rows: AllowlistRow[],
+  batchId: string,
+  resultsDir: string,
+): { candidates: RebuiltCandidate[]; sourceSessions: Map<string, SessionMeta> } {
   const byFp = new Map<string, AllowlistRow[]>();
   for (const r of rows) {
     const list = byFp.get(r.sessionFingerprint) ?? [];
@@ -108,8 +126,9 @@ function rebuildCandidates(rows: AllowlistRow[], batchId: string): RebuiltCandid
     byFp.set(r.sessionFingerprint, list);
   }
   const out: RebuiltCandidate[] = [];
+  const sourceSessions = new Map<string, SessionMeta>();
   for (const [fp, group] of byFp) {
-    const path = join(RESULTS_DIR, `${fp}.json`);
+    const path = join(resultsDir, `${fp}.json`);
     if (!existsSync(path)) die(`result file missing for fingerprint ${fp}`);
     const d = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
     const cands = (d.candidates as Array<Record<string, unknown>>) ?? [];
@@ -126,10 +145,12 @@ function rebuildCandidates(rows: AllowlistRow[], batchId: string): RebuiltCandid
           proposedScope: c.proposedScope,
           proposedCategory: c.proposedCategory,
           tags: c.tags,
+          ...evidenceIdentityPayload(c),
         });
         return sha256(payload) === row.candidateHash;
       });
       if (!match) die(`candidateHash ${row.candidateHash.slice(0, 12)} not found in ${fp} (content drifted?)`);
+      const evidenceIdentity = evidenceIdentityPayload(match) as Partial<RebuiltCandidate>;
       out.push({
         kind: match.kind as string,
         text: match.text as string,
@@ -144,10 +165,12 @@ function rebuildCandidates(rows: AllowlistRow[], batchId: string): RebuiltCandid
         candidateHash: row.candidateHash,
         batchId,
         importance: row.importance ?? 0.7,
+        ...evidenceIdentity,
       });
+      sourceSessions.set(row.candidateHash, d.session as SessionMeta);
     }
   }
-  return out;
+  return { candidates: out, sourceSessions };
 }
 
 async function precheckLiveKeys(dbPath: string, batch: RebuiltCandidate[]): Promise<void> {
@@ -183,9 +206,17 @@ async function main(): Promise<void> {
   const positional = args.filter((a) => !a.startsWith("--"));
   const [allowlistPath, batchId] = positional;
   if (!allowlistPath || !batchId) {
-    console.error("usage: bun scripts/pivot-apply-runner.ts <reviewed-allowlist.jsonl> <batchId> [--db-path <dir>] [--ledger <file>] [--skip-stop-assert]");
+    console.error("usage: bun scripts/pivot-apply-runner.ts <reviewed-allowlist.jsonl> <batchId> [--results-dir <dir>] [--report-id <sha256>] [--db-path <dir>] [--ledger <file>] [--skip-stop-assert]");
     process.exit(1);
   }
+  const resultsDir = args.includes("--results-dir")
+    ? resolve(args[args.indexOf("--results-dir") + 1])
+    : LEGACY_RESULTS_DIR;
+  const expectedReportId = args.includes("--report-id")
+    ? args[args.indexOf("--report-id") + 1]
+    : LEGACY_REPORT_ID;
+  if (!/^[0-9a-f]{64}$/.test(expectedReportId)) die("--report-id must be 64-char sha256 hex");
+  const legacyEvidenceMode = resultsDir === LEGACY_RESULTS_DIR && expectedReportId === LEGACY_REPORT_ID;
   const dbPathArg = args.includes("--db-path") ? args[args.indexOf("--db-path") + 1] : undefined;
   const ledgerPath = args.includes("--ledger")
     ? args[args.indexOf("--ledger") + 1]
@@ -206,7 +237,7 @@ async function main(): Promise<void> {
     for (const k of required) {
       if (!r[k]) die(`allowlist line ${i + 1} missing field "${k}"`);
     }
-    if (r.reportId !== EXPECTED_REPORT_ID) die(`allowlist line ${i + 1} has foreign reportId ${r.reportId.slice(0, 12)}`);
+    if (r.reportId !== expectedReportId) die(`allowlist line ${i + 1} has foreign reportId ${r.reportId.slice(0, 12)}`);
     if (r.batchId !== batchId) die(`allowlist line ${i + 1} belongs to batch "${r.batchId}", not "${batchId}"`);
   });
   const hashes = new Set(rows.map((r) => r.candidateHash));
@@ -217,7 +248,8 @@ async function main(): Promise<void> {
   console.log(`allowlist OK: ${rows.length} rows, ${approved.length} approved, batch ${batchId}`);
 
   // ---- 重建候选全文（内容寻址）并校验 payloadHash ----
-  const batch = rebuildCandidates(approved, batchId);
+  const rebuilt = rebuildCandidates(approved, batchId, resultsDir);
+  const batch = rebuilt.candidates;
   if (batch.length !== approved.length) die(`rebuilt ${batch.length} != approved ${approved.length}`);
   for (const row of approved) {
     const cand = batch.find((c) => c.candidateHash === row.candidateHash);
@@ -232,12 +264,39 @@ async function main(): Promise<void> {
       proposedCategory: cand.proposedCategory,
       tags: cand.tags,
       importance: cand.importance,
+      ...evidenceIdentityPayload(cand),
     }));
     if (payloadHash !== row.payloadHash) {
       die(`payloadHash mismatch for ${row.candidateHash.slice(0, 12)} — allowlist approved a different payload than what would be written`);
     }
   }
   console.log("payloadHash verification OK: every approved row matches its rebuild");
+
+  let sourceVerified = 0;
+  let legacyAccepted = 0;
+  for (const candidate of batch) {
+    if (candidate.evidenceContractVersion !== PIVOT_EVIDENCE_CONTRACT_VERSION) {
+      if (!legacyEvidenceMode) {
+        die(`candidate ${candidate.candidateHash.slice(0, 12)} has no host-generated evidence provenance`);
+      }
+      legacyAccepted++;
+      continue;
+    }
+    const sourceSession = rebuilt.sourceSessions.get(candidate.candidateHash);
+    if (!sourceSession) die(`source session missing for ${candidate.candidateHash.slice(0, 12)}`);
+    try {
+      await verifyCandidateEvidenceSourceFile(candidate as RebuiltCandidate & {
+        evidenceContractVersion: typeof PIVOT_EVIDENCE_CONTRACT_VERSION;
+        sourceFingerprint: string;
+        anchorCoordinate: EvidenceCoordinate;
+        evidenceWindows: EvidenceWindow[];
+      }, sourceSession);
+      sourceVerified++;
+    } catch (error) {
+      die(`source evidence revalidation failed for ${candidate.candidateHash.slice(0, 12)}: ${(error as Error).message}`);
+    }
+  }
+  console.log(`source evidence verification OK: ${sourceVerified} re-read from source, ${legacyAccepted} fixed-report legacy candidate(s)`);
 
   // ---- 停写断言 + 写批前 key 复扫 ----
   if (skipStopAssert) console.log("WARN: --skip-stop-assert (replica rehearsal only — never for production)");

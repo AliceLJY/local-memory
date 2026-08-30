@@ -27,6 +27,8 @@ import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync, readdirSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 
+import { evidenceIdentityPayload } from "../src/pivot-evidence.js";
+
 const RESULTS_DIR = resolve(process.env.HOME ?? "", "pivot-distill-runs/20260803/full/results");
 const EXPECTED_REPORT_ID = "00b609834309b7b44d1e36fc7c93169e083abb66487073bfd64d8c5bafc337fa";
 const MAX_PHYSICAL_BATCH = 300;
@@ -163,6 +165,7 @@ function emit(
           proposedScope: c.proposedScope,
           proposedCategory: c.proposedCategory,
           tags: c.tags,
+          ...evidenceIdentityPayload(c),
         });
         return sha256(payload) === row.candidateHash;
       });
@@ -178,6 +181,7 @@ function emit(
         proposedCategory: match.proposedCategory,
         tags: match.tags,
         importance,
+        ...evidenceIdentityPayload(match),
       }));
       const isRejected = rejectedHashes.has(row.candidateHash);
       if (inBatch >= MAX_PHYSICAL_BATCH) {
