@@ -34,6 +34,37 @@ export interface PromotionCandidate {
   distinctSources?: number;
 }
 
+/**
+ * 被跨来源判据拒掉的簇 —— 「同一个坑踩了 N 次」。
+ *
+ * 这不是待晋升的规律，是反模式证据：`judgeDistinctSources` 判 `rejected` 时原本只
+ * `rejectedSingleSource++` 然后 continue，信号变成一个数字后消失（同文件下方注释
+ * 早就写着"走 failure-burst 反模式那条路"，而那条路一直不存在）。
+ *
+ * 字段借自 MemTensor/memmy-agent 的 `Memory/src/service/evolution/negative-experience-pipeline.ts`
+ * （其 `NegativeExperienceSource` 枚举里字面就有 `tool_failure_burst`）。
+ * **有意只借它列的证据字段**：memmy 那份 schema 还有 `preference`（该怎么做）与
+ * `verification`（怎么确认没再犯），但那两格要的是判断不是统计 —— 扫描器编出来的
+ * 「该怎么做」比没有更糟。它们列在 `needsJudgement` 里等人或 LLM 填。
+ */
+export interface AntiPatternCandidate {
+  /** 目前只有一条来路；留成联合类型是为了将来接别的信号（如工具连续失败）时不改调用方。 */
+  source: "single_source_burst";
+  /** 撞上它的场景 —— 取簇种子的首行，和 candidates 的 suggestedName 同款提取。 */
+  trigger: string;
+  /** 反模式描述 —— 簇内多条的共性摘要。 */
+  antiPattern: string;
+  /** 同一个坑重复了几次。 */
+  occurrences: number;
+  /** 实际覆盖几个不同来源（判 rejected 说明它 < minDistinctSources）。 */
+  distinctSources: number;
+  /** 0-1。同一来源里重复越多越强，但不因此就变成"规律"。 */
+  evidenceStrength: number;
+  sourceEntries: Array<{ id: string; text: string }>;
+  /** 扫描器有意不填的字段，等判断补上。写死成数组是为了让调用方能机械检查。 */
+  needsJudgement: ReadonlyArray<"preference" | "verification">;
+}
+
 export interface PromotionScanResult {
   candidates: PromotionCandidate[];
   scannedCases: number;
@@ -46,6 +77,12 @@ export interface PromotionScanResult {
   rejectedSingleSource: number;
   /** No-silent-caps 披露:拿不到来源指针、跨来源判据弃权放行的簇数。 */
   abstainedUnknownSource: number;
+  /**
+   * P4 反模式出口:被判 rejected 的簇的**内容**,不只是计数。
+   * 注意与 abstainedUnknownSource 的区别 —— 弃权的簇不进这里:
+   * 不知道来源就不能指控它是「同一个坑踩三次」。
+   */
+  antiPatterns?: AntiPatternCandidate[];
 }
 
 export interface PromotionConfig {
@@ -462,6 +499,7 @@ export async function scanForPromotions(
     vectorlessSkipped: 0,
     rejectedSingleSource: 0,
     abstainedUnknownSource: 0,
+    antiPatterns: [],
   };
 
   // 2. Cluster cases bucket-by-bucket (topicTag, untagged fallback)。
@@ -497,6 +535,19 @@ export async function scanForPromotions(
         const sourceVerdict = judgeDistinctSources(cluster.members, cfg.minDistinctSources);
         if (sourceVerdict.status === "rejected") {
           result.rejectedSingleSource++;
+          // P4:不晋升,但也不让它无声消失 —— 同一个坑重复本身就是要记的东西。
+          // 仍然 continue,晋升判据分毫未动。
+          result.antiPatterns.push({
+            source: "single_source_burst",
+            trigger: extractName(cluster.seed.text),
+            antiPattern: summarizeCluster(cluster.members),
+            occurrences: cluster.members.length,
+            distinctSources: sourceVerdict.distinctSources,
+            // Bayesian smoothing,与 candidates 的 confidence 同款,饱和于 1。
+            evidenceStrength: cluster.members.length / (cluster.members.length + 2),
+            sourceEntries: cluster.members.map(m => ({ id: m.id, text: m.text })),
+            needsJudgement: ["preference", "verification"],
+          });
           continue;
         }
         if (sourceVerdict.status === "abstained") result.abstainedUnknownSource++;
@@ -640,8 +691,23 @@ export function formatPromotionResult(result: PromotionScanResult): string {
   if (result.rejectedSingleSource > 0) {
     lines.push(
       `⚠️ ${result.rejectedSingleSource} cluster(s) had enough entries but too few distinct sources`
-      + ` — 同一次经历的重复不算规律（走 failure-burst 反模式那条路，不是这条）。`,
+      + ` — 同一次经历的重复不算规律（不晋升，改走下面的反模式清单）。`,
     );
+  }
+
+  // P4:被拒的簇在这里落地。只显示计数等于让信号消失在一个数字里 ——
+  // 消费者看到的是这段文本,不是 result 对象。
+  // `?.` 不是防御性编程的装饰:PromotionScanResult 是导出接口,旧调用方构造的对象
+  // 没有这个字段,运行时会是 undefined(TS 编译期拦不住外部构造)。
+  if (result.antiPatterns?.length) {
+    lines.push(`\n🔁 ${result.antiPatterns.length} anti-pattern(s) — 同一个坑重复出现，不是规律但要记：\n`);
+    for (const [i, ap] of result.antiPatterns.entries()) {
+      lines.push(`### A${i + 1}. ${ap.trigger}`);
+      lines.push(`重复 ${ap.occurrences} 次，来自 ${ap.distinctSources} 个来源（证据强度 ${(ap.evidenceStrength * 100).toFixed(0)}%）`);
+      lines.push(`共性: ${ap.antiPattern}`);
+      lines.push(`待补判断: ${ap.needsJudgement.join(" / ")} — 扫描器只出证据，「该怎么做」和「怎么确认没再犯」要人或 LLM 填。`);
+      lines.push("");
+    }
   }
 
   if (result.candidates.length === 0) {
