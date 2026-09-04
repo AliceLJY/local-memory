@@ -1,5 +1,19 @@
 # Changelog
 
+<!-- Before cutting a release, run every entry past these five:
+     1. before / after — a number, not an adjective. No number, no claim.
+        (Nothing measurable? Then one plain sentence. Do not manufacture a figure.)
+     2. under what conditions was it measured — version, sample size, environment.
+     3. what does this cost and who gets hit by it — state it, do not bury it.
+     4. what alternative was rejected and why — the reason must be specific
+        enough that someone could refute it.
+     5. what looks like it belongs here but deliberately does not, and on what evidence.
+
+     When condensing this file into a GitHub Release body, 2 / 4 / 5 are the first
+     things to go: a conclusion reads as information, a reason reads as filler.
+     Protect them by name. The v3.0.0 Release body dropped 11 of 11 such items in
+     exactly that step, while this file had every one of them. -->
+
 ## Unreleased
 
 ### Added
