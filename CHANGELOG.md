@@ -14,7 +14,7 @@
      Protect them by name. The v3.0.0 Release body dropped 11 of 11 such items in
      exactly that step, while this file had every one of them. -->
 
-## Unreleased
+## v3.0.1 — Publication hygiene (2026-09-06)
 
 ### Added
 
@@ -35,6 +35,28 @@
   and by `runtime-config-embedding.test.ts` (config.json → client, env precedence, and a
   whole-client comparison against the pre-change construction expression proving the unset
   path is unchanged).
+
+### Changed
+
+- **Publication hygiene: no machine-local identifiers in the tree, no tests in the tarball.**
+  Three eval scripts (`eval/ghost-scan.ts`, `eval/lengthnorm-shadow.ts`,
+  `eval/term-registry-shadow.ts`) imported the runtime through an absolute path that only
+  existed on the author's machine; they now resolve the repository root from
+  `RECALLNEST_ROOT`, falling back to `~/recallnest` — the identical path on the original
+  install, a working one everywhere else. `scripts/pivot-distill-supervisor.ts` derives its
+  user-level launchd labels from the current account (`com.<user>.<task>`, overridable via
+  `PIVOT_DISTILL_LAUNCHD_PREFIX`) instead of a hardcoded username; the supervised set is
+  unchanged for the original account, and the suite now asserts the derivation rule and the
+  override. `package.json#files` excludes `src/**/__tests__/**` — `.npmignore` alone never
+  could, because `files` wins — so the dry-run tarball goes from 357 files / 965.8 kB
+  (3.8 MB unpacked) to 189 files / 620.0 kB (2.1 MB unpacked), measured with npm 11.19.0
+  on this commit; `scripts/verify-package-contents.mjs` now rejects any `__tests__` directory,
+  so the CI gate turns red if this regresses. A new `privacy-regression.test.ts` scans
+  `src/`, `scripts/`, `eval/`, `bin/`, root-level `*.md` and shipped `data/*.example.*` for the
+  removed identifiers and for macOS home paths (obvious placeholder accounts excepted).
+  Rejected: relative imports in the eval scripts, because these are reproduction tools for
+  figures measured against the production install and must keep pointing at it even when
+  invoked from another checkout. Deliberately not here: the README acknowledgements are unchanged.
 
 ## v3.0.0 — Node 22, and conclusions that can be used (2026-08-24)
 
