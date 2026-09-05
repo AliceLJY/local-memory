@@ -7,7 +7,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { tmpdir, userInfo } from "node:os";
 import { join, resolve } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 
@@ -20,11 +20,14 @@ import {
 const BUN = Bun.which("bun")!;
 const REPO_ROOT = resolve(import.meta.dir, "../..");
 const SUPERVISOR = join(REPO_ROOT, "scripts", "pivot-distill-supervisor.ts");
+// Independent mirror of the supervisor rule: user-level labels are
+// `com.<current user>.<task>` unless PIVOT_DISTILL_LAUNCHD_PREFIX overrides it.
+const USER_PREFIX = process.env.PIVOT_DISTILL_LAUNCHD_PREFIX || `com.${userInfo().username}`;
 const LOADED_LABELS = [
   "com.recallnest.incremental-ingest",
   "com.recallnest.pull-from-macbook",
 ] as const;
-const PRIOR_ABSENT_LABEL = "com.anxianjingya.agy-conversations-sync";
+const PRIOR_ABSENT_LABEL = `${USER_PREFIX}.agy-conversations-sync`;
 
 interface FakeHarness {
   root: string;
@@ -224,14 +227,14 @@ describe("pivot distill LaunchAgent supervisor policy", () => {
     expect(SUPERVISED_TASKS.map((task) => [task.label, task.tier])).toEqual([
       ["com.recallnest.incremental-ingest", "required"],
       ["com.recallnest.pull-from-macbook", "required"],
-      ["com.anxianjingya.agy-conversations-sync", "required"],
-      ["com.anxianjingya.macbook-mirror-pull", "required"],
-      ["com.anxianjingya.conversation-truth-refresh", "required"],
+      [`${USER_PREFIX}.agy-conversations-sync`, "required"],
+      [`${USER_PREFIX}.macbook-mirror-pull`, "required"],
+      [`${USER_PREFIX}.conversation-truth-refresh`, "required"],
       ["com.recallnest.dream-consolidation", "required"],
       ["com.recallnest.dream-memory-weekly", "required"],
       ["com.recallnest.weekly-distill", "required"],
       ["com.recallnest.daily-optimize", "required"],
-      ["com.anxianjingya.repos-autopull", "recommended"],
+      [`${USER_PREFIX}.repos-autopull`, "recommended"],
     ]);
     expect(SUPERVISED_TASKS.every((task) => task.reason.length > 0 && task.processPatterns.length > 0)).toBe(true);
     expect(SUPERVISED_TASKS.flatMap((task) => task.processPatterns)).toEqual(expect.arrayContaining([
@@ -336,8 +339,23 @@ describe("pivot distill LaunchAgent supervisor policy", () => {
       ["--allow-external-llm", "--allow-full-run"],
     );
     expect(result.status).toBe(0);
-    expect(launchLogLines(harness)).toContain("print\tcom.anxianjingya.repos-autopull");
+    expect(launchLogLines(harness)).toContain(`print\t${USER_PREFIX}.repos-autopull`);
     expect(readFileSync(harness.probeLog, "utf8")).toContain("-f\t[r]epos-autopull");
+    expectRestored(harness);
+  });
+
+  it("honors PIVOT_DISTILL_LAUNCHD_PREFIX for user-level labels", () => {
+    const harness = fakeHarness();
+    const result = run(
+      harness,
+      "full",
+      ["ok"],
+      ["--allow-external-llm", "--allow-full-run"],
+      { PIVOT_DISTILL_LAUNCHD_PREFIX: "com.example" },
+    );
+    expect(result.status).toBe(0);
+    expect(launchLogLines(harness)).toContain("print\tcom.example.repos-autopull");
+    expect(launchLogLines(harness)).toContain("print\tcom.example.agy-conversations-sync");
     expectRestored(harness);
   });
 
@@ -366,10 +384,10 @@ describe("pivot distill LaunchAgent supervisor policy", () => {
   it("fails closed on an operational launchctl print error before any mutation", () => {
     const harness = fakeHarness();
     const result = run(harness, "sync-only", ["ok"], [], {
-      FAKE_PRINT_ERROR_LABEL: "com.anxianjingya.agy-conversations-sync",
+      FAKE_PRINT_ERROR_LABEL: `${USER_PREFIX}.agy-conversations-sync`,
     });
     expect(result.status).toBe(1);
-    expect(result.stderr).toContain("launchctl print failed for com.anxianjingya.agy-conversations-sync (exit 64)");
+    expect(result.stderr).toContain(`launchctl print failed for ${USER_PREFIX}.agy-conversations-sync (exit 64)`);
     expect(launchLogLines(harness).some((line) => line.startsWith("bootout\t"))).toBe(false);
     expect(launchLogLines(harness).some((line) => line.startsWith("bootstrap\t"))).toBe(false);
     expect(existsSync(harness.childMarker)).toBe(false);

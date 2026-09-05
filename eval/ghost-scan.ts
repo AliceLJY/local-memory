@@ -26,8 +26,13 @@
 // 用法：cd ~/recallnest && set -a && source ~/.config/recallnest/mcp.env && set +a \
 //       && ~/.bun/bin/bun run eval/ghost-scan.ts
 
-import { loadConfig, createComponents } from "/Users/anxianjingya/recallnest/src/runtime-config.ts";
-import { DEFAULT_CATEGORY_MIN_SCORES } from "/Users/anxianjingya/recallnest/src/retriever.ts";
+import { homedir } from "node:os";
+import { join } from "node:path";
+
+// 仓库根：优先 RECALLNEST_ROOT，否则 ~/recallnest（与此前写死的绝对路径解析结果一致）
+const RECALLNEST_ROOT = process.env.RECALLNEST_ROOT || join(homedir(), "recallnest");
+const { loadConfig, createComponents } = await import(join(RECALLNEST_ROOT, "src/runtime-config.ts"));
+const { DEFAULT_CATEGORY_MIN_SCORES } = await import(join(RECALLNEST_ROOT, "src/retriever.ts"));
 
 const config = loadConfig();
 const { store, retriever } = createComponents(config);

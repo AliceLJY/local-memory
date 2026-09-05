@@ -54,26 +54,29 @@
 // 【快照有效性】Pass A 扫的是实时库，并发写入会让行在页间移动（ghost-scan.ts 同款已知噪声）。
 //   两臂要连着跑，中间只改代码不 ingest；报告附条目数，数不对就重跑。
 
-import { loadConfig, createComponents } from "/Users/anxianjingya/recallnest/src/runtime-config.ts";
-import { selectStableResults } from "/Users/anxianjingya/recallnest/src/context-composer-stable-selection.ts";
-import { selectTaskResults } from "/Users/anxianjingya/recallnest/src/context-composer-task-selection.ts";
-import {
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+
+// 仓库根：优先 RECALLNEST_ROOT，否则 ~/recallnest（与此前写死的绝对路径解析结果一致）
+const REPO = process.env.RECALLNEST_ROOT || join(homedir(), "recallnest");
+const repoSrc = (file: string) => join(REPO, "src", file);
+const { loadConfig, createComponents } = await import(repoSrc("runtime-config.ts"));
+const { selectStableResults } = await import(repoSrc("context-composer-stable-selection.ts"));
+const { selectTaskResults } = await import(repoSrc("context-composer-task-selection.ts"));
+const {
   buildStableQuery,
   buildStylePreferenceFallbackQuery,
   buildTaskQuery,
-} from "/Users/anxianjingya/recallnest/src/context-composer-queries.ts";
-import { dedupeText, stripConversationMarkers } from "/Users/anxianjingya/recallnest/src/context-composer-text.ts";
-import {
+} = await import(repoSrc("context-composer-queries.ts"));
+const { dedupeText, stripConversationMarkers } = await import(repoSrc("context-composer-text.ts"));
+const {
   PREFERENCE_SPECIFICITY_GROUPS,
   TASK_RESULT_SPECIFICITY_GROUPS,
   buildTaskHintTerms,
   looksLikeStyleTask,
   normalizeText,
-} from "/Users/anxianjingya/recallnest/src/term-registry.ts";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-
-const REPO = "/Users/anxianjingya/recallnest";
+} = await import(repoSrc("term-registry.ts"));
 const OUT_DIR = join(REPO, "eval", "reports");
 const ARM = process.env.ARM || "baseline";
 const PASS = process.env.PASS || "AB";

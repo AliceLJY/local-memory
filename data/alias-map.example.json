@@ -17,6 +17,6 @@
   },
   {
     "trigger": "河马",
-    "expansions": ["河马", "trihippo", "RecallNest", "记忆", "memory"]
+    "expansions": ["河马", "RecallNest", "记忆", "memory"]
   }
 ]

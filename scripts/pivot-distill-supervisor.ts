@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, userInfo } from "node:os";
 import { join, resolve } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 
@@ -14,6 +14,13 @@ export interface SupervisedTask {
   reason: string;
   processPatterns: readonly string[];
 }
+
+/**
+ * User-level LaunchAgents are labeled `com.<current user>.<task>`. The prefix
+ * can be overridden with PIVOT_DISTILL_LAUNCHD_PREFIX for other installs and tests.
+ */
+const LAUNCHD_USER_PREFIX =
+  process.env.PIVOT_DISTILL_LAUNCHD_PREFIX || `com.${userInfo().username}`;
 
 /**
  * The task inventory is the single source for launchctl mutations and orphan
@@ -34,7 +41,7 @@ export const SUPERVISED_TASKS: readonly SupervisedTask[] = [
     processPatterns: ["[p]ull-from-macbook[.]sh"],
   },
   {
-    label: "com.anxianjingya.agy-conversations-sync",
+    label: `${LAUNCHD_USER_PREFIX}.agy-conversations-sync`,
     tier: "required",
     reason: "changes derived AGY inputs and writes RecallNest",
     processPatterns: [
@@ -45,13 +52,13 @@ export const SUPERVISED_TASKS: readonly SupervisedTask[] = [
     ],
   },
   {
-    label: "com.anxianjingya.macbook-mirror-pull",
+    label: `${LAUNCHD_USER_PREFIX}.macbook-mirror-pull`,
     tier: "required",
     reason: "changes mirrored source inputs",
     processPatterns: ["[m]acbook-mirror-pull"],
   },
   {
-    label: "com.anxianjingya.conversation-truth-refresh",
+    label: `${LAUNCHD_USER_PREFIX}.conversation-truth-refresh`,
     tier: "required",
     reason: "rebuilds the Deja conversation link tree",
     processPatterns: ["[r]efresh-conversation-truth[.]py"],
@@ -81,7 +88,7 @@ export const SUPERVISED_TASKS: readonly SupervisedTask[] = [
     processPatterns: ["[r]ecallnest-optimize[.]js"],
   },
   {
-    label: "com.anxianjingya.repos-autopull",
+    label: `${LAUNCHD_USER_PREFIX}.repos-autopull`,
     tier: "recommended",
     reason: "can change the executing checkout during a full run",
     processPatterns: ["[r]epos-autopull"],

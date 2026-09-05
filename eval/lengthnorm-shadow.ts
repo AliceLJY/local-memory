@@ -49,7 +49,9 @@ if (existsSync(envFile)) {
   }
 }
 
-const { loadConfig, createComponents } = await import("/Users/anxianjingya/recallnest/src/runtime-config.ts");
+// 仓库根：优先 RECALLNEST_ROOT，否则 ~/recallnest（与此前写死的绝对路径解析结果一致）
+const RECALLNEST_ROOT = process.env.RECALLNEST_ROOT || join(homedir(), "recallnest");
+const { loadConfig, createComponents } = await import(join(RECALLNEST_ROOT, "src/runtime-config.ts"));
 
 const QUERIES = [
   "双机 契约 同步 漂移",
