@@ -76,6 +76,7 @@ function isForbidden(path) {
     ".claude",
     ".codex",
     ".git",
+    "__tests__",
     "data",
     "logs",
     "node_modules",

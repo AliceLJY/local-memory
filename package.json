@@ -22,7 +22,8 @@
     "eval/continuity/*.json",
     "integrations/",
     "README_CN.md",
-    "src/"
+    "src/",
+    "!src/**/__tests__/**"
   ],
   "scripts": {
     "search": "bun run src/cli.ts search",
