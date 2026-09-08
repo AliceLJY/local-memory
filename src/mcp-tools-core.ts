@@ -332,7 +332,9 @@ registerTool(
       return {
         content: [{
           type: "text" as const,
-          text: lightResult.text,
+          text: lightResult.resolvedScope
+            ? `Scope: ${lightResult.resolvedScope}\n${lightResult.text}`
+            : lightResult.text,
         }],
       };
     }
@@ -377,7 +379,7 @@ registerTool(
   {
     query: z.string().describe("Search query — natural language or keywords"),
     limit: z.number().min(1).max(20).default(5).describe("Max results to return"),
-    scope: z.string().optional().describe("Optional explicit scope"),
+    scope: z.string().optional().describe("Explicit scope; reuse Scope returned by resume_context. May be omitted when sessionId or configured environment supplies a scope, or allScopes=true explicitly requests cross-scope search. Omission alone does not mean global search."),
     sessionId: z.string().min(1).max(160).optional().describe("Optional session identifier to infer session:<id> scope"),
     allScopes: z.boolean().default(false).describe("When true, explicitly allow cross-scope search"),
     includeRelatedScopes: z.boolean().default(false).describe("When true, also query configured related scopes from scopeRelations and show them in a separate sidecar section. Requires an explicit or inferred scoped search; never changes the main result ranking."),

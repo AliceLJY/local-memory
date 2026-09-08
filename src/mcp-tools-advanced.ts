@@ -761,7 +761,7 @@ registerTool(
 
 registerTool(
   "retrieve_skill",
-  "Retrieve executable skills matching a task description by semantic similarity. Read-only. Use when you need a stored procedure to act on, not just recall knowledge.",
+  "Retrieve agent-readable runbooks matching a task description by semantic similarity. Read-only. RecallNest returns stored instructions; it does not execute them.",
   {
     query: z.string().min(1).max(300).describe("Natural language task description to match, e.g. 'deploy the app to production'"),
     scope: z.string().min(1).max(160).optional().describe("Restrict to skills in a specific scope, e.g. 'project:myapp'. Omit to search all scopes"),
