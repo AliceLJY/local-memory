@@ -61,6 +61,10 @@
   "engines": {
     "node": ">=22"
   },
+  "overrides": {
+    "fast-uri": "^3.1.6",
+    "qs": "^6.16.0"
+  },
   "dependencies": {
     "@hono/node-server": "1.19.17",
     "@lancedb/lancedb": "^0.26.0",
