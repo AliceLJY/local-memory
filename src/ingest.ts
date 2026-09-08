@@ -53,6 +53,8 @@ export interface IngestResult {
   chunksDeduped: number;
   dedupReasonCounts: DedupReasonCounts;
   errors: string[];
+  /** 子 agent 独立会话文件被整文件跳过的数量（目前只有 Codex 分支会产生；见 isCodexSubagentSessionFile）。 */
+  subagentFilesSkipped?: number;
 }
 
 interface ConversationTurn {
@@ -884,6 +886,11 @@ export function parseCCTranscript(filePath: string): ConversationTurn[] {
   for (const line of lines) {
     try {
       const obj = JSON.parse(line);
+      // 子 agent 侧链（isSidechain:true）的 user 行是主 agent 写给子 agent 的任务信封，不是人说的话。
+      // 今天 CC 把侧链分文件存在 <session>/subagents/agent-*.jsonl，而本函数的调用方只读项目目录顶层
+      // 的 .jsonl，所以这一行当前不会命中；留着是防 CC 哪天把侧链内联回主文件（2026-09-08 借鉴 ECC
+      // observe.sh 的「按结构字段认谁在说、不认 role」）。
+      if (obj.isSidechain === true) continue;
       // 这一行里所有的图片信号。用户亲手贴的那部分在下面单独精确认，
       // 其余的一律按补集归入 AI 产图——不枚举它是截图、读图、生图还是配图。
       const lineImageSignals = countImageSignals(obj);
@@ -1101,6 +1108,28 @@ export function groupTurnsIntoChunks(turns: ConversationTurn[]): Array<{
 // Codex Session Parser
 // ============================================================================
 
+/**
+ * Codex multi_agent 派出的子 agent 会话是独立的 rollout 文件，首行 session_meta 带 parent_thread_id
+ * （另有 agent_nickname / agent_role / multi_agent_version）。文件里 role=user 的 input_text 是主 agent
+ * 派的任务，不是人说的话——2026-09-08 实测本机 5,597 个 Codex 会话文件里 2,555 个（45.6%）是子 agent 文件，
+ * 其 user turn 占全部 user turn 的 46.7%（近 7 天 63.7%）。ingest 前整文件跳过，与 Kimi 分支只读
+ * agents/main/wire.jsonl 同一个判据：按结构字段认「谁在说」，不认 role。只读首行，不整读文件。
+ */
+export function isCodexSubagentSessionFile(filePath: string): boolean {
+  try {
+    const content = readFileSync(filePath, "utf-8");
+    const nl = content.indexOf("\n");
+    const first = (nl === -1 ? content : content.slice(0, nl)).trim();
+    if (!first) return false;
+    const obj = JSON.parse(first);
+    if (obj?.type !== "session_meta") return false;
+    const parent = obj.payload?.parent_thread_id;
+    return typeof parent === "string" && parent.length > 0;
+  } catch {
+    return false;
+  }
+}
+
 export function parseCodexSession(filePath: string): ConversationTurn[] {
   const turns: ConversationTurn[] = [];
   const content = readFileSync(filePath, "utf-8");
@@ -1263,6 +1292,14 @@ export async function ingestCodexSessions(
       // In --recent mode, skip ingested-files check — files may have new content appended
       if (!recentMode && isProcessed(filePath, stat.size, stat.mtimeMs)) {
         result.chunksSkipped++;
+        continue;
+      }
+
+      // 子 agent 独立会话整文件跳过（判据与理由见 isCodexSubagentSessionFile）。标记 processed 是为了
+      // 下一轮非 --recent 的增量不再重读它；子 agent 的结论本就该由主 agent 落盘，原文由 Deja 全量索引兜底。
+      if (isCodexSubagentSessionFile(filePath)) {
+        result.subagentFilesSkipped = (result.subagentFilesSkipped ?? 0) + 1;
+        markProcessed(filePath, stat.size, 0, stat.mtimeMs);
         continue;
       }
 

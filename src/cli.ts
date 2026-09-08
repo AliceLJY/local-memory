@@ -146,7 +146,8 @@ function resolveSourcePath(source: string, key: string): string {
 }
 
 function formatIngestSummary(result: IngestResult): string {
-  return `${result.filesProcessed} files, ${result.chunksIngested} ingested, ${result.chunksDeduped} deduped (${formatDedupReasonSummary(result)}), ${result.errors.length} errors`;
+  const subagentNote = result.subagentFilesSkipped ? `, ${result.subagentFilesSkipped} subagent files skipped` : "";
+  return `${result.filesProcessed} files, ${result.chunksIngested} ingested, ${result.chunksDeduped} deduped (${formatDedupReasonSummary(result)}), ${result.errors.length} errors${subagentNote}`;
 }
 
 function maybeWarnHighCCDedupRate(result: IngestResult): void {

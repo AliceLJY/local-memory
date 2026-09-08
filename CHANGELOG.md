@@ -14,6 +14,12 @@
      Protect them by name. The v3.0.0 Release body dropped 11 of 11 such items in
      exactly that step, while this file had every one of them. -->
 
+## Unreleased
+
+### Fixed
+
+- **Codex subagent rollouts are no longer ingested as user conversation.** Codex `multi_agent` spawns each subagent as its own rollout file whose first `session_meta` line carries `parent_thread_id`; inside it, `role: user` turns are the parent agent's task briefs, not a person speaking. `ingestCodexSessions` now skips those files whole (`isCodexSubagentSessionFile`, first line only) and reports `N subagent files skipped`; on the machine this was measured, 45.6% of Codex rollout files were subagents and they held 46.7% of all "user" turns. The Claude Code parser also drops `isSidechain:true` rows defensively (CC currently stores sidechains in separate `subagents/` files that the ingester never enumerates, so this is a guard against future inlining). Same rule the Kimi path already used by reading only `agents/main/wire.jsonl`: decide who is speaking from structural fields, not from `role`.
+
 ## v3.0.1 — Publication hygiene (2026-09-06)
 
 ### Added
