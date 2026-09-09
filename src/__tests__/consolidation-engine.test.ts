@@ -492,22 +492,38 @@ function pagedStore(all: UptakeEntry[]) {
 describe("computeSynthesisUptake", () => {
   it("computes uptake over derived insights only", async () => {
     const store = pagedStore([
-      uptakeEntry("d1", { cluster_insight: true, accessCount: 2 }),   // derived, read
-      uptakeEntry("d2", { cross_memory_pattern: true }),              // derived, unread
-      uptakeEntry("n1", { accessCount: 5 }),                          // not derived
+      uptakeEntry("d1", { cluster_insight: true, accessCount: 2, distinctReaderCount: 2 }),   // derived, read by 2 readers
+      uptakeEntry("d2", { cross_memory_pattern: true }),                                     // derived, unread
+      uptakeEntry("d3", { cluster_insight: true, accessCount: 9, distinctReaderCount: 1 }),   // derived, one reader hammered it 9× — inflates accessCount, not readers
+      uptakeEntry("n1", { accessCount: 5, distinctReaderCount: 3 }),                         // not derived
     ]);
     const s = await computeSynthesisUptake(store, 20_000, 2);
-    expect(s.scanned).toBe(3);
-    expect(s.derivedTotal).toBe(2);
-    expect(s.derivedRead).toBe(1);
-    expect(s.uptakeRate).toBeCloseTo(0.5, 5);
+    expect(s.scanned).toBe(4);
+    expect(s.derivedTotal).toBe(3);
+    expect(s.derivedRead).toBe(2);                    // d1 + d3 (accessCount>0)
+    expect(s.uptakeRate).toBeCloseTo(2 / 3, 5);
+    expect(s.derivedReadByMultiple).toBe(1);          // only d1 — d3's 9 hits from one reader don't count
+    expect(s.multiReaderRate).toBeCloseTo(1 / 3, 5);
     expect(s.truncated).toBe(false);
+  });
+
+  it("multi-reader rate ignores accessCount entirely (inflation by a single reader is invisible)", async () => {
+    const store = pagedStore([
+      uptakeEntry("h1", { cluster_insight: true, accessCount: 300, distinctReaderCount: 1 }),
+      uptakeEntry("h2", { cluster_insight: true, accessCount: 300 }),   // no reader bookkeeping at all
+    ]);
+    const s = await computeSynthesisUptake(store, 20_000, 2);
+    expect(s.derivedRead).toBe(2);
+    expect(s.uptakeRate).toBe(1);                     // old metric says 100% "used"
+    expect(s.derivedReadByMultiple).toBe(0);
+    expect(s.multiReaderRate).toBe(0);                // new metric says 0% — nobody but one reader ever saw them
   });
 
   it("returns null rate when no derived insights exist", async () => {
     const s = await computeSynthesisUptake(pagedStore([uptakeEntry("n1", {})]));
     expect(s.derivedTotal).toBe(0);
     expect(s.uptakeRate).toBeNull();
+    expect(s.multiReaderRate).toBeNull();
   });
 
   it("respects scan cap and reports truncation", async () => {

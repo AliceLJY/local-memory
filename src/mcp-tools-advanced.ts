@@ -555,9 +555,14 @@ registerTool(
     // 在产无人消费的内容或读打点断链，是能报警的健康度数字。
     // cap 取 totalCount 自适应库大小（2026-07-23 实测库已 117K，固定 cap 追不上增长）。
     const uptake = await computeSynthesisUptake(store, stats.totalCount + 1_000);
+    // 两行两个口径（2026-09-09）：第一行是老数字，保留可比但标明它可被检索刷高、只能读成
+    // "被碰过"；第二行 distinctReaderCount≥2 是更难被扰动的口径。判断"合成产物有没有用"看第二行。
     const uptakeLine = uptake.uptakeRate === null
-      ? "  uptake: n/a (no derived insights found)"
-      : `  uptake: ${(uptake.uptakeRate * 100).toFixed(1)}% (${uptake.derivedRead}/${uptake.derivedTotal} read ≥1)`;
+      ? "  touched ≥1: n/a (no derived insights found)"
+      : `  touched ≥1 (accessCount>0; every search hit counts — inflatable, not a usefulness signal): ${(uptake.uptakeRate * 100).toFixed(1)}% (${uptake.derivedRead}/${uptake.derivedTotal})`;
+    const multiReaderLine = uptake.multiReaderRate === null
+      ? "  read by ≥2 distinct readers: n/a"
+      : `  read by ≥2 distinct readers (harder to inflate — use this one): ${(uptake.multiReaderRate * 100).toFixed(1)}% (${uptake.derivedReadByMultiple}/${uptake.derivedTotal})`;
 
     const lines = [
       `Total entries: ${stats.totalCount}`,
@@ -575,6 +580,7 @@ registerTool(
       `Synthesis uptake${uptake.truncated ? ` (scan capped at ${uptake.scanned})` : ""}:`,
       `  derived insights: ${uptake.derivedTotal}`,
       uptakeLine,
+      multiReaderLine,
     ];
 
     return {

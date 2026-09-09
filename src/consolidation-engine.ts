@@ -882,10 +882,20 @@ export interface SynthesisUptakeStats {
   scanned: number;
   /** Derived insights found (cluster_insight / cross_memory_pattern). */
   derivedTotal: number;
-  /** Derived insights with accessCount > 0 — actually read after synthesis. */
+  /** Derived insights with accessCount > 0 — touched by at least one retrieval.
+   *  ⚠️ Inflatable: the MCP search path does not pass `source`, so every search hit
+   *  increments accessCount (retriever.ts reinforcement gate is `source !== "auto-recall"`).
+   *  One person running ~300 queries can move this from 3.7% to 7%+ with the store unchanged
+   *  (2026-08-22 measured: a single 16-query audit moved it 177→186/4749). */
   derivedRead: number;
-  /** derivedRead / derivedTotal; null when no derived insights exist. */
+  /** derivedRead / derivedTotal; null when no derived insights exist. Read as "touched", not "useful". */
   uptakeRate: number | null;
+  /** Derived insights read by ≥2 distinct readers (metadata.distinctReaderCount, maintained by
+   *  access-tracker with reader-id dedup + novelty gating). A single reader's repeated searches
+   *  cannot push an entry past 1, so this is the harder-to-inflate uptake signal. */
+  derivedReadByMultiple: number;
+  /** derivedReadByMultiple / derivedTotal; null when no derived insights exist. */
+  multiReaderRate: number | null;
   /** True when the scan hit the cap before exhausting the store. */
   truncated: boolean;
 }
@@ -894,6 +904,11 @@ export interface SynthesisUptakeStats {
  * Measure how many consolidation/dream products were ever read back.
  * 把"升华产物没人用"从体感变成能报警的数字——uptake 长期为 0 说明
  * 升华管线在产出无人消费的内容（或读打点断链）。
+ *
+ * 两个口径（2026-09-09 加第二个，open-loops「召回可达性抽测」③）：
+ * - uptakeRate：accessCount>0。**只增不减、可被检索廉价刷高**（见字段注释），
+ *   只能读成「被碰过」，不能当「合成产物有用/没用」的证据。保留它是为了历史可比。
+ * - multiReaderRate：distinctReaderCount≥2。一个人反复搜刷不高，是更难被扰动的口径。
  */
 export async function computeSynthesisUptake(
   store: { listPage(opts: { limit?: number; offset?: number; includeVector?: boolean }): Promise<MemoryEntry[]> },
@@ -905,6 +920,7 @@ export async function computeSynthesisUptake(
   let scanned = 0;
   let derivedTotal = 0;
   let derivedRead = 0;
+  let derivedReadByMultiple = 0;
   let offset = 0;
   let truncated = false;
 
@@ -918,6 +934,7 @@ export async function computeSynthesisUptake(
       try {
         const meta = JSON.parse(e.metadata || "{}") as Record<string, unknown>;
         if (typeof meta.accessCount === "number" && meta.accessCount > 0) derivedRead++;
+        if (typeof meta.distinctReaderCount === "number" && meta.distinctReaderCount >= 2) derivedReadByMultiple++;
       } catch { /* broken metadata → counts as unread */ }
     }
     offset += page.length;
@@ -933,6 +950,8 @@ export async function computeSynthesisUptake(
     derivedTotal,
     derivedRead,
     uptakeRate: derivedTotal > 0 ? derivedRead / derivedTotal : null,
+    derivedReadByMultiple,
+    multiReaderRate: derivedTotal > 0 ? derivedReadByMultiple / derivedTotal : null,
     truncated,
   };
 }
